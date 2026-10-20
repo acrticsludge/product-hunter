@@ -1,0 +1,50 @@
+{
+  "hits": [
+    {
+      "objectID": "9000001",
+      "author": "dana_dev",
+      "created_at": "2026-03-04T09:15:00Z",
+      "created_at_i": 1772614500,
+      "story_id": 5550001,
+      "story_title": "How we keep track of customer invoices",
+      "story_url": "https://example.invalid/posts/invoices",
+      "comment_text": "Every month I export the invoices to CSV and paste the totals into a spreadsheet by hand. It takes me a whole Saturday and I still miss two line items before the report goes out."
+    },
+    {
+      "objectID": "9000002",
+      "author": "generic_gus",
+      "created_at": "2026-03-05T11:00:00Z",
+      "story_id": 5550001,
+      "story_title": "How we keep track of customer invoices",
+      "comment_text": "This is just another invoicing tool and honestly none of these apps are any good. Software is getting worse every year and everything looks the same now."
+    },
+    {
+      "objectID": "9000003",
+      "author": "curious_carl",
+      "created_at": "2026-03-06T08:30:00Z",
+      "story_id": 5550001,
+      "story_title": "How we keep track of customer invoices",
+      "comment_text": "Is there a way to get a weekly summary of what is still outstanding without opening the dashboard every single morning?"
+    },
+    {
+      "objectID": "9000004",
+      "author": "feature_fred",
+      "created_at": "2026-03-07T19:45:00Z",
+      "story_id": 5550001,
+      "story_title": "How we keep track of customer invoices",
+      "comment_text": "It would be great if the export could be scheduled so it lands in my inbox every Monday morning without any setup at all."
+    },
+    {
+      "objectID": "9000005",
+      "author": "html_hank",
+      "created_at": "2026-03-08T12:00:00Z",
+      "story_id": 5550002,
+      "story_title": "Ledger reports for a one person company",
+      "comment_text": "Our bookkeeping tool &quot;does not export&quot; anything.<p>The PDF it produces is unreadable, so I retype every number into the ledger by hand and hope I do not miss a row.</p>"
+    }
+  ],
+  "nbHits": 5,
+  "page": 0,
+  "hitsPerPage": 20,
+  "query": "invoice"
+}

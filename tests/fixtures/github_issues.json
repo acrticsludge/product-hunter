@@ -1,0 +1,48 @@
+[
+  {
+    "id": 5303942524,
+    "number": 6146,
+    "title": "CSV export truncates at ten thousand rows",
+    "html_url": "https://github.com/example/ledger/issues/6146",
+    "user": {
+      "login": "ledger_user",
+      "id": 8739626
+    },
+    "state": "open",
+    "created_at": "2026-08-31T19:17:12Z",
+    "updated_at": "2026-10-14T13:21:28Z",
+    "body": "Since the March release the CSV export truncates at ten thousand rows.\n\nI have to split the export by hand and merge it in a spreadsheet, which takes most of a morning every single month."
+  },
+  {
+    "id": 5303942525,
+    "number": 6147,
+    "title": "Add a scheduled export job",
+    "html_url": "https://github.com/example/ledger/pull/6147",
+    "user": {
+      "login": "contributor_cara",
+      "id": 4411223
+    },
+    "state": "open",
+    "created_at": "2026-09-02T10:00:00Z",
+    "updated_at": "2026-09-02T10:00:00Z",
+    "pull_request": {
+      "url": "https://api.github.com/repos/example/ledger/pulls/6147",
+      "html_url": "https://github.com/example/ledger/pull/6147"
+    },
+    "body": "This pull request adds a scheduled export job and a cron trigger."
+  },
+  {
+    "id": 5303942526,
+    "number": 6148,
+    "title": "Dark mode is unreadable on the reports page",
+    "html_url": "https://github.com/example/ledger/issues/6148",
+    "user": {
+      "login": "darkmode_dan",
+      "id": 9988776
+    },
+    "state": "open",
+    "created_at": "2026-09-05T14:30:00Z",
+    "updated_at": "2026-09-05T14:30:00Z",
+    "body": ""
+  }
+]

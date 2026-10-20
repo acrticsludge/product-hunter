@@ -12,8 +12,9 @@ from product_hunter.llm.base import (
     GenerationResponse,
     InputTooLarge,
     ProviderError,
+    ProviderUnavailable,
 )
-from product_hunter.llm.opencode import OpenCodeGenerateProvider
+from product_hunter.llm.opencode import OpenCodeGenerateProvider, _resolve_cli
 
 
 @pytest.fixture
@@ -66,7 +67,7 @@ def test_generate_parses_envelope_and_records_metadata(config):
     assert response.text == "pong"
     assert response.provider == "opencode-go"
     assert response.model == "deepseek-v4.1-flash"
-    assert response.extractor_version == "phase1-0.1"
+    assert response.extractor_version == "phase1-0.2"
     assert response.input_chars == len("hi")
     assert response.latency_ms >= 0
 
@@ -188,3 +189,49 @@ def test_doctor_reports_config_load_failure(capsys, monkeypatch):
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
     assert payload["error"] == "FileNotFoundError: config/extraction.yaml"
+
+
+def test_resolve_cli_prefers_the_nested_npm_exe(tmp_path, monkeypatch):
+    """A .cmd shim is run by cmd.exe, which mangles a prompt, so the .exe wins."""
+    npm = tmp_path / "npm"
+    nested = npm / "node_modules" / "@opencode" / "cli" / "bin" / "opencode.exe"
+    nested.parent.mkdir(parents=True)
+    nested.write_bytes(b"")
+    shim = npm / "opencode.cmd"
+    shim.write_text("", encoding="utf-8")
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setattr(
+        "product_hunter.llm.opencode.shutil.which",
+        lambda cmd, *args, **kwargs: str(shim) if cmd == "opencode" else None,
+    )
+
+    assert _resolve_cli() == str(nested)
+
+
+def test_resolve_cli_rejects_a_powershell_shim(tmp_path, monkeypatch):
+    ps1 = tmp_path / "opencode.ps1"
+    ps1.write_text("", encoding="utf-8")
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-npm"))
+    monkeypatch.setattr(
+        "product_hunter.llm.opencode.shutil.which",
+        lambda cmd, *args, **kwargs: str(ps1) if cmd == "opencode" else None,
+    )
+
+    with pytest.raises(ProviderError) as excinfo:
+        _resolve_cli()
+
+    assert "PowerShell" in str(excinfo.value)
+
+
+def test_generate_refuses_a_cmd_shim(config, monkeypatch):
+    """A prompt must never go through cmd.exe, so the shim is refused."""
+    runner = FakeRunner()
+    provider = OpenCodeGenerateProvider(config, runner=runner)
+    monkeypatch.setattr(
+        "product_hunter.llm.opencode._resolve_cli", lambda: "C:/npm/opencode.cmd"
+    )
+
+    with pytest.raises(ProviderUnavailable):
+        provider.generate(GenerationRequest(prompt="hi"))
+
+    assert runner.calls == []

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
@@ -21,6 +24,13 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 # Windows CreateProcess caps the command line near 32k chars; keep the JSON payload well under it.
 MAX_COMMAND_LINE_CHARS = 30_000
+
+# The real binary inside the global npm install. The .cmd shim next to it is
+# run by cmd.exe, which re-parses the command line and mangles a prompt.
+_NPM_CLI_RELATIVE = Path("node_modules") / "@opencode" / "cli" / "bin" / "opencode.exe"
+
+# A shim cmd.exe re-parses. Good for a plain `api get`, never for a prompt.
+_SHIM_SUFFIXES = (".cmd", ".bat")
 
 
 class GenerateData(BaseModel):
@@ -60,18 +70,49 @@ class ServerInfo(BaseModel):
     version: str
 
 
+def _nested_npm_exe() -> str | None:
+    """The real opencode.exe inside the global npm install, when it is there."""
+    roots: list[Path] = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        roots.append(Path(appdata) / "npm")
+    for shim in ("opencode.cmd", "opencode"):
+        found = shutil.which(shim)
+        if found:
+            roots.append(Path(found).parent)
+    for root in roots:
+        candidate = root / _NPM_CLI_RELATIVE
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _cli_candidates() -> Iterator[str]:
+    """Every OpenCode CLI path to try, best first."""
+    on_path = shutil.which("opencode.exe")
+    if on_path:
+        yield on_path
+    nested = _nested_npm_exe()
+    if nested:
+        yield nested
+    fallback = shutil.which("opencode")
+    if fallback:
+        yield fallback
+
+
 def _resolve_cli() -> str:
-    """Prefer the .cmd shim; never run a PowerShell shim."""
-    for candidate in ("opencode.cmd", "opencode"):
-        path = shutil.which(candidate)
-        if path is None:
-            continue
-        if path.lower().endswith(".ps1"):
+    """Resolve the OpenCode CLI, preferring the real .exe over a cmd shim.
+
+    A .cmd or .bat shim is run by cmd.exe, which re-parses the command line,
+    so it is only good for a plain `api get` call. generate() refuses one.
+    """
+    for candidate in _cli_candidates():
+        if candidate.lower().endswith(".ps1"):
             raise ProviderError(
-                f"refusing to run OpenCode through a PowerShell shim: {path}. "
-                "Install the .cmd shim or put it first on PATH."
+                f"refusing to run OpenCode through a PowerShell shim: {candidate}. "
+                "Install the .exe or put it first on PATH."
             )
-        return path
+        return candidate
     raise ProviderUnavailable("opencode CLI not found on PATH")
 
 
@@ -181,8 +222,15 @@ class OpenCodeGenerateProvider:
                 f"request body is {len(serialized)} chars, command-line limit is "
                 f"{MAX_COMMAND_LINE_CHARS}"
             )
+        cli = self.cli
+        if cli.lower().endswith(_SHIM_SUFFIXES):
+            raise ProviderUnavailable(
+                f"refusing to send a prompt through the {Path(cli).name} shim: "
+                "cmd.exe re-parses the command line. Install the opencode.exe "
+                "binary and put it on PATH."
+            )
         argv = [
-            self.cli,
+            cli,
             "api",
             "post",
             "/api/experimental/generate",

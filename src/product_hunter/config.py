@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 CONFIG_NAME = Path("config") / "extraction.yaml"
 ENV_FILE = ".env"
@@ -28,6 +28,25 @@ class Limits(BaseModel):
     max_calls: int = Field(gt=0)
     max_input_chars: int = Field(gt=0)
     timeout_seconds: int = Field(gt=0)
+    min_quote_chars: int = Field(gt=0)
+    max_quote_chars: int = Field(gt=0)
+    chunk_chars: int = Field(gt=0)
+    chunk_overlap_chars: int = Field(ge=0)
+    max_candidates_per_chunk: int = Field(ge=1, le=10)
+
+    @model_validator(mode="after")
+    def _check_invariants(self) -> Limits:
+        if self.min_quote_chars >= self.max_quote_chars:
+            raise ValueError(
+                f"min_quote_chars ({self.min_quote_chars}) must be less than "
+                f"max_quote_chars ({self.max_quote_chars})"
+            )
+        if self.chunk_overlap_chars >= self.chunk_chars:
+            raise ValueError(
+                f"chunk_overlap_chars ({self.chunk_overlap_chars}) must be less than "
+                f"chunk_chars ({self.chunk_chars})"
+            )
+        return self
 
 
 class ExtractionConfig(BaseModel):
