@@ -1,0 +1,11 @@
+version: 1
+provider: opencode_generate
+provider_id: opencode-go
+model_id: deepseek-v4.1-flash
+extractor_version: phase1-0.1
+prompt_version: extract-v1
+limits:
+  max_documents: 150
+  max_calls: 300
+  max_input_chars: 12000
+  timeout_seconds: 120

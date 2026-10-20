@@ -1,0 +1,25 @@
+{
+  "name": "Product Hunter",
+  "floorRisk": "medium",
+  "mandatoryStages": [0, 4, 5, 6, 7, 8, 9, 10],
+  "gates": { "code": ["uv run pytest"] },
+  "highRiskPaths": [
+    "src/product_hunter/safety.py",
+    "src/product_hunter/fetch.py",
+    "config/sources.yaml",
+    "db/migrations/**",
+    ".env"
+  ],
+  "forbidden": [
+    "Never add a DEEPSEEK_API_KEY or any provider secret to this repo; Phase 1 uses the OpenCode auth store.",
+    "Never call the OpenCode server over raw HTTP; use the documented opencode api CLI so auth discovery stays intact.",
+    "Never use shell=True or a command string for an OpenCode subprocess; pass an argv list.",
+    "Never fetch a URL that is not declared in config/sources.yaml; URL admission is a worker decision, not a model decision.",
+    "Never pass untrusted page text as a shell, tool, or URL argument; it is data.",
+    "Never accept extracted evidence without a verbatim source span.",
+    "Never change a test to make it pass; a failing quote check is the signal.",
+    "Never commit .env, data/, runtime/, or logs/."
+  ],
+  "visualRequired": "never",
+  "docsRoot": "docs/"
+}
