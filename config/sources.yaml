@@ -1,0 +1,61 @@
+version: 1
+
+sources:
+  - source_id: hn_algolia
+    source_type: community
+    terms_status: permitted
+    allowed_use: [discovery, retrieval, analysis, storage]
+    reviewed_at: 2026-10-20
+    review_basis: "Public Hacker News content via the Algolia HN Search API; no authentication; public read."
+    robots_or_api_notes: "API access at https://hn.algolia.com/api; robots.txt is not used for API calls."
+    collector: api
+    rate_limit_policy:
+      min_interval_seconds: 1.0
+      max_requests_per_run: 100
+      max_retries: 2
+      backoff_base_seconds: 1.0
+      backoff_max_seconds: 30.0
+    domains: [hn.algolia.com, news.ycombinator.com]
+    schemes: [https]
+    robots: skip
+    enabled: true
+
+  - source_id: github_issues
+    source_type: code host
+    terms_status: permitted
+    allowed_use: [discovery, retrieval, analysis, storage]
+    reviewed_at: 2026-10-20
+    review_basis: "Public GitHub REST API for public repositories; unauthenticated requests are rate limited by GitHub."
+    robots_or_api_notes: "API access at https://api.github.com; robots.txt is not used for API calls."
+    collector: api
+    rate_limit_policy:
+      min_interval_seconds: 0.25
+      max_requests_per_run: 50
+      max_retries: 2
+      backoff_base_seconds: 1.0
+      backoff_max_seconds: 30.0
+    domains: [api.github.com]
+    schemes: [https]
+    robots: skip
+    enabled: true
+
+  - source_id: blog_http
+    source_type: publication
+    terms_status: unknown
+    allowed_use: [none]
+    reviewed_at: null
+    review_basis: "Domains must be selected and reviewed before enabling."
+    robots_or_api_notes: "Direct HTTP; robots.txt is required per domain."
+    collector: http
+    rate_limit_policy:
+      min_interval_seconds: 2.0
+      max_requests_per_run: 20
+      max_retries: 2
+      backoff_base_seconds: 1.0
+      backoff_max_seconds: 30.0
+    domains: []
+    schemes: [https]
+    robots: required
+    enabled: false
+
+# Reddit is deliberately absent while its terms_status is unknown.

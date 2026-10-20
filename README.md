@@ -11,6 +11,22 @@ small scale. Clustering, scoring, and market validity wait for later phases.
 - `ph version` prints the package version, currently 0.1.0.
 - `ph doctor` checks the configured provider and model, then prints JSON with
   an `ok` field plus the server details.
+- `ph sources` lists the configured source registry as JSON.
+- `ph fetch <source_id> <url>` fetches one admitted URL and prints its
+  provenance record.
+
+## Fetch safety
+
+`config/sources.yaml` carries the terms status, allowed uses, domains, and rate
+limits for each source. The registry fails closed for unknown, disabled, or
+unreviewed sources. `blog_http` stays disabled until specific blogs are
+reviewed; Reddit is absent while its terms are unknown.
+
+The shared fetch path admits only allowlisted hosts and public IPs, revalidates
+every redirect, blocks HTTPS-to-HTTP downgrades, applies robots where required,
+enforces per-source rate limits, retries only bounded transient failures, and
+stores raw bodies by SHA-256 under `data/raw/`. Every fetch writes a provenance
+record; every blocked or failed fetch writes a rejection record.
 
 ## Extraction
 
