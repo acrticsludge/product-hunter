@@ -178,6 +178,60 @@ now covered by a test that fails without the fix.
 passes selection and then fails at call time fails its chunk into a rejection,
 and that chunk is not retried with another model.
 
+---
+
+## Follow-up two — the chain falls through at call time
+
+A third commit, `phase2: fall through the model chain when a call fails`,
+closes the last gap.
+
+- The extraction runs through a `FallbackGenerator`. When a candidate's call
+  fails, the failed identity is excluded, the router is asked for the next
+  candidate, and the same request is retried. The walk is bounded: the
+  primary plus two fallbacks, because the free tier catalogue holds 29 models
+  and a provider that is down costs the configured timeout per attempt.
+- `model_executions.jsonl` is now built from the generator's attempts rather
+  than from the extraction's call records, so one row is written per provider
+  call, with the model that made it, its own fallback index, and its outcome.
+- The manifest's `provider` and `model` name the router's primary selection —
+  the policy that decided the run — so a transient provider failure cannot
+  change `research_runs.model_policy_version` and make a re-import a
+  conflict. The per-call truth stays in the execution rows.
+- A call that failed names the model that failed it: the error carries the
+  provider and the model, and the extraction names what the error carries.
+- The run import is one transaction. The catalogue, the role selection and the
+  executions are written inside the transaction `import_run` already owns.
+
+The adversarial review of this increment found two Must fix: a call that failed
+on a later candidate was attributed to the primary model, and the run's
+identity had come to depend on which candidate happened to answer. Both are
+fixed.
+
+### The fallback, proved live
+
+The next real extraction after the change failed on the first two candidates
+and was carried by the third:
+
+```
+model_executions.jsonl
+  deepseek-v4.1-flash      fallback_index 0  status error  HTTP 503 Service Unavailable
+  deepseek-v4-pro          fallback_index 1  status error  HTTP 503 Service Unavailable
+  minimax-m3.1-flash-free  fallback_index 2  status ok
+
+calls.jsonl
+  minimax-m3.1-flash-free  status ok
+```
+
+The call record names the model that answered, the execution rows name every
+model that was tried, and the run finished instead of dying. The two DeepSeek
+models on the free tier were returning 503 at that moment; the chain carried
+the run. That is the whole feature working on its own, unprompted.
+
+**Still not done.** A candidate refused at the preflight check is recorded as a
+failed attempt, so the file explains the skip, but the run-level
+`provider_check_failed` rejection names the primary — the run's policy —
+rather than the candidate the check refused.
+
 **Not checked.** The live OpenCode CLI path was exercised by hand at the start of
 the run (624 models, server version 2.1.2), but the discovery fallback was
 exercised only against fakes, because the route never failed on this machine.
