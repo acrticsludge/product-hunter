@@ -78,6 +78,8 @@ The three `shortcut:` markers, quoted: the engine is quadratic in the corpus and
 
 The real embedding path never ran, because `sentence-transformers` is not installed; the adjudicator never ran against a live model, only against a scripted double; the store has no caller, so no real run has ever written a cluster; the engine's quadratic cost is taken on trust from the `shortcut:` comment; the migration number `0003` collides with the tool-call wave's uncommitted `0003_research_gate.sql`, and one of the two files has to be renumbered before the branches merge, with the schema version assertion re-applied after the rename.
 
+The repository root held another wave's uncommitted work while this wave ran, so the wave was moved into its own worktree at `.worktrees/wave2-clustering` and the root was left exactly as it was found. The branch is `wave2/clustering`; nothing was pushed and no other wave's branch was merged.
+
 ## 10. What was not checked
 
 The real embedding path, the live adjudicator, the store against a real run, the store against a file-backed database, under concurrency, or against a database that predates the constraints, and the other waves' code against this store.
@@ -98,5 +100,5 @@ HARDEN: fix first, then ship
 REVIEW: fix 1, 2 and 3 first, then Verdict: Ship., then Verdict: Ship.
 WAIVERS: none
 STOPPED BECAUSE: all pass and review ship
-NEXT: ready to commit
+NEXT: merge with the other wave branches, after one of the two 0003 migrations is renumbered
 ```
