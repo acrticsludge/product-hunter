@@ -218,8 +218,9 @@ truncated or edited artifact set fails closed instead of importing half a run.
 `process_outbox(conn, handlers, worker_id, ...)` claims up to `max_tasks`
 (default 10) and dispatches by `task.target` to a handler. A missing handler
 fails the task with `no handler for target ...`; an exception fails it with
-`<ExceptionType>: <message>`. `LeaseLost` stops the batch. There is no Obsidian
-handler, no Qdrant handler, and no CLI command that runs the outbox; `ph db
+`<ExceptionType>: <message>`. `LeaseLost` stops the batch. The Obsidian
+target has a handler (`src/product_hunter/projection/engine.py`) and `ph
+project --outbox` runs the outbox; there is no Qdrant handler, and `ph db
 outbox` only lists the tasks.
 
 A crash after the SQLite commit leaves the task `pending`, and a later
@@ -230,6 +231,43 @@ A crash after the SQLite commit leaves the task `pending`, and a later
 Three success words differ, and they stay different. A job that finishes is
 `succeeded`. A projection task that finishes is `done`. A research run that
 finishes is `completed`.
+
+### The Obsidian projection
+
+`IMPLEMENTED` (`src/product_hunter/projection/`, `ph project`). The vault is a
+projection of the database, never a second copy of the truth. Nothing reads a
+note back, and a note a human edited is overwritten by the next projection
+without a flag saying so; two-way synchronisation is not built.
+
+The layer is read-only against SQLite and writes only under the vault root.
+A projection is deterministic (no wall-clock time reaches a note, the
+reference date is the newest timestamp in the data), idempotent (a note is
+written only when its bytes differ, so a second run touches no file and
+changes no file time), and regenerable (the vault can be deleted and rebuilt
+from the database, and a note whose opportunity is gone is removed).
+
+`projection_tasks` is how the work arrives. `Store.import_run()` enqueues a
+task with the target `obsidian` in the same transaction that writes the
+evidence, and `Projector.handle_projection_task()` rebuilds the vault from
+that task. A failure lets the exception out, so the outbox records it and
+retries with a backoff; the database is never touched by the projection, so a
+failed projection cannot roll anything back.
+
+`src/product_hunter/projection/contract.py` holds the DDL of the tables the
+projection reads when they exist (`opportunities`, `opportunity_scores`,
+`opportunity_evidence`, `opportunity_claims`, `experiments`,
+`research_requests`) and the column map for reading them. The reader asks
+`PRAGMA table_info` for the columns a table has and selects only those, so a
+table with a different shape degrades the projection instead of crashing it.
+The `opportunities` table does not exist in this branch, so the reader falls
+back to the pain points and the evidence, and the report fields that only a
+scored opportunity can fill read `not recorded` until the table lands.
+
+Scraped text is data. `src/product_hunter/projection/sanitize.py` escapes
+HTML, wikilinks, embeds, Templater expressions, Dataview queries, comments,
+headings, table rows, blockquotes, code fences and frontmatter delimiters,
+and blocks every URL whose scheme is not `http` or `https`. A value the
+database does not hold reads `not recorded`, never a zero.
 
 ## Subsystems that exist but are not on the pipeline
 
@@ -378,12 +416,13 @@ named there and have no code in this branch.
 | Tool-call and gate-result persistence in SQLite | §6A, §34 | `PLANNED`; `research/persistence.py` holds protocols only and names `0003_research_gate.sql` |
 | `spend_ledger` writes and global spend caps | §22 | `PLANNED`; the table exists and stays empty |
 | Opportunity states and scoring | §20, §23 | `PLANNED`, full spec only, no wave spec |
-| Qdrant, DuckDB, and Obsidian projections | §14, §16, §27 | `PLANNED`, full spec only, no wave spec |
+| Qdrant and DuckDB projections | §14, §16 | `PLANNED`, full spec only, no wave spec |
+| Obsidian projection | §27 | `IMPLEMENTED` (`src/product_hunter/projection/`); two-way interaction is `PLANNED` |
 | Independent-author and propagation analysis | §12 | `PLANNED`; the `propagation_edges` table exists and stays empty |
 | Backup, restore, retention, drift canaries | §38B | `PLANNED`, full spec only, no wave spec |
 | Human approval gates | §37 | `BLOCKED` on an external-account, posting, or Git write path that does not exist |
 | MCP server or client | §6 | `PLANNED`; no MCP code exists |
-| Obsidian projection handler for the outbox | §15A, §27 | `PLANNED` |
+| Obsidian projection handler for the outbox | §15A, §27 | `IMPLEMENTED` (`src/product_hunter/projection/engine.py`) |
 
 Model selection and its honest status are in
 [MODEL_ROUTING_IMPLEMENTATION.md](MODEL_ROUTING_IMPLEMENTATION.md). What the code

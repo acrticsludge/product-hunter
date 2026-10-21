@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import secrets
 from collections.abc import Iterable
 from dataclasses import asdict
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -27,6 +29,7 @@ from product_hunter.db import (
     current_version,
     list_jobs,
     list_projection_tasks,
+    process_outbox,
     recover_expired_leases,
     recover_projection_leases,
 )
@@ -94,10 +97,13 @@ from product_hunter.llm.routing import (
     ModelSelection,
     SelectionSource,
 )
+from product_hunter.projection import Projector, SqliteProjectionSource
 from product_hunter.raw_store import RawStore
 from product_hunter.reporting import (
     ReportError,
     build_run_report,
+)
+from product_hunter.reporting import (
     write_report as write_run_report,
 )
 from product_hunter.safety import UrlBlocked
@@ -106,6 +112,9 @@ from product_hunter.sources import AllowedUse, SourceBlocked, load_registry
 FETCH_LOG = Path("data") / "raw" / "fetches.jsonl"
 REJECTION_LOG = Path("data") / "raw" / "rejections.jsonl"
 PROCESSED_DIR = Path("data") / "processed"
+# Where the vault lives when no path is given. The data directory is
+# ignored by git, so the generated notes never reach the repository.
+VAULT_DIR = Path("data") / "vault" / "Product-Hunter-Vault"
 # The threshold file the benchmark falls back to when none is named.
 BENCH_THRESHOLDS = Path("eval") / "thresholds.yaml"
 
@@ -177,6 +186,17 @@ def build_parser() -> argparse.ArgumentParser:
     db_outbox.add_argument("--path", dest="db_path", default=None)
     db_check = db_commands.add_parser("check", help="run SQLite integrity checks")
     db_check.add_argument("--path", dest="db_path", default=None)
+    project_parser = commands.add_parser(
+        "project", help="build the Obsidian projection of the store"
+    )
+    project_parser.add_argument("--db", dest="db_path", default=None)
+    project_parser.add_argument("--vault", dest="vault", default=None)
+    project_parser.add_argument(
+        "--outbox", action="store_true", help="drain the pending obsidian tasks first"
+    )
+    project_parser.add_argument(
+        "--as-of", dest="as_of", default=None, help="the reference date, YYYY-MM-DD"
+    )
     research_parser = commands.add_parser("research", help="control research runs")
     research_parser.add_argument("action")
     research_parser.add_argument("target", nargs="?", default=None)
@@ -1246,6 +1266,101 @@ def _run_db_command(args: argparse.Namespace) -> int:
     return 1
 
 
+def project_command(
+    *,
+    db_path: str | Path | None = None,
+    vault: str | Path | None = None,
+    outbox: bool = False,
+    as_of: str | None = None,
+    repo_root: Path | None = None,
+) -> int:
+    """Build the Obsidian vault from the store. Returns 0, or 1 on failure.
+
+    The vault is a projection of the whole store, so the command rebuilds it
+    rather than patching it. A run that changes nothing writes nothing.
+    """
+    root = _root(repo_root)
+    path = _db_path(db_path, root)
+    if not _require_db(path):
+        return 1
+    if not _valid_as_of(as_of):
+        print(
+            json.dumps(
+                {"ok": False, "error": f"the reference date is not a date: {as_of!r}"}
+            )
+        )
+        return 1
+    vault_root = (
+        _resolve_path(Path(vault), root) if vault is not None else root / VAULT_DIR
+    )
+    processed = 0
+    try:
+        # The outbox owns the task bookkeeping and needs a connection it can
+        # write with. The projection reads through its own read-only
+        # connection, so it can never write to the database.
+        work = connect(path) if outbox else None
+        try:
+            conn = connect(path, read_only=True)
+            try:
+                projector = Projector(vault_root, source=SqliteProjectionSource(conn))
+                projector.as_of = as_of
+                if work is not None:
+                    processed = _drain_outbox(work, projector)
+                result = projector.last_result
+                if result is None:
+                    # No task was pending, so the drain built nothing and the
+                    # vault still has to be built.
+                    result = projector.project()
+            finally:
+                conn.close()
+        finally:
+            if work is not None:
+                work.close()
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "vault": str(vault_root),
+                "written": len(result.written),
+                "unchanged": len(result.unchanged),
+                "removed": len(result.removed),
+                "processed": processed,
+            }
+        )
+    )
+    return 0
+
+
+def _drain_outbox(conn, projector: Projector) -> int:
+    """Run the pending obsidian tasks through the outbox.
+
+    The outbox owns the task bookkeeping: a projection that raises leaves
+    the task pending and schedules the retry. The vault is built once for
+    the whole drain, not once per task: it is a projection of the whole
+    state, and the state does not change while the outbox runs.
+    """
+    built = False
+
+    def handle(task) -> None:
+        """Build the vault for the first task of the drain, and leave the rest."""
+        nonlocal built
+        if built:
+            return
+        projector.handle_projection_task(task)
+        built = True
+
+    return process_outbox(
+        conn,
+        {"obsidian": handle},
+        f"ph-project-{os.getpid()}",
+        target="obsidian",
+        max_tasks=100,
+    )
+
+
 def _require_db(path: Path) -> bool:
     if path.is_file():
         return True
@@ -1274,6 +1389,17 @@ def _resolve_path(path: Path, root: Path) -> Path:
 def _valid_run_id(run_id: str) -> bool:
     """A run id must be a plain name: no separator, no parent link."""
     return bool(RUN_ID_PATTERN.match(run_id)) and ".." not in run_id
+
+
+def _valid_as_of(value: str | None) -> bool:
+    """A reference date is a plain date, or nothing at all."""
+    if value is None:
+        return True
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _default_run_id() -> str:
@@ -1730,6 +1856,13 @@ def main(argv: list[str] | None = None) -> int:
         return _run_bench_command(args)
     if args.command == "db":
         return _run_db_command(args)
+    if args.command == "project":
+        return project_command(
+            db_path=args.db_path,
+            vault=args.vault,
+            outbox=args.outbox,
+            as_of=args.as_of,
+        )
     if args.command == "research":
         # The import stays inside the branch, so this module loads the same
         # way when the registry is absent.
