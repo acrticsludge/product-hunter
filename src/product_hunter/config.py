@@ -80,6 +80,22 @@ class RoutingConfig(BaseModel):
     catalog: CatalogSettings
     roles: dict[ModelRole, list[RouteCandidate]]
 
+    @model_validator(mode="after")
+    def _every_role_is_bound(self) -> RoutingConfig:
+        """Refuse a file that leaves a role unbound.
+
+        A role the operator deleted from the file would resolve to an empty
+        chain and quietly run on the default model. That is a config error,
+        not a silent downgrade, so the file is refused by name.
+        """
+        missing = sorted(role.value for role in ModelRole if role not in self.roles)
+        if missing:
+            raise ValueError(
+                "the routing config must bind every role; missing: "
+                + ", ".join(missing)
+            )
+        return self
+
     @property
     def refresh_interval_seconds(self) -> int:
         """How long a catalogue stays fresh."""
@@ -126,8 +142,20 @@ def load_config(path: Path | None = None) -> ExtractionConfig:
     config_path = path if path is not None else repo_root() / CONFIG_NAME
     load_dotenv(repo_root() / ENV_FILE, override=False)
 
-    raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    raw = _load_yaml(config_path)
     return ExtractionConfig.model_validate(_apply_env(raw))
+
+
+def _load_yaml(path: Path) -> dict:
+    """The parsed YAML file, or a ValueError naming the file.
+
+    A file the parser cannot read is a bad config, and a bad config reaches
+    the caller as a ValueError, never as a parser traceback.
+    """
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{path}: {exc}") from exc
 
 
 def _apply_env(raw: dict) -> dict:
@@ -154,5 +182,5 @@ def load_routing_config(path: Path | None = None) -> RoutingConfig:
     or an unusable candidate is refused.
     """
     config_path = path if path is not None else repo_root() / ROUTING_CONFIG_NAME
-    raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    raw = _load_yaml(config_path)
     return RoutingConfig.model_validate(raw)

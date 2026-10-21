@@ -9,6 +9,7 @@ objects in and hands plain objects back.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -197,8 +198,10 @@ def record_selection(
 def record_execution(conn: sqlite3.Connection, execution: ModelExecution) -> None:
     """Write one model call and the provenance that explains it.
 
-    The error text is cut to ``MAX_ERROR_CHARS``: the row keeps the beginning
-    of the message, not a page of stderr.
+    The write is an upsert on the execution id: a run imported twice leaves
+    one row per call, and the second import repairs a row the first one left
+    behind. The error text is cut to ``MAX_ERROR_CHARS``: the row keeps the
+    beginning of the message, not a page of stderr.
     """
     conn.execute(
         """
@@ -207,6 +210,22 @@ def record_execution(conn: sqlite3.Connection, execution: ModelExecution) -> Non
             selection_source, fallback_index, is_fallback, catalog_version,
             prompt_version, config_version, latency_ms, status, error, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(execution_id) DO UPDATE SET
+            run_id = excluded.run_id,
+            stage = excluded.stage,
+            role = excluded.role,
+            provider_id = excluded.provider_id,
+            model_id = excluded.model_id,
+            selection_source = excluded.selection_source,
+            fallback_index = excluded.fallback_index,
+            is_fallback = excluded.is_fallback,
+            catalog_version = excluded.catalog_version,
+            prompt_version = excluded.prompt_version,
+            config_version = excluded.config_version,
+            latency_ms = excluded.latency_ms,
+            status = excluded.status,
+            error = excluded.error,
+            created_at = excluded.created_at
         """,
         (
             execution.execution_id,
@@ -227,6 +246,29 @@ def record_execution(conn: sqlite3.Connection, execution: ModelExecution) -> Non
             execution.created_at,
         ),
     )
+
+
+def record_model_executions(
+    conn: sqlite3.Connection, executions: Iterable[ModelExecution]
+) -> int:
+    """Write every model call of a run, in one transaction.
+
+    The calls of a run are all there or none of them are. The run's role
+    binding is a separate write: the import of the run itself is another
+    transaction, so the two happen in sequence and not in one. The rows are
+    derivable from the run artifacts, so a run whose binding write failed is
+    recoverable by importing it again.
+    """
+    rows = list(executions)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        for execution in rows:
+            record_execution(conn, execution)
+        conn.execute("COMMIT")
+    except BaseException:
+        _rollback(conn)
+        raise
+    return len(rows)
 
 
 def list_inventory(

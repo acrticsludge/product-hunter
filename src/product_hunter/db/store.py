@@ -686,6 +686,7 @@ class Store:
             "pain_points.jsonl",
             "rejects.jsonl",
             "calls.jsonl",
+            "model_executions.jsonl",
         )
         inserted = 0
         for name in names:

@@ -10,7 +10,7 @@ from product_hunter.llm.discovery import (
     OpenCodeModelDiscovery,
 )
 from product_hunter.llm.opencode import OpenCodeGenerateProvider
-from product_hunter.llm.routing import ModelRouter
+from product_hunter.llm.routing import ModelRole, ModelRouter, ModelSelection
 
 if TYPE_CHECKING:
     from product_hunter.config import ExtractionConfig, RoutingConfig
@@ -57,3 +57,25 @@ def build_router(
         provider_id=extraction.provider_id, model_id=extraction.model_id
     )
     return ModelRouter(routing, default=default, catalog_source=refresher)
+
+
+def build_role_generator(
+    config: ExtractionConfig,
+    router: ModelRouter,
+    role: ModelRole,
+) -> tuple[TextGenerator, ModelSelection]:
+    """The generator for the model a role resolved to, and the selection.
+
+    The model is bound to the generator by copying the extraction config with
+    the selected provider and model, so the provider runs the model the
+    router chose. A role with no available candidate is refused by the
+    router, and no generator is built.
+    """
+    selection = router.select(role)
+    bound = config.model_copy(
+        update={
+            "provider_id": selection.identity.provider_id,
+            "model_id": selection.identity.model_id,
+        }
+    )
+    return build_generator(bound), selection

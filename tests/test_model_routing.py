@@ -18,8 +18,10 @@ from product_hunter.db import (
     migrate,
     record_catalog,
     record_execution,
+    record_model_executions,
     record_selection,
 )
+from product_hunter.llm import build_role_generator
 from product_hunter.llm.base import ProviderError
 from product_hunter.llm.catalog import (
     Availability,
@@ -111,12 +113,20 @@ class FakeDiscovery:
 
 
 def routing_config(roles: dict[ModelRole, list[RouteCandidate]]) -> RoutingConfig:
+    """A routing config that binds every role.
+
+    The config refuses a role that is not bound, so the roles a test does
+    not care about are bound to a provider that does not exist.
+    """
+    bound = {role: list(candidates) for role, candidates in roles.items()}
+    for role in ModelRole:
+        bound.setdefault(role, [pattern("other-provider/*")])
     return RoutingConfig(
         version=1,
         catalog=CatalogSettings(
             refresh_interval_seconds=900, discovery_timeout_seconds=30
         ),
-        roles=roles,
+        roles=bound,
     )
 
 
@@ -142,9 +152,11 @@ def model(value: str) -> RouteCandidate:
 
 
 # The model the shipped role file must pick for a role: the cheapest flash
-# model, except for the roles that ask for a deepseek model first.
+# model, except for the roles that ask for a deepseek model first. The
+# extraction role asks for it first too, so it takes the cheapest deepseek
+# match, which today is the model Phase 1 measured its evidence quality on.
 EXPECTED_MODEL = {
-    ModelRole.extraction: "alpha-flash",
+    ModelRole.extraction: DEFAULT.model_id,
     ModelRole.classification: "alpha-flash",
     ModelRole.normalization: "alpha-flash",
     ModelRole.deduplication: "alpha-flash",
@@ -185,6 +197,89 @@ def test_the_shipped_routing_config_names_no_model() -> None:
     for candidates in routing.roles.values():
         for candidate in candidates:
             assert candidate.kind == "pattern"
+
+
+def test_the_extraction_chain_leads_with_the_deepseek_family() -> None:
+    """The extraction role asks for the deepseek family before the flash ones."""
+    routing = load_routing_config()
+
+    chain = routing.roles[ModelRole.extraction]
+
+    assert [candidate.value for candidate in chain] == [
+        "opencode-go/deepseek*",
+        "opencode-go/*-flash*",
+        "opencode-go/*",
+    ]
+
+
+def test_a_routing_config_without_a_role_is_refused() -> None:
+    """A role the operator deleted is a config error, not a silent downgrade."""
+    roles = {
+        role: [pattern(f"{DEFAULT.provider_id}/*")] for role in ModelRole
+    }
+    del roles[ModelRole.synthesis]
+
+    with pytest.raises(ValueError) as excinfo:
+        RoutingConfig(
+            version=1,
+            catalog=CatalogSettings(
+                refresh_interval_seconds=900, discovery_timeout_seconds=30
+            ),
+            roles=roles,
+        )
+
+    assert "synthesis" in str(excinfo.value)
+
+
+def test_a_malformed_routing_file_is_a_value_error(tmp_path) -> None:
+    """A routing file the parser cannot read is a bad config, not a crash."""
+    path = tmp_path / "model_routing.yaml"
+    path.write_text("roles: [unclosed\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as excinfo:
+        load_routing_config(path)
+
+    message = str(excinfo.value)
+    assert "model_routing.yaml" in message
+    assert "expected" in message
+
+
+def test_a_malformed_extraction_file_is_a_value_error(tmp_path) -> None:
+    """The extraction config loader refuses a broken file the same way."""
+    path = tmp_path / "extraction.yaml"
+    path.write_text("version: 1\nlimits: {max_documents: 0\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as excinfo:
+        load_config(path)
+
+    message = str(excinfo.value)
+    assert "extraction.yaml" in message
+    assert "expected" in message
+
+
+def test_a_role_generator_is_bound_to_the_selected_model(monkeypatch) -> None:
+    """The generator runs the model the router chose, not the pinned one."""
+    catalog = fixture_catalog("alpha-flash")
+    router = router_for(
+        {ModelRole.extraction: [pattern(f"{DEFAULT.provider_id}/*-flash")]},
+        catalog,
+    )
+    built: list[tuple[str, str]] = []
+
+    def factory(config):
+        built.append((config.provider_id, config.model_id))
+        return object()
+
+    monkeypatch.setattr("product_hunter.llm.build_generator", factory)
+
+    generator, selection = build_role_generator(
+        CONFIG, router, ModelRole.extraction
+    )
+
+    assert generator is not None
+    assert selection.identity.model_id == "alpha-flash"
+    assert built == [(DEFAULT.provider_id, "alpha-flash")]
+    assert (CONFIG.provider_id, CONFIG.model_id) != built[0]
 
 
 def test_an_unknown_role_is_refused() -> None:
@@ -601,6 +696,42 @@ def test_the_execution_row_carries_the_provenance() -> None:
         conn.close()
 
 
+def test_the_package_exports_the_execution_writer() -> None:
+    """The writer comes from the package, and it writes every call of a run."""
+    conn = connect(":memory:")
+    try:
+        migrate(conn)
+        executions = [
+            ModelExecution(
+                execution_id=f"exec-{number}",
+                run_id="run-2",
+                stage="extraction",
+                role=ModelRole.extraction,
+                provider_id=DEFAULT.provider_id,
+                model_id="alpha-flash",
+                selection_source=SelectionSource.pattern,
+                fallback_index=0,
+                is_fallback=False,
+                catalog_version="sha256:abc",
+                prompt_version="extract-v3",
+                config_version="routing-v1-abc",
+                latency_ms=number,
+                status="ok",
+                error=None,
+                created_at="2026-01-01T00:00:00+00:00",
+            )
+            for number in (1, 2)
+        ]
+
+        assert record_model_executions(conn, executions) == 2
+        rows = list_executions(conn, run_id="run-2")
+
+        assert [row.execution_id for row in rows] == ["exec-1", "exec-2"]
+        assert [row.model_id for row in rows] == ["alpha-flash", "alpha-flash"]
+    finally:
+        conn.close()
+
+
 def test_a_long_error_is_cut_in_the_audit_row() -> None:
     conn = connect(":memory:")
     try:
@@ -726,9 +857,44 @@ def test_the_models_command_prints_the_role_chain(capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
     assert payload["role"] == "extraction"
-    assert payload["selected"]["model_id"] == "alpha-flash"
+    # The extraction chain leads with the deepseek family, so the model the
+    # shipped file picks is the cheapest deepseek match, not the cheapest
+    # flash.
+    assert payload["selected"]["model_id"] == DEFAULT.model_id
     assert payload["selected"]["selection_source"] == "pattern"
-    assert payload["chain"][0]["model_id"] == "alpha-flash"
+    assert payload["chain"][0]["model_id"] == DEFAULT.model_id
+
+
+def test_the_models_command_prints_the_server_version_for_a_role(capsys) -> None:
+    """The role payload carries the server version the catalogue reported."""
+    catalog = parse_model_catalog(
+        json.dumps(
+            {
+                "data": [
+                    {
+                        "modelID": "alpha-flash",
+                        "providerID": DEFAULT.provider_id,
+                        "status": "active",
+                        "enabled": True,
+                    }
+                ]
+            }
+        ),
+        source="test",
+        server_version="2.1.2",
+    )
+
+    code = models_command(
+        role="extraction",
+        config=CONFIG,
+        routing_config=load_routing_config(),
+        discovery=FakeDiscovery(catalog),
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["server_version"] == "2.1.2"
+    assert payload["catalog_version"] == catalog.catalog_version
 
 
 def test_the_models_command_refuses_an_unknown_role(capsys) -> None:

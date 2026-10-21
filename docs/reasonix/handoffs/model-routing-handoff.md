@@ -1,7 +1,7 @@
 # Handoff — dynamic model routing
 
 **Date:** 2026-10-21
-**Branch:** `main`, base commit `205a4ba`
+**Branch:** `main`, base commit `351d962`
 **Spec:** `docs/reasonix/specs/model-routing.md`
 **Plan:** `docs/reasonix/plans/model-routing-implementation-plan.md`
 **Implementation doc:** `docs/reasonix/MODEL_ROUTING_IMPLEMENTATION.md`
@@ -30,15 +30,21 @@ per-call execution provenance.
 
 ## What does not exist yet
 
-- The generation path does not consult the router.
-  `OpenCodeGenerateProvider` still calls the model pinned in
-  `config/extraction.yaml`. A future phase wires `TextGenerator` to a
-  role-selected model; the router and the provenance records are already in
-  place for it.
-- No run writes `model_executions` rows yet. `ph models` is the only caller of
-  the router today.
 - No benchmarking. No SubQ integration. Both are named as non-goals in the
   spec.
+
+## What the generation path does now
+
+`ph extract` resolves the `extraction` role through the router, binds the
+selected model to the generator, and writes the run's
+`model_executions.jsonl` plus a `model_routing` block in the manifest. A
+router that cannot answer never stops a run: the model pinned in
+`config/extraction.yaml` runs it, and the manifest and a `routing_failed`
+rejection say why. `ph db import-run` writes the calls into
+`model_executions` and the selection into `model_role_bindings`.
+
+A generator a caller supplies to `extract_command` is used as it is, and the
+router is not consulted at all, so that run records no routing.
 
 ## How to use it
 
@@ -57,11 +63,16 @@ selection = router.select("extraction")
 # selection.identity, selection.selection_source, selection.catalog_version
 ```
 
-A model that fails at call time is excluded and the next candidate is taken:
+The router API can exclude a model that failed at call time, so a caller
+that wants to try the next candidate can:
 
 ```python
 selection = router.select("extraction", exclude=[failed_identity])
 ```
+
+That is the router API, not the extraction path: `ph extract` never calls
+`select(..., exclude=...)`. A routed model that fails at call time fails its
+chunk into a rejection, and the chunk is not retried with another model.
 
 ## The four properties, and where each one lives
 
@@ -79,10 +90,9 @@ selection = router.select("extraction", exclude=[failed_identity])
   stated in `docs/reasonix/MODEL_ROUTING_IMPLEMENTATION.md`.
 - `config/model_routing.yaml` names no model on purpose. Do not add one to a
   source file.
-- A role that is missing from the routing file falls back to the default model
-  rather than failing. The selection is still attributable
-  (`selection_source` is `default`), but a role that always resolves to the
-  default is worth a look.
+- A role that is missing from the routing file is a config error, not a
+  fallback: `RoutingConfig` refuses a file that does not bind all thirteen
+  roles.
 - The generation path and the discovery path share one argv runner. Never add
   `shell=True`, and never send a prompt through a `.cmd` shim.
 

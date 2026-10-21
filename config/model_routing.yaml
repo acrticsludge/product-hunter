@@ -3,7 +3,17 @@ catalog:
   refresh_interval_seconds: 900
   discovery_timeout_seconds: 30
 roles:
+  # The extraction chain leads with the deepseek family, and the router takes
+  # the cheapest model that matches it: today the one Phase 1 measured its
+  # evidence quality on. The chain names a family and not a model, and the
+  # prices come from the live catalogue, so a price change can move the
+  # extraction onto another member of the family whose output was never
+  # hand-checked. A new model of the family is picked up with no edit, and if
+  # the family disappears the chain falls through to any flash model and then
+  # to any free model. An operator who wants the cheap flash model for
+  # extraction moves the flash pattern to the front; that is a one-line change.
   extraction:
+    - pattern: "opencode-go/deepseek*"
     - pattern: "opencode-go/*-flash*"
     - pattern: "opencode-go/*"
   classification:

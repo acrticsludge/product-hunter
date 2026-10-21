@@ -39,6 +39,7 @@ from product_hunter.db.model_routing import (
     list_inventory,
     record_catalog,
     record_execution,
+    record_model_executions,
     record_selection,
 )
 from product_hunter.db.outbox import (
@@ -67,6 +68,7 @@ __all__ = [
     "Checkpoint",
     "CheckpointConflict",
     "CheckpointError",
+    "ConflictedSchedule",
     "ExecutionRow",
     "ImportSummary",
     "InventoryRow",
@@ -107,6 +109,7 @@ __all__ = [
     "process_outbox",
     "record_catalog",
     "record_execution",
+    "record_model_executions",
     "record_selection",
     "recover_expired_leases",
     "recover_projection_leases",

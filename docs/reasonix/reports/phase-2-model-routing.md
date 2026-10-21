@@ -134,13 +134,49 @@ lives: a new migration with typed tables, or JSON payloads in the existing
 One call, 295 input tokens, 0 errors, model `subq-snap-preview`. No key was
 printed, and nothing about SubQ reached the repository.
 
-**What this change does not do.** The generation path still calls the model
-pinned in `config/extraction.yaml`; the router is not wired into extraction
-yet. No run writes `model_executions` rows yet — `ph models` is the only caller
-of the router. SubQ is not integrated and no benchmarking is implemented; both
-were named non-goals. The catalogue is polled, because OpenCode publishes no
-model-change event, so a model that disappears stays selectable until the next
-refresh; the implementation document states this in full.
+**What this change does not do.** SubQ is not integrated and no benchmarking is
+implemented; both were named non-goals. The catalogue is polled, because
+OpenCode publishes no model-change event, so a model that disappears stays
+selectable until the next refresh; the implementation document states this in
+full.
+
+---
+
+## Follow-up — the router drives the extraction path
+
+A second commit, `phase2: route extraction through the model router`, closes
+the gap this report named.
+
+- `extract_command` resolves the `extraction` role through the router and
+  builds a generator bound to the model it selected. A router that cannot
+  answer — a missing or broken routing file, a failed discovery, no available
+  candidate — never stops the run: the model pinned in
+  `config/extraction.yaml` runs it, and the manifest and a rejection record
+  say why.
+- The run gains a `model_routing` manifest block and a
+  `model_executions.jsonl` artifact, one row per model call, carrying
+  provider, model id, role, selection source, fallback index, catalogue
+  version, prompt and config version, latency, and outcome. `ph db import-run`
+  writes those rows and the role binding into SQLite.
+- The shipped `extraction` chain leads with `opencode-go/deepseek*`, so
+  extraction keeps running on the model whose output Phase 1 measured. It is a
+  pattern, not a model id: a new model on that family is picked up with no
+  edit, and the chain falls through to any flash model and then any free model
+  if the family disappears. The chain takes the *cheapest* match, so a price
+  change could move it; the config comment and the implementation document
+  say so.
+- `config/model_routing.yaml` must now bind all thirteen roles, a malformed
+  YAML file is a `ValueError` rather than an uncaught parser error, and
+  re-importing a run is idempotent.
+
+The adversarial review of this increment found one Must fix — a call that
+failed at the provider was recorded under the pinned model rather than the
+routed one — and three Should fix. All four are fixed, and the failure path is
+now covered by a test that fails without the fix.
+
+**Still not done.** The chain falls through at *selection* time. A model that
+passes selection and then fails at call time fails its chunk into a rejection,
+and that chunk is not retried with another model.
 
 **Not checked.** The live OpenCode CLI path was exercised by hand at the start of
 the run (624 models, server version 2.1.2), but the discovery fallback was

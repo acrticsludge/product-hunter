@@ -1,17 +1,17 @@
 # Model routing implementation
 
-The routing implementation exists. `IMPLEMENTED`
+The routing implementation exists, and the generation path is wired to it.
+`IMPLEMENTED`
 (`src/product_hunter/llm/catalog.py`, `src/product_hunter/llm/discovery.py`,
 `src/product_hunter/llm/routing.py`, `src/product_hunter/db/model_routing.py`,
-`config/model_routing.yaml`). What does not exist yet is a generation path
-wired to the router: `OpenCodeGenerateProvider` in
-`src/product_hunter/llm/opencode.py` still calls the model pinned in
-`config/extraction.yaml`.
+`config/model_routing.yaml`). `ph extract` resolves the `extraction` role
+through the router and binds the selected model to the generator, so the
+model that ran a call is the model the role resolved to.
 
 **Baseline.** This document describes the working tree at RUN_ID
-`arch-docs-20261021-4f9c2b71`, not the last commit. HEAD is `205a4ba`, and the
-routing modules are in the tree and were still uncommitted when this was
-written. They are `IMPLEMENTED` like any other code.
+`arch-docs-20261021-4f9c2b71`, not a commit. The routing modules are in the
+tree and were still uncommitted when this was written. They are `IMPLEMENTED`
+like any other code.
 [ARCHITECTURE.md](ARCHITECTURE.md) explains the shape of the system.
 [RESEARCH_CONTRACT.md](RESEARCH_CONTRACT.md) explains what the code enforces. The
 full specification is
@@ -97,9 +97,13 @@ enum of thirteen roles: `extraction`, `classification`, `normalization`,
 `investigation`, `competitor_research`, `counter_evidence`, `scoring`,
 `reporting`, and `synthesis`. `RouteCandidate` is either an explicit
 `provider/model` or a glob pattern over the live catalogue. `ModelRouter`
-expands the chain, takes the first available candidate, falls through the chain
-when one fails, and raises `NoModelAvailable` when nothing is available.
-`UnknownRole` is raised for a role that is not in the enum.
+expands the chain, takes the first candidate the catalogue reports as
+available, and raises `NoModelAvailable` when nothing is available. The chain
+falls through at selection time: a candidate the catalogue reports as
+unavailable is skipped and the next one is taken, while a model that passes
+selection and then fails at call time fails its chunk into a rejection, and
+that chunk is not retried with another model. `UnknownRole` is raised for a
+role that is not in the enum.
 
 `ModelSelection` carries `role`, `identity`, `selection_source`,
 `fallback_index`, `is_fallback`, `catalog_version`, and `resolved_at`.
@@ -122,10 +126,12 @@ no model id appears in it. The cheap roles get `opencode-go/*-flash*` then
 that was not retired as `missing` with a `retired_at`, and upserts each entry
 back to life. A model that leaves the catalogue keeps its row; retired rows are
 never deleted. `record_selection()` upserts `model_role_bindings` on
-`(role, position)`. `record_execution()` inserts one `model_executions` row per
-call, with `provider_id`, `model_id`, `role`, `selection_source`,
-`fallback_index`, `is_fallback`, `catalog_version`, `prompt_version`,
-`config_version`, `latency_ms`, `status`, and `error`. `list_inventory()` and
+`(role, position)`. `record_execution()` upserts one `model_executions` row
+per call, on the execution id, so importing the same run twice leaves one row
+per call and repairs a row the first import left behind. The row carries
+`provider_id`, `model_id`, `role`, `selection_source`, `fallback_index`,
+`is_fallback`, `catalog_version`, `prompt_version`, `config_version`,
+`latency_ms`, `status`, and `error`. `list_inventory()` and
 `list_executions()` read them back.
 
 ## The command surface
@@ -149,15 +155,33 @@ selectable until the next refresh, and a model that appears is picked up at
 the next refresh. Neither needs a source edit, and neither is instant. That
 delay is the price of the only mechanism the current OpenCode surface offers.
 
-The generation path does not use the router. `OpenCodeGenerateProvider` still
-calls the model pinned in `config/extraction.yaml`, so an extraction run today
-does not consult a role chain. The router exists and `ph models` uses it, and
-that is the whole difference between a router that exists and a router that
-routes the pipeline.
+The generation path uses the router. `ph extract` resolves the `extraction`
+role through `ModelRouter`, binds the selected model to the generator, and
+writes the run's `model_executions.jsonl`, one row per model call, and a
+`model_routing` block in the manifest, whose top-level provider and model name
+the model that ran. The call records name the model that was called, on a
+failed call as well as a successful one: the extraction reads the same bound
+config the generator was built from, so a call that fails at call time is
+attributed to the model that failed. A router that cannot answer never stops
+a run: the model pinned in `config/extraction.yaml` runs it, and the manifest
+and a `routing_failed` rejection say why. A generator a caller supplies is
+used as it is, and the router is not consulted at all, so that run records no
+routing.
 
-A catalogue is a snapshot, not a guarantee. A model that is `available` in the
-catalogue can still fail at call time, and the catalogue is refreshed on an
-interval, on a miss, and on demand. The selected model can change between two
-runs, because the role configuration names patterns and not model ids, so a new
-matching model is picked up with no edit. That is the point of the design and it
-is also why the choice is not stable.
+The fallback happens at selection time. A model the catalogue reports as
+unavailable is skipped and the next candidate of the chain is taken. A model
+that passes selection and then fails at call time fails its chunk into a
+rejection, and that chunk is not retried with another model.
+
+The extraction chain in `config/model_routing.yaml` leads with the deepseek
+family, and the router takes the cheapest model that matches the family. That
+is the model Phase 1 measured its evidence quality on today, but the chain
+names a family and not a model, and the prices come from the live catalogue:
+a price change can move the extraction onto another member of the family,
+whose output was never hand-checked. Moving the flash pattern to the front is
+a one-line change for an operator who wants the cheap model instead.
+
+A catalogue is a snapshot, not a guarantee, and the selected model can change
+between two runs, because the role configuration names patterns and not model
+ids, so a new matching model is picked up with no edit. That is the point of
+the design and it is also why the choice is not stable.
