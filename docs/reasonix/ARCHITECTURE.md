@@ -69,14 +69,15 @@ migration-history table and no checksum, so drift is not detected. Files in
 `db/migrations/` must be named `NNNN_name.sql`, must start at 1, and must be
 contiguous; a gap or a duplicate number raises `MigrationError`. Each migration
 runs inside `BEGIN IMMEDIATE` and `COMMIT`, then sets `PRAGMA user_version`.
-`migrate()` is idempotent and returns 2 on a current database. The runner splits
+`migrate()` is idempotent and returns 3 on a current database. The runner splits
 SQL on `;`, so a semicolon inside a string literal is not supported.
 
-## The twenty-three tables
+## The twenty-six tables
 
 `IMPLEMENTED` (`db/migrations/0001_initial.sql`,
-`db/migrations/0002_model_routing.sql`). The schema holds twenty-three tables:
-nineteen from the base migration and four from the model routing migration.
+`db/migrations/0002_model_routing.sql`, `db/migrations/0003_collection.sql`).
+The schema holds twenty-six tables: nineteen from the base migration, four
+from the model routing migration, and three from the collection migration.
 
 | Group | Tables |
 |---|---|
@@ -85,6 +86,7 @@ nineteen from the base migration and four from the model routing migration.
 | Research registry | `research_runs`, `research_artifacts`, `research_events`, `research_checkpoints` |
 | Execution | `jobs`, `stage_attempts`, `projection_tasks` |
 | Model routing | `model_catalogs`, `model_inventory`, `model_role_bindings`, `model_executions` |
+| Collection state | `collection_source_state`, `collection_run_state`, `collection_items` |
 | Reserved, no writer | `propagation_edges`, `spend_ledger`, `human_decisions` |
 
 Three tables have no writer anywhere in `src/`: `propagation_edges`,
@@ -105,6 +107,69 @@ under `data/processed/<run_id>/`.
 `data/` is gitignored and `.loop/adapter.json` forbids committing it. Spec §33
 calls the runtime files durable, content-addressed mirrors: useful for recovery,
 debugging, and inspection, but not the authority. SQLite is.
+
+## The collection layer
+
+`IMPLEMENTED` (`src/product_hunter/collection/`, `db/migrations/0003_collection.sql`).
+The layer turns a list of targets into raw captures with provenance. It sits
+between discovery and document extraction and holds no research reasoning: no
+scoring, no clustering, no judging of whether a page is worth reading.
+
+`product_hunter.fetch.Fetcher` is the only path to the network. The terms gate,
+the allowed-use gate, the domain allowlist, the scheme and port rules, the
+userinfo rule, private-address resolution, the redirect limit, the HTTPS to
+HTTP downgrade, robots.txt, the retry ladder, `Retry-After`, the ETag and
+Last-Modified validators, the byte ceiling, the raw store, content hashing and
+the rejection log all live there. The collection layer holds an `httpx.Client`
+only to hand it to the `Fetcher`, and it never calls it, so a collector cannot
+reach the network around a policy check.
+
+Four parts:
+
+- `collection/ladder.py` maps a source's `collector` value onto a rung. The
+  `api`, `rss` and `http` rungs share one implementation, because a feed is an
+  HTTP GET and parsing a feed is a document concern. The `crawler`, `browser`
+  and `managed` rungs are not registered, so `collector_for` raises
+  `CollectorUnavailable` naming the missing dependency. There is no silent
+  fallback to a cheaper rung.
+- `collection/state.py` reads and writes the three collection tables and
+  derives the source health report from them. No health table is kept, so the
+  report cannot drift from the records it summarises.
+- `collection/orchestrator.py` plans a batch, enforces the budgets, runs the
+  shared path, writes the attempt records and the checkpoints, and builds the
+  `COLLECT` stage handler.
+- `collection/__init__.py` is the public surface.
+
+`collection_source_state` holds one row per `(source_id, url)`: the cursor, the
+ETag, the Last-Modified validator, the last status, the last fetch and the hash
+of the last stored body. The validators outlive a run on purpose, so a later
+run sends them back and the server answers `304` instead of sending the same
+body twice.
+
+`collection_run_state` holds one row per `(run_id, source_id)`: the HTTP
+requests spent, the fetches spent, and when the source was last asked. It is
+the durable budget ledger, so a run that crashes and restarts picks its
+counters up where it left them.
+
+`collection_items` holds one row per attempt, keyed
+`(run_id, source_id, url, attempt_no)`. Every attempt leaves a row with its
+outcome, its reason code, its detail, the source's terms status, allowed uses
+and review basis, and the capture's hash, path, status, size, latency and
+retry count. The target is the idempotency key and the latest attempt decides
+whether it is collected again.
+
+The caps are the source's own per-run request cap and minimum gap, and the
+research contract's per-run, per-stage and per-source fetch caps. The contract
+caps are enforced with `research.budget.BudgetTracker` against the shipped
+contract, and the tracker is rebuilt at start-up by replaying the run's stored
+counters.
+
+Two things are not done. The `COLLECT` handler is not registered in the runtime
+worker's handler map, so nothing runs it yet. And the shipped
+`source_collection` schedule enqueues a cycle trigger whose payload carries no
+target, which this handler refuses; the targets of a cycle come from
+discovery, and the collection layer does not choose them. Both are recorded in
+[reports/wave-2-collection.md](reports/wave-2-collection.md).
 
 ## The execution machinery
 
@@ -363,8 +428,10 @@ commit it. The package exists on disk but is not in the committed tree.
 `research/persistence.py` names a planned migration
 `db/migrations/0003_research_gate.sql`. The name was `0002` until
 `0002_model_routing.sql` took that number, and the docstring and the wave spec
-now say `0003`. The file does not exist and `0003` is not taken. The wave that
-persists tool calls has to use `0003` or a later free number.
+now say `0003`. `0003` is now taken by `0003_collection.sql`, the collection
+migration, and the file `0003_research_gate.sql` does not exist. The wave that
+persists tool calls has to use `0004` or a later free number, and the number
+inside `research/persistence.py` has to change with it.
 
 ## What is not implemented
 
