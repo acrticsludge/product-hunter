@@ -5,7 +5,8 @@ the fourth stage-8 pass of phase 4, on 2026-10-21, HEAD was `80a98a4`. The
 model router, the research contract and gate engine, the scheduler, the worker
 runtime, and the evaluation benchmark package are in the tree and were still
 uncommitted when this was written. They are `IMPLEMENTED` like any other code.
-The full specification is
+The problem clustering engine joined the tree on 2026-10-21, on the branch
+`wave2/clustering`, and is described below. The full specification is
 [Product-Hunter-Full-Spec.md](specs/Product-Hunter-Full-Spec.md).
 
 ## Claim labels
@@ -72,11 +73,13 @@ runs inside `BEGIN IMMEDIATE` and `COMMIT`, then sets `PRAGMA user_version`.
 `migrate()` is idempotent and returns 2 on a current database. The runner splits
 SQL on `;`, so a semicolon inside a string literal is not supported.
 
-## The twenty-three tables
+## The twenty-nine tables
 
 `IMPLEMENTED` (`db/migrations/0001_initial.sql`,
-`db/migrations/0002_model_routing.sql`). The schema holds twenty-three tables:
-nineteen from the base migration and four from the model routing migration.
+`db/migrations/0002_model_routing.sql`,
+`db/migrations/0003_clustering.sql`). The schema holds twenty-nine tables:
+nineteen from the base migration, four from the model routing migration, and six
+from the clustering migration.
 
 | Group | Tables |
 |---|---|
@@ -85,13 +88,16 @@ nineteen from the base migration and four from the model routing migration.
 | Research registry | `research_runs`, `research_artifacts`, `research_events`, `research_checkpoints` |
 | Execution | `jobs`, `stage_attempts`, `projection_tasks` |
 | Model routing | `model_catalogs`, `model_inventory`, `model_role_bindings`, `model_executions` |
+| Clustering | `clustering_runs`, `clusters`, `cluster_versions`, `cluster_members`, `cluster_lineage`, `cluster_decisions` |
 | Reserved, no writer | `propagation_edges`, `spend_ledger`, `human_decisions` |
 
 Three tables have no writer anywhere in `src/`: `propagation_edges`,
 `spend_ledger`, and `human_decisions`. They exist so a later phase can use them,
 and today they stay empty. The independent-author and propagation analysis from
 spec §12, the budget writes from spec §22, and the approval records from spec
-§37 are the work that would fill them.
+§37 are the work that would fill them. The independence wave reads the repost
+decisions the clustering wave records and writes the `propagation_edges` rows;
+the clustering wave does not write that table.
 
 ## Runtime artifacts
 
@@ -290,6 +296,31 @@ dataset, `bench compare` compares two results and detects regressions,
 much of a dataset a human has labelled. `ph eval` still scores the Phase 1
 review sheet, which is a different thing.
 
+**The problem clustering engine.** `IMPLEMENTED`
+(`src/product_hunter/clustering/`, `src/product_hunter/db/clustering.py`,
+`config/clustering.yaml`, `db/migrations/0003_clustering.sql`). The engine
+decides which pain points describe the same underlying problem. It is a pure
+function of its inputs: it reads no clock and no database, and the store owns
+every write. Membership is decided on meaning. A shared word never merges two
+pain points and a different wording never splits one, and a pair that lands
+between the two thresholds goes to a model adjudicator. The wave produces no
+count of mentions, authors, communities or people: independence is the
+independence wave's job.
+
+The store owns the durable cluster identity. The engine proposes a provisional
+id and the store matches each proposal to the stored cluster it overlaps most,
+so a cluster keeps its id when its anchor changes. A merge and a split each
+create a new id, and the predecessors keep their rows, their versions and a
+lineage edge that points at the successor, so a score attached to a cluster
+stays attached to what that cluster meant. The migration carries eight foreign
+keys, two status checks and a partial unique index that keeps a pain point in
+one cluster at a time.
+
+What does not call it: nothing. The package is a library, like the research
+package, and it has no caller, no CLI command and no worker handler. The real
+embedding path has never run, because `sentence-transformers` is not a
+dependency of this repository and is imported lazily.
+
 ## Evidence provenance
 
 `IMPLEMENTED` (the chain through `src/product_hunter/raw_store.py`,
@@ -351,20 +382,29 @@ rather than an approval gate.
 
 ## Hazards
 
-One is live and one is closed. Both are worth recording because an operator
-will hit them.
+One is live and two are closed. All three are worth recording because an
+operator will hit them.
 
-**`.gitignore` hides the worker runtime package.** `.gitignore` contains
-`runtime/`, which also matches `src/product_hunter/runtime/`. The worker
-runtime package is invisible to `git status`, and a plain `git add` would not
-commit it. The package exists on disk but is not in the committed tree.
+**The migration number `0003` is taken twice, in two branches.** The
+clustering wave on `wave2/clustering` has `db/migrations/0003_clustering.sql`.
+The tool-call wave holds an uncommitted `db/migrations/0003_research_gate.sql`
+in its own worktree. Migrations have to be contiguous, so both branches are
+correct on their own and the two files cannot be merged as they are. One of
+them has to be renumbered, and `tests/test_db_migrations.py` is edited by both
+waves, so the schema version assertion has to be re-applied after the rename.
+The file name is the only thing that changes: no statement inside either file
+depends on the number.
 
-**The research-gate migration number was taken, and is now reserved.**
-`research/persistence.py` names a planned migration
-`db/migrations/0003_research_gate.sql`. The name was `0002` until
-`0002_model_routing.sql` took that number, and the docstring and the wave spec
-now say `0003`. The file does not exist and `0003` is not taken. The wave that
-persists tool calls has to use `0003` or a later free number.
+**The `.gitignore` hazard was closed.** This document used to say that
+`.gitignore` hides `src/product_hunter/runtime/`. It does not: the pattern is
+`/runtime/`, anchored at the root, and the six files of the package are
+tracked. A plain `git add` commits them.
+
+**The research-gate migration name is settled.** `research/persistence.py` names
+a planned migration `db/migrations/0003_research_gate.sql`. The name was
+`0002` until `0002_model_routing.sql` took that number. The clustering wave
+took `0003` before that file was written, so the tool-call wave has to use
+`0004` or a later free number.
 
 ## What is not implemented
 
@@ -379,6 +419,7 @@ named there and have no code in this branch.
 | `spend_ledger` writes and global spend caps | §22 | `PLANNED`; the table exists and stays empty |
 | Opportunity states and scoring | §20, §23 | `PLANNED`, full spec only, no wave spec |
 | Qdrant, DuckDB, and Obsidian projections | §14, §16, §27 | `PLANNED`, full spec only, no wave spec |
+| The clustering engine's caller: the research stage that runs the engine and applies the result | §14 | `PLANNED`; the engine and the store are `IMPLEMENTED` and nothing calls them |
 | Independent-author and propagation analysis | §12 | `PLANNED`; the `propagation_edges` table exists and stays empty |
 | Backup, restore, retention, drift canaries | §38B | `PLANNED`, full spec only, no wave spec |
 | Human approval gates | §37 | `BLOCKED` on an external-account, posting, or Git write path that does not exist |
