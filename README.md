@@ -94,6 +94,30 @@ a pain point the model never proposed is not a miss. The sheet also carries
 `human_normalized_key`, so the report shows a normalization rate and a key
 agreement rate. No quality number is claimed without those labels.
 
+## Worker runtime
+
+`src/product_hunter/runtime/` is the supervised worker that consumes the SQLite
+job queue. It claims a job, holds a fenced lease while the handler runs,
+renews that lease on a background thread, records the outcome, retries a
+failure until the attempt ceiling, recovers leases that expired, and stops on a
+signal without abandoning the job it is running.
+
+SQLite is the only queue and the only authority. Every write carries the
+worker id and the lease epoch, so a worker that lost its lease cannot mark a
+job done, and that job is recovered as work instead. The worker writes one
+JSON object per line to stderr, so a run can be reconstructed from the event
+stream together with the `stage_attempts` rows.
+
+`python -m product_hunter.runtime` starts one worker. It takes the single
+instance lock first, so a second scheduler invocation cannot start an
+overlapping worker. `PH_WORKER_HANDLERS` names the handler factory as
+`module:attribute`, `PH_WORKER_LOCK` names the lock file, and `PH_DB_PATH`
+names the database. Without a handler factory the worker starts idle and
+claims nothing.
+
+No handler for the real stages is registered yet, so a worker started today
+recovers expired leases and reports that it has no handlers.
+
 ## Project skills
 
 Five skills under `.opencode/skills/`: `source-discovery`, `pain-point-extraction`,

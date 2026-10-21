@@ -4,7 +4,7 @@ __pycache__/
 .pytest_cache/
 .env
 data/
-runtime/
+/runtime/
 logs/
 *.db
 *.sqlite
