@@ -29,6 +29,15 @@ small scale. Clustering, scoring, and market validity wait for later phases.
   offers as JSON. `--refresh` re-discovers it first, and `--role` prints the
   resolved chain for one pipeline role instead of the whole catalogue.
 
+- `ph bench run --cases PATH --spec PATH --out PATH [--thresholds PATH]` scores
+  one model's answers against a labelled dataset.
+- `ph bench compare --baseline PATH --candidate PATH --out PATH` compares two
+  results and reports the regressions.
+- `ph bench report --run PATH --out PATH [--compare PATH]` writes the
+  benchmark report of one run.
+- `ph bench labels --cases PATH` prints how much of a dataset a human has
+  labelled.
+
 ## Fetch safety
 
 `config/sources.yaml` carries the terms status, allowed uses, domains, and rate
@@ -156,6 +165,32 @@ owns the execution. A run with no live worker lease says `worker: not running`,
 so the surface never implies that work is in flight when the database does not
 say so.
 
+
+## Benchmark
+
+The manual harness scores one sheet against one model. The benchmark scores a
+versioned set of cases, so two models, two providers, or two prompt versions
+can be compared over the same ground and the difference reported. The
+infrastructure is `src/product_hunter/eval/`, the data is under `eval/`, and
+the formats are in `eval/README.md`.
+
+A case pairs an input with a human label. **A quality number exists only where
+a human label exists.** A case with no label still runs, but the metrics that
+would need one stay `null`, the task is reported as blocked, and the run does
+not pass or fail on it. `quote_fidelity` is the one family that needs no
+label, because it is checked against the source text.
+
+The seed dataset `eval/datasets/ds-v1.json` holds real inputs taken from the
+pages this repository has captured, and `null` in every `expected` block. The
+labels are a human job, and no code writes one. `ph bench labels` prints the
+count per task, and the A1 gate stays closed until somebody fills them in: the
+benchmark can measure quote fidelity today and nothing else.
+
+A result holds no timestamp and no random value, so the same dataset and the
+same answers produce byte-identical JSON and a result file can be committed
+and diffed. `eval/thresholds.yaml` holds the starting thresholds. They are
+starting values, not measured facts, and the report says the numbers behind
+most of them are blocked.
 
 ## Scheduler
 

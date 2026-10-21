@@ -39,6 +39,22 @@ from product_hunter.documents import (
     DocumentError,
     load_fetch_documents,
 )
+from product_hunter.eval import (
+    EvalError,
+    Thresholds,
+    compare_runs,
+    label_status,
+    load_comparison,
+    load_dataset,
+    load_run,
+    load_run_spec,
+    load_thresholds,
+    render_label_status,
+    run_dataset,
+    write_benchmark_report,
+    write_comparison,
+    write_run,
+)
 from product_hunter.evaluation import (
     evaluate,
     read_review_sheet,
@@ -86,6 +102,8 @@ from product_hunter.sources import AllowedUse, SourceBlocked, load_registry
 FETCH_LOG = Path("data") / "raw" / "fetches.jsonl"
 REJECTION_LOG = Path("data") / "raw" / "rejections.jsonl"
 PROCESSED_DIR = Path("data") / "processed"
+# The threshold file the benchmark falls back to when none is named.
+BENCH_THRESHOLDS = Path("eval") / "thresholds.yaml"
 
 # A run id is a plain name. Path separators and a parent link are refused so
 # a run id can never name a directory outside the processed tree.
@@ -166,6 +184,35 @@ def build_parser() -> argparse.ArgumentParser:
     models_parser.add_argument(
         "--role", default=None, help="print the resolved chain of one role"
     )
+    bench_parser = commands.add_parser(
+        "bench", help="score and compare benchmark runs"
+    )
+    bench_commands = bench_parser.add_subparsers(dest="bench_command", required=True)
+    bench_run = bench_commands.add_parser(
+        "run", help="score one model's outputs against a dataset"
+    )
+    bench_run.add_argument("--cases", dest="cases", required=True)
+    bench_run.add_argument("--spec", dest="spec", required=True)
+    bench_run.add_argument("--out", dest="out", required=True)
+    bench_run.add_argument("--thresholds", dest="thresholds", default=None)
+    bench_compare = bench_commands.add_parser(
+        "compare", help="compare two run results and detect regressions"
+    )
+    bench_compare.add_argument("--baseline", dest="baseline", required=True)
+    bench_compare.add_argument("--candidate", dest="candidate", required=True)
+    bench_compare.add_argument("--out", dest="out", required=True)
+    bench_compare.add_argument("--thresholds", dest="thresholds", default=None)
+    bench_report = bench_commands.add_parser(
+        "report", help="write the benchmark report of one run"
+    )
+    bench_report.add_argument("--run", dest="run_id", required=True)
+    bench_report.add_argument("--out", dest="out", required=True)
+    bench_report.add_argument("--compare", dest="compare", default=None)
+    bench_labels = bench_commands.add_parser(
+        "labels", help="print the label status of a dataset"
+    )
+    bench_labels.add_argument("--cases", dest="cases", required=True)
+    bench_labels.add_argument("--out", dest="out", default=None)
     return parser
 
 
@@ -654,18 +701,209 @@ def report_command(
     return 0
 
 
+def bench_run_command(
+    cases: Path,
+    spec: Path,
+    out: Path,
+    thresholds: Path | None = None,
+    *,
+    repo_root: Path | None = None,
+) -> int:
+    """Score one model's outputs against a dataset.
+
+    Returns 1 when a threshold failed, or when a file could not be read. It
+    returns 0 when the thresholds passed and when nothing could be measured,
+    because a run with no evaluable threshold has not failed.
+    """
+    root = _root(repo_root)
+    threshold_path = (
+        _resolve_path(thresholds, root)
+        if thresholds is not None
+        else root / BENCH_THRESHOLDS
+    )
+    try:
+        dataset = load_dataset(_resolve_path(cases, root))
+        run_spec = load_run_spec(_resolve_path(spec, root))
+        # A missing threshold file is not a failure: the run is scored and the
+        # result says that no threshold was checked.
+        # exists(), not is_file(): a path that is present but not a readable
+        # file must be loud, not silently read as "no threshold file".
+        measured = threshold_path.exists()
+        limits = load_thresholds(threshold_path) if measured else Thresholds()
+    except (OSError, ValueError, EvalError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 1
+    try:
+        run = run_dataset(dataset, run_spec, limits)
+    except (OSError, ValueError, EvalError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 1
+    if not measured:
+        run.warnings.append(
+            f"no threshold file at {threshold_path}; no threshold was checked"
+        )
+    try:
+        write_run(_resolve_path(out, root), run)
+    except OSError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 1
+    payload = run.model_dump()
+    payload["ok"] = run.passed is not False
+    payload["reason"] = _run_reason(run)
+    print(json.dumps(payload))
+    return 1 if run.passed is False else 0
 
 
+def bench_compare_command(
+    baseline: Path,
+    candidate: Path,
+    out: Path,
+    thresholds: Path | None = None,
+    *,
+    repo_root: Path | None = None,
+) -> int:
+    """Compare two run results and report a regression.
+
+    Returns 1 when the verdict is a regression, and 0 otherwise.
+    """
+    root = _root(repo_root)
+    threshold_path = (
+        _resolve_path(thresholds, root)
+        if thresholds is not None
+        else root / BENCH_THRESHOLDS
+    )
+    try:
+        before = load_run(_resolve_path(baseline, root))
+        after = load_run(_resolve_path(candidate, root))
+        # exists(), not is_file(): a path that is present but not a readable
+        # file must be loud, not silently read as "no threshold file".
+        measured = threshold_path.exists()
+        limits = load_thresholds(threshold_path) if measured else Thresholds()
+        comparison = compare_runs(before, after, limits)
+    except (OSError, ValueError, EvalError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 1
+    try:
+        write_comparison(_resolve_path(out, root), comparison)
+    except OSError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 1
+    payload = comparison.model_dump()
+    payload["ok"] = comparison.verdict != "regression"
+    print(json.dumps(payload))
+    return 1 if comparison.verdict == "regression" else 0
 
 
+def bench_report_command(
+    run_id: Path,
+    out: Path,
+    compare: Path | None = None,
+    *,
+    repo_root: Path | None = None,
+) -> int:
+    """Write the benchmark report of one run. Returns 0, or 1 on a bad file."""
+    root = _root(repo_root)
+    try:
+        run = load_run(_resolve_path(run_id, root))
+        comparison = (
+            load_comparison(_resolve_path(compare, root))
+            if compare is not None
+            else None
+        )
+    except (OSError, ValueError, EvalError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 1
+    target = _resolve_path(out, root)
+    try:
+        write_benchmark_report(run, target, comparison)
+    except OSError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 1
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "run_id": run.run_id,
+                "out": str(target),
+                "verdict": _verdict(run.passed),
+                "comparison": comparison.model_dump() if comparison else None,
+            }
+        )
+    )
+    return 0
 
 
+def bench_labels_command(
+    cases: Path,
+    out: Path | None = None,
+    *,
+    repo_root: Path | None = None,
+) -> int:
+    """Print the label status of a dataset. Returns 0, or 1 on a bad file."""
+    root = _root(repo_root)
+    try:
+        dataset = load_dataset(_resolve_path(cases, root))
+    except (OSError, ValueError, EvalError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 1
+    status = label_status(dataset)
+    if out is not None:
+        try:
+            target = _resolve_path(out, root)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
+                render_label_status(status), encoding="utf-8", newline="\n"
+            )
+        except OSError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+            return 1
+    print(json.dumps(status.model_dump()))
+    return 0
 
 
+def _run_reason(run) -> str:
+    """Why a run passed, failed, or measured nothing."""
+    if run.passed is True:
+        return "the thresholds passed"
+    if run.passed is False:
+        failed = ", ".join(run.thresholds.failed)
+        return f"the thresholds failed: {failed}" if failed else "the thresholds failed"
+    return "no threshold could be evaluated"
 
 
+def _verdict(passed: bool | None) -> str:
+    """The verdict of a run: pass, fail, or not measured."""
+    if passed is None:
+        return "not measured"
+    return "pass" if passed else "fail"
 
 
+def _run_bench_command(args: argparse.Namespace) -> int:
+    if args.bench_command == "run":
+        return bench_run_command(
+            Path(args.cases),
+            Path(args.spec),
+            Path(args.out),
+            Path(args.thresholds) if args.thresholds else None,
+        )
+    if args.bench_command == "compare":
+        return bench_compare_command(
+            Path(args.baseline),
+            Path(args.candidate),
+            Path(args.out),
+            Path(args.thresholds) if args.thresholds else None,
+        )
+    if args.bench_command == "report":
+        return bench_report_command(
+            Path(args.run_id),
+            Path(args.out),
+            Path(args.compare) if args.compare else None,
+        )
+    if args.bench_command == "labels":
+        return bench_labels_command(
+            Path(args.cases), Path(args.out) if args.out else None
+        )
+    return 1
 
 
 DB_STATUS_TABLES = (
@@ -1363,6 +1601,8 @@ def main(argv: list[str] | None = None) -> int:
         return report_command(args.run_id, Path(args.out) if args.out else None)
     if args.command == "models":
         return models_command(refresh=args.refresh, role=args.role)
+    if args.command == "bench":
+        return _run_bench_command(args)
     if args.command == "db":
         return _run_db_command(args)
     if args.command == "research":

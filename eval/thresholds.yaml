@@ -1,0 +1,35 @@
+# The starting thresholds of the benchmark.
+#
+# Every value is a floor: a metric passes when it is at or above the number.
+# That only says something for a metric that is better when it is higher, so
+# the false-accept and false-reject rates are not listed here. They are
+# lower-is-better, and this file carries no ceiling.
+#
+# These are starting values, not measured facts. Nobody has labelled the
+# dataset yet, so every threshold behind quote fidelity is blocked, and the
+# benchmark report says so instead of showing a number.
+version: 1
+tolerance: 0.0
+defaults:
+  min_verbatim_rate: 0.99
+tasks:
+  pain_extraction:
+    min_precision: 0.80
+    min_recall: 0.60
+  false_positive_rejection:
+    min_accuracy: 0.80
+  severity:
+    min_within_one_rate: 0.80
+  normalization:
+    min_key_agreement: 0.70
+  duplicate_detection:
+    min_f1: 0.80
+  author_independence:
+    min_f1: 0.80
+  clustering:
+    min_f1: 0.70
+  competitor_identification:
+    min_precision: 0.70
+    min_recall: 0.60
+  counter_evidence_classification:
+    min_accuracy: 0.70
