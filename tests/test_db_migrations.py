@@ -37,6 +37,11 @@ EXPECTED_TABLES = {
     "model_inventory",
     "model_role_bindings",
     "model_executions",
+    "tool_calls",
+    "research_stage_executions",
+    "research_stage_artifacts",
+    "research_claims",
+    "stage_gate_results",
 }
 
 
@@ -56,8 +61,8 @@ def _write_migration(directory: Path, name: str, body: str) -> None:
 def test_initial_migration_creates_the_authoritative_schema() -> None:
     conn = connect(":memory:")
     try:
-        assert migrate(conn) == 2
-        assert current_version(conn) == 2
+        assert migrate(conn) == 3
+        assert current_version(conn) == 3
         assert EXPECTED_TABLES <= _tables(conn)
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -68,9 +73,28 @@ def test_initial_migration_creates_the_authoritative_schema() -> None:
 def test_second_migrate_is_a_noop() -> None:
     conn = connect(":memory:")
     try:
-        assert migrate(conn) == 2
-        assert migrate(conn) == 2
-        assert current_version(conn) == 2
+        assert migrate(conn) == 3
+        assert migrate(conn) == 3
+        assert current_version(conn) == 3
+    finally:
+        conn.close()
+
+
+def test_research_gate_migration_creates_the_gate_tables() -> None:
+    conn = connect(":memory:")
+    try:
+        assert migrate(conn) == 3
+        assert current_version(conn) == 3
+        assert {
+            "tool_calls",
+            "research_stage_executions",
+            "research_stage_artifacts",
+            "research_claims",
+            "stage_gate_results",
+        } <= _tables(conn)
+        # The stage artifacts of the gate are not the file artifacts of an
+        # extraction run: the two tables are separate on purpose.
+        assert "research_artifacts" in _tables(conn)
     finally:
         conn.close()
 

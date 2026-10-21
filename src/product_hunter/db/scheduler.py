@@ -17,8 +17,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 
+from product_hunter.db.connection import utc_now
 from product_hunter.db.jobs import Job, JobConflict, enqueue_job, get_job, list_jobs
-from product_hunter.fetch import utcnow
 
 _ORIGIN = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _MAX_PAYLOAD_BYTES = 65_536
@@ -192,7 +192,7 @@ class Scheduler:
 
     def tick(self, *, now: datetime | None = None) -> ScheduleTick:
         """Materialise the occurrences in the catch-up window, once each."""
-        now_dt = _utc(now)
+        now_dt = utc_now(now)
         created: list[Job] = []
         existing: list[Job] = []
         blocked: list[BlockedSchedule] = []
@@ -333,12 +333,12 @@ class Scheduler:
         self, *, now: datetime | None = None, limit: int | None = None
     ) -> list[Job]:
         """Queued jobs whose scheduled time is strictly earlier than now."""
-        picked = self._queued(_utc(now).isoformat(), due=False)
+        picked = self._queued(utc_now(now).isoformat(), due=False)
         return picked if limit is None else picked[:limit]
 
     def plan(self, *, now: datetime | None = None) -> list[Job]:
         """Queued jobs a worker would claim now, in the order it claims them."""
-        return self._queued(_utc(now).isoformat(), due=True)
+        return self._queued(utc_now(now).isoformat(), due=True)
 
     def promote(self, job_id: str, priority: int = int(Priority.P0)) -> Job:
         """Raise the priority of a queued job. A leased job cannot be moved."""
@@ -400,7 +400,7 @@ class Scheduler:
         """
         if job.status != "dead":
             raise ScheduleError(f"job {job.id!r} is {job.status!r}, not dead")
-        now_dt = _utc(now)
+        now_dt = utc_now(now)
         attempt = job.attempts + 1
         if reason is not None:
             logger.info("retrying job %s at attempt %s: %s", job.id, attempt, reason)
@@ -557,14 +557,6 @@ def default_schedules() -> list[Schedule]:
             catchup_limit=2,
         ),
     ]
-
-
-def _utc(value: datetime | None) -> datetime:
-    if value is None:
-        return utcnow()
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 def _check_datetime_span(label: str, seconds: int) -> None:

@@ -4,6 +4,13 @@ A checkpoint is written at a stage boundary, not during an LLM token stream.
 Re-saving the same version and state is idempotent; changing state under an
 existing version is a conflict, so a resume never silently reads a different
 state under the same version.
+
+A checkpoint written by a leased worker is fenced by the lease epoch: the
+worker id and the epoch must match a live lease on a job for that run and
+stage, so a worker that lost its lease cannot write over a newer worker's
+state. An unfenced write, one with neither a worker id nor an epoch, is for
+the control plane. The lease is read against the store's clock, so a caller
+that passes an old timestamp cannot keep a lease that has already expired.
 """
 
 from __future__ import annotations
@@ -14,7 +21,12 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 
-from product_hunter.fetch import utcnow
+from product_hunter.db.connection import rollback, utc_now
+from product_hunter.db.leases import LeaseRefused, assert_live_lease
+
+# Operator-facing refusals. They are fixed text: a message that repeats a job
+# id or a worker id hands an untrusted value to whoever reads the log.
+_HALF_FENCE = "a fenced checkpoint needs both worker_id and lease_epoch"
 
 
 class CheckpointError(Exception):
@@ -52,85 +64,133 @@ def save_checkpoint(
     input_refs: list[str] | None = None,
     output_refs: list[str] | None = None,
     now: datetime | None = None,
+    worker_id: str | None = None,
+    lease_epoch: int | None = None,
 ) -> Checkpoint:
+    """Write one checkpoint for a run and stage.
+
+    A fenced write carries a worker id and a lease epoch, and is refused
+    unless the caller holds a live lease on a job for that run and stage: a
+    worker that lost its lease cannot write over a newer worker's state. A
+    write with neither is unfenced, and that is the control plane rather than
+    a leased worker. A write with only one of the two is a programming error
+    and is refused.
+
+    The lease check and the insert must not be separable, so they share one
+    transaction. A caller that owns a transaction keeps it and commits it
+    itself; a caller with no transaction gets one here, opened and committed
+    here.
+
+    ``now`` is the timestamp the row carries. It is not the clock the lease is
+    read against: the lease is compared with the store's clock, so a stale
+    ``now`` cannot make an expired lease look live.
+    """
     if not run_id.strip():
         raise CheckpointError("a checkpoint needs a run id")
     if not stage.strip():
         raise CheckpointError("a checkpoint needs a stage")
     if checkpoint_version < 1:
         raise CheckpointError("checkpoint_version must be at least 1")
-    run = conn.execute(
-        "SELECT 1 FROM research_runs WHERE run_id = ?", (run_id,)
-    ).fetchone()
-    if run is None:
-        raise CheckpointError(f"run {run_id!r} is not in the store")
-    state_json = json.dumps(state, sort_keys=True)
-    input_json = json.dumps(input_refs or [], sort_keys=True)
-    output_json = json.dumps(output_refs or [], sort_keys=True)
-    checkpoint_id = _hash_id(
-        "ckpt_", f"{run_id}|{stage}|{step or ''}|{checkpoint_version}"
-    )
-    existing = conn.execute(
-        "SELECT state_json, state_ref, input_refs, output_refs "
-        "FROM research_checkpoints WHERE checkpoint_id = ?",
-        (checkpoint_id,),
-    ).fetchone()
-    if existing is not None:
-        if (
-            existing["state_json"] != state_json
-            or existing["state_ref"] != state_ref
-            or existing["input_refs"] != input_json
-            or existing["output_refs"] != output_json
-        ):
-            raise CheckpointConflict(
-                f"checkpoint {checkpoint_id!r} already holds different content"
-            )
-        loaded = load_checkpoint(
-            conn,
-            run_id=run_id,
-            stage=stage,
-            step=step,
-            version=checkpoint_version,
+    if (worker_id is None) != (lease_epoch is None):
+        raise CheckpointError(_HALF_FENCE)
+    now_iso = utc_now(now).isoformat()
+    owns_transaction = not conn.in_transaction
+    if owns_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        if worker_id is not None and lease_epoch is not None:
+            try:
+                # The shared fence in db.leases reads the store's clock, not
+                # the caller's: a stale `now` cannot keep an expired lease
+                # alive. It refuses with its own error; the checkpoint keeps
+                # its own type and the same fixed message.
+                assert_live_lease(
+                    conn,
+                    run_id=run_id,
+                    stage=stage,
+                    worker_id=worker_id,
+                    lease_epoch=lease_epoch,
+                )
+            except LeaseRefused as exc:
+                raise CheckpointError(str(exc)) from exc
+        run = conn.execute(
+            "SELECT 1 FROM research_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if run is None:
+            raise CheckpointError(f"run {run_id!r} is not in the store")
+        state_json = json.dumps(state, sort_keys=True)
+        input_json = json.dumps(input_refs or [], sort_keys=True)
+        output_json = json.dumps(output_refs or [], sort_keys=True)
+        checkpoint_id = _hash_id(
+            "ckpt_", f"{run_id}|{stage}|{step or ''}|{checkpoint_version}"
         )
-        if loaded is None:  # pragma: no cover
-            raise CheckpointError("checkpoint disappeared")
-        return loaded
-    now_iso = (now or utcnow()).isoformat()
-    conn.execute(
-        """
-        INSERT INTO research_checkpoints (
-            checkpoint_id, run_id, stage, step, checkpoint_version,
-            state_ref, input_refs, output_refs, state_json, created_at,
-            completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            checkpoint_id,
-            run_id,
-            stage,
-            step or "",
-            checkpoint_version,
-            state_ref,
-            input_json,
-            output_json,
-            state_json,
-            now_iso,
-            now_iso,
-        ),
-    )
-    return Checkpoint(
-        checkpoint_id=checkpoint_id,
-        run_id=run_id,
-        stage=stage,
-        step=step,
-        checkpoint_version=checkpoint_version,
-        state=state,
-        state_ref=state_ref,
-        input_refs=list(input_refs or []),
-        output_refs=list(output_refs or []),
-        created_at=now_iso,
-        completed_at=now_iso,
-    )
+        existing = conn.execute(
+            "SELECT state_json, state_ref, input_refs, output_refs "
+            "FROM research_checkpoints WHERE checkpoint_id = ?",
+            (checkpoint_id,),
+        ).fetchone()
+        if existing is not None:
+            if (
+                existing["state_json"] != state_json
+                or existing["state_ref"] != state_ref
+                or existing["input_refs"] != input_json
+                or existing["output_refs"] != output_json
+            ):
+                raise CheckpointConflict(
+                    f"checkpoint {checkpoint_id!r} already holds different content"
+                )
+            saved = load_checkpoint(
+                conn,
+                run_id=run_id,
+                stage=stage,
+                step=step,
+                version=checkpoint_version,
+            )
+            if saved is None:  # pragma: no cover
+                raise CheckpointError("checkpoint disappeared")
+        else:
+            conn.execute(
+                """
+                INSERT INTO research_checkpoints (
+                    checkpoint_id, run_id, stage, step, checkpoint_version,
+                    state_ref, input_refs, output_refs, state_json, created_at,
+                    completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    checkpoint_id,
+                    run_id,
+                    stage,
+                    step or "",
+                    checkpoint_version,
+                    state_ref,
+                    input_json,
+                    output_json,
+                    state_json,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            saved = Checkpoint(
+                checkpoint_id=checkpoint_id,
+                run_id=run_id,
+                stage=stage,
+                step=step,
+                checkpoint_version=checkpoint_version,
+                state=state,
+                state_ref=state_ref,
+                input_refs=list(input_refs or []),
+                output_refs=list(output_refs or []),
+                created_at=now_iso,
+                completed_at=now_iso,
+            )
+    except BaseException:
+        if owns_transaction:
+            rollback(conn)
+        raise
+    if owns_transaction:
+        conn.execute("COMMIT")
+    return saved
 
 
 def load_checkpoint(

@@ -31,6 +31,8 @@ stages:
     quality_checks:
       - non_empty_queries
       - source_diversity
+      - mandatory_query_families
+      - known_query_families
     gate_key: discovery
 
   evidence_collection:
@@ -42,6 +44,8 @@ stages:
       - provenance
     quality_checks:
       - non_empty_queries
+      - mandatory_query_families
+      - known_query_families
     gate_key: evidence_collection
 
   normalization:
@@ -81,7 +85,10 @@ stages:
       - author
       - community
       - evidence_span
-    quality_checks: []
+    quality_checks:
+      - non_empty_queries
+      - mandatory_query_families
+      - known_query_families
     gate_key: validation
 
   counter_evidence:
@@ -91,6 +98,8 @@ stages:
       - counter_evidence
     quality_checks:
       - counter_evidence_present_or_explicit_zero
+      - mandatory_query_families
+      - known_query_families
     gate_key: counter_evidence
 
   scoring:
@@ -114,7 +123,9 @@ stages:
       - opportunity_score
       - confidence
       - candidate_url
-    quality_checks: []
+    quality_checks:
+      - mandatory_query_families
+      - known_query_families
     gate_key: competitor_search
 
 hard_requirements:

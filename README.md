@@ -59,10 +59,16 @@ every blocked or failed fetch writes a rejection record.
 Pain point extraction uses the OpenCode V2 one-shot route through the `opencode
 api` CLI. The call is stateless, it reads the OpenCode auth store, and this
 repo holds no provider key. That route is a Phase 1 bridge behind the
-`TextGenerator` protocol. Phase 2 added a model router instead of a direct
-provider adapter, and the router does not drive extraction yet:
-`OpenCodeGenerateProvider` still calls the model pinned in
-`config/extraction.yaml`. The extraction logic does not change either way.
+`TextGenerator` protocol. Phase 2 added a model router, and the router now
+drives extraction: `ph extract` resolves the `extraction` role against the live
+model catalogue, binds the selected model to the provider, and records the
+selection, the catalogue version, and the fallback index in the run manifest.
+A router that cannot answer falls back to the model pinned in
+`config/extraction.yaml`, and the manifest says which one ran.
+
+No model is named in the business logic. `config/model_routing.yaml` names a
+chain of patterns per role, the catalogue is discovered from OpenCode at
+runtime, and the chain falls through when a call fails.
 
 Under strict extraction the model proposes candidates; the code decides which
 ones are real. A candidate is stored only when its quote is an exact span inside

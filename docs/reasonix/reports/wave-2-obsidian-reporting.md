@@ -8,6 +8,8 @@
 **Code commit:** `9a892bbb0c846ff0b590c8877acdad524bbf3ba3`
 **Branch commits:** `9a892bb` the layer, `58c751a` this report, `3c3188e` two
 mechanism corrections in it
+**Merge:** the branch carries `main` at `59e29fa`, the wave 1 integration.
+The merge commit is the branch head.
 
 ## What this session delivered
 
@@ -56,6 +58,23 @@ exit code 0
 The 125 split as 35 sanitizer, 35 render, 22 source and 33 engine tests. The
 1105 is the whole suite, and it is the suite that matters: the new command
 lives in `src/product_hunter/cli.py`, which the command tests cover.
+
+`main` moved while this session ran: it took the wave 1 integration, and it
+holds `db/migrations/0003_research_gate.sql` now. The branch was merged with
+`main` at `59e29fa` so the two sit together, and the same tree is green after
+the merge:
+
+```text
+uv run pytest
+1210 passed in 23.87s
+exit code 0
+```
+
+The merge touched one file, `docs/reasonix/ARCHITECTURE.md`, and the conflict
+was a single table row: this session's `IMPLEMENTED` against `main`'s
+`PLANNED`. Both sides' rows are in the file now. `src/product_hunter/cli.py`
+merged on its own, because this session's change to it is a new command and
+`main`'s is a different one.
 
 The gate was also proven to bite rather than merely to pass. The HTML escape
 in the sanitizer was removed on a scratch copy of the file, the suite went
@@ -324,8 +343,12 @@ costs more than the lines it saves, and the duplicates are readable.
    migration must create `opportunities`, `opportunity_scores`,
    `opportunity_evidence`, `opportunity_claims`, `experiments` and
    `research_requests`, with a number that does not collide with a sibling
-   session's migration. The projection reads them when they exist and falls
-   back when they do not, so the order of the merge does not matter.
+   session's migration. `main` holds `0003_research_gate.sql` as of
+   `59e29fa`, so the first free number is `0004`, and
+   `db/migrations.py` refuses a gap in the numbering, so the migration has
+   to be `0004` and not something later. The projection reads the tables
+   when they exist and falls back when they do not, so the order of the
+   merge does not matter.
 2. **Reconcile the column map.** If the scoring session lands `opportunities`
    with different column names, change the map in `contract.py` and nothing
    else. The reader already tolerates a column that is not there.

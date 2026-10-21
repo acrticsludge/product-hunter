@@ -15,8 +15,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from product_hunter.db.connection import rollback, utc_now
 from product_hunter.db.jobs import LeaseLost
-from product_hunter.fetch import utcnow
 
 
 class OutboxError(Exception):
@@ -85,7 +85,7 @@ def enqueue_projection(
                 f"projection key {idempotency_key!r} is already used by different content"
             )
         return existing
-    now_dt = _now(now)
+    now_dt = utc_now(now)
     conn.execute(
         """
         INSERT INTO projection_tasks (
@@ -141,7 +141,7 @@ def claim_projection(
     """Recover expired projections, then claim one pending task."""
     if lease_seconds < 1:
         raise OutboxError("lease_seconds must be at least 1")
-    now_dt = _now(now)
+    now_dt = utc_now(now)
     now_iso = now_dt.isoformat()
     recover_projection_leases(conn, now=now_dt)
     expires = _after(now_dt, lease_seconds)
@@ -177,7 +177,7 @@ def claim_projection(
         conn.execute("COMMIT")
         return task
     except BaseException:
-        _rollback(conn)
+        rollback(conn)
         raise
 
 
@@ -189,7 +189,7 @@ def complete_projection(
     lease_epoch: int,
     now: datetime | None = None,
 ) -> ProjectionTask:
-    now_iso = _now(now).isoformat()
+    now_iso = utc_now(now).isoformat()
     try:
         conn.execute("BEGIN IMMEDIATE")
         changed = conn.execute(
@@ -211,7 +211,7 @@ def complete_projection(
             )
         conn.execute("COMMIT")
     except BaseException:
-        _rollback(conn)
+        rollback(conn)
         raise
     completed = get_projection_task(conn, task.task_id)
     if completed is None:  # pragma: no cover
@@ -229,7 +229,7 @@ def fail_projection(
     backoff_seconds: int = 5,
     now: datetime | None = None,
 ) -> ProjectionTask:
-    now_dt = _now(now)
+    now_dt = utc_now(now)
     now_iso = now_dt.isoformat()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -276,7 +276,7 @@ def fail_projection(
             )
         conn.execute("COMMIT")
     except BaseException:
-        _rollback(conn)
+        rollback(conn)
         raise
     failed = get_projection_task(conn, task.task_id)
     if failed is None:  # pragma: no cover
@@ -287,7 +287,7 @@ def fail_projection(
 def recover_projection_leases(
     conn: sqlite3.Connection, *, now: datetime | None = None
 ) -> int:
-    now_iso = _now(now).isoformat()
+    now_iso = utc_now(now).isoformat()
     try:
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
@@ -318,7 +318,7 @@ def recover_projection_leases(
         conn.execute("COMMIT")
         return len(rows)
     except BaseException:
-        _rollback(conn)
+        rollback(conn)
         raise
 
 
@@ -434,19 +434,8 @@ def _row_to_task(row: sqlite3.Row) -> ProjectionTask:
     )
 
 
-def _rollback(conn: sqlite3.Connection) -> None:
-    try:
-        conn.execute("ROLLBACK")
-    except sqlite3.Error:
-        pass
-
-
 def _hash_id(prefix: str, basis: str) -> str:
     return prefix + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
-
-
-def _now(value: datetime | None) -> datetime:
-    return value if value is not None else utcnow()
 
 
 def _after(now: datetime, seconds: int) -> str:

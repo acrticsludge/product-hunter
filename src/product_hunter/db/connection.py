@@ -1,9 +1,37 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
+from product_hunter.fetch import utcnow
+
 _MEMORY = ":memory:"
+
+
+def utc_now(value: datetime | None = None) -> datetime:
+    """The instant to compare against, always in UTC.
+
+    An aware value is converted, a naive one is read as UTC, so the queue,
+    the outbox and the checkpoint read the clock the same way.
+    """
+    if value is None:
+        return utcnow()
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def rollback(conn: sqlite3.Connection) -> None:
+    """Undo the open transaction, best effort.
+
+    A rollback that fails must not hide the error that caused it, so the
+    failure is swallowed: the caller is already raising the real problem.
+    """
+    try:
+        conn.execute("ROLLBACK")
+    except sqlite3.Error:
+        pass
 
 
 def connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connection:

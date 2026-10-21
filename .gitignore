@@ -13,3 +13,7 @@ logs/
 htmlcov/
 Thumbs.db
 .DS_Store
+
+# Parallel wave worktrees live inside the repository. They are another
+# session's working tree, not this repository's content.
+.worktrees/

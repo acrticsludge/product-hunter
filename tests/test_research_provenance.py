@@ -45,7 +45,13 @@ class MemoryToolCallStore:
     def __init__(self) -> None:
         self.calls: list[ToolCallProvenance] = []
 
-    def append_tool_call(self, call: ToolCallProvenance) -> None:
+    def append_tool_call(
+        self,
+        call: ToolCallProvenance,
+        *,
+        attempt: int,
+        source_id: str | None = None,
+    ) -> None:
         self.calls.append(call)
 
     def list_tool_calls(
@@ -184,11 +190,30 @@ def test_claim_without_evidence_refs_is_allowed_at_construction():
 def test_tool_call_store_round_trips_calls():
     store = MemoryToolCallStore()
     assert isinstance(store, ToolCallStore)
-    store.append_tool_call(_call())
-    store.append_tool_call(_call(stage="validation", tool_call_id="call-2"))
-    store.append_tool_call(_call(run_id="run-2", tool_call_id="call-3"))
+    store.append_tool_call(_call(), attempt=1)
+    store.append_tool_call(_call(stage="validation", tool_call_id="call-2"), attempt=1)
+    store.append_tool_call(_call(run_id="run-2", tool_call_id="call-3"), attempt=1)
 
     every = store.list_tool_calls("run-1")
     assert [call.tool_call_id for call in every] == ["call-1", "call-2"]
     only = store.list_tool_calls("run-1", stage="validation")
     assert [call.tool_call_id for call in only] == ["call-2"]
+
+
+def test_the_store_is_called_through_the_protocol_signature():
+    store: ToolCallStore = MemoryToolCallStore()
+
+    # The call is made through the protocol's own signature. The isinstance
+    # check above only proves the names of the methods, so a drift between
+    # the protocol and the implementation is caught here.
+    store.append_tool_call(_call(), attempt=2, source_id="hn_algolia")
+
+    every = store.list_tool_calls("run-1")
+    assert [call.tool_call_id for call in every] == ["call-1"]
+
+
+def test_the_attempt_of_a_call_is_required():
+    store = MemoryToolCallStore()
+
+    with pytest.raises(TypeError):
+        store.append_tool_call(_call())
