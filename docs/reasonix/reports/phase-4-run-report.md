@@ -1,4 +1,3 @@
-<subagent sessionID="ses_ea1a24368ffe0Bbmz2k7mkvvv4" state="completed">
 # Phase 4 Wave 1: research contract and tool gate foundation, run report
 
 **RUN_ID:** phase4-20261021-resume-01
