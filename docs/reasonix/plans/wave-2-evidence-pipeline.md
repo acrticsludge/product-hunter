@@ -12,21 +12,21 @@ the record; the report is the record.
 
 | File | Change | Lines |
 |---|---|---|
-| `db/migrations/0003_evidence_pipeline.sql` | new | 127 |
-| `src/product_hunter/db/evidence.py` | new | 501 |
-| `src/product_hunter/evidence.py` | new | 788 |
+| `db/migrations/0003_evidence_pipeline.sql` | new | 137 |
+| `src/product_hunter/db/evidence.py` | new | 589 |
+| `src/product_hunter/evidence.py` | new | 872 |
 | `src/product_hunter/db/store.py` | edit | 382 added |
 | `src/product_hunter/db/migrations.py` | edit | 18 |
 | `src/product_hunter/db/__init__.py` | edit | 56 added |
 | `src/product_hunter/documents.py` | edit | 6 added |
 | `src/product_hunter/extraction.py` | edit | 11 |
-| `tests/test_evidence_pipeline.py` | new | 958 |
+| `tests/test_evidence_pipeline.py` | new | 1142 |
 | `tests/conftest.py` | edit | 60 |
 | `tests/test_db_migrations.py` | edit | 13 |
-| `docs/reasonix/specs/wave-2-evidence-pipeline.md` | new | 371 |
+| `docs/reasonix/specs/wave-2-evidence-pipeline.md` | new | 463 |
 | `docs/reasonix/plans/wave-2-evidence-pipeline.md` | new | this file |
-| `docs/reasonix/prompts/wave-2-evidence-pipeline-*.md` | new | 4 files, 248 lines |
-| `docs/reasonix/reports/wave-2-evidence-pipeline.md` | new | 385 |
+| `docs/reasonix/prompts/wave-2-evidence-pipeline-*.md` | new | 4 files, 322 lines |
+| `docs/reasonix/reports/wave-2-evidence-pipeline.md` | new | about 480 |
 | `docs/reasonix/ARCHITECTURE.md` | edit | 88 |
 
 Three files the plan did not name are in the wave, and the plan was

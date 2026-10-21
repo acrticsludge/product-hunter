@@ -306,7 +306,7 @@ becomes an argument to a tool.
 
 ## 6. Tests
 
-`tests/test_evidence_pipeline.py`, 40 tests, 958 lines. The suite is
+`tests/test_evidence_pipeline.py`, 40 tests, 1142 lines. The suite is
 `1020 passed`, which is the 980 of the base commit plus 40 new tests.
 
 The ten the mission names:
@@ -344,16 +344,16 @@ New:
 
 | File | Lines |
 |---|---|
-| `db/migrations/0003_evidence_pipeline.sql` | 127 |
-| `src/product_hunter/db/evidence.py` | 501 |
-| `src/product_hunter/evidence.py` | 788 |
-| `tests/test_evidence_pipeline.py` | 958 |
-| `docs/reasonix/specs/wave-2-evidence-pipeline.md` | 371 |
-| `docs/reasonix/plans/wave-2-evidence-pipeline.md` | 145 |
-| `docs/reasonix/prompts/wave-2-evidence-pipeline-implement.md` | 101 |
-| `docs/reasonix/prompts/wave-2-evidence-pipeline-verify.md` | 25 |
-| `docs/reasonix/prompts/wave-2-evidence-pipeline-harden.md` | 52 |
-| `docs/reasonix/prompts/wave-2-evidence-pipeline-review.md` | 70 |
+| `db/migrations/0003_evidence_pipeline.sql` | 137 |
+| `src/product_hunter/db/evidence.py` | 589 |
+| `src/product_hunter/evidence.py` | 872 |
+| `tests/test_evidence_pipeline.py` | 1142 |
+| `docs/reasonix/specs/wave-2-evidence-pipeline.md` | 463 |
+| `docs/reasonix/plans/wave-2-evidence-pipeline.md` | 174 |
+| `docs/reasonix/prompts/wave-2-evidence-pipeline-implement.md` | 136 |
+| `docs/reasonix/prompts/wave-2-evidence-pipeline-verify.md` | 36 |
+| `docs/reasonix/prompts/wave-2-evidence-pipeline-harden.md` | 63 |
+| `docs/reasonix/prompts/wave-2-evidence-pipeline-review.md` | 87 |
 | `docs/reasonix/reports/wave-2-evidence-pipeline.md` | this file |
 
 Edited:
