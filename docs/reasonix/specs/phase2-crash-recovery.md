@@ -7,7 +7,9 @@ Non-goal: any new product surface. No new stage, no new CLI command, no new tabl
 ## 1. Why this run exists
 
 Phase 2 shipped the authoritative store, the fenced job queue, the outbox, and
-the checkpoint writer. Every test in the repo runs against `:memory:`.
+the checkpoint writer. Every database test in the repo runs against `:memory:`,
+except `tests/test_db_store.py`, which already used a file-backed database
+and never reopened it after an interruption.
 
 That single fact hides the whole failure surface this run targets. An in-memory
 database disappears with the process, so no existing test has ever observed a

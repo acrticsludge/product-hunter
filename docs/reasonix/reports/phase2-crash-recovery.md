@@ -7,11 +7,12 @@ Risk: declared `medium`, floor `medium` (adapter). No auth, schema, payment, sec
 
 ## What this run did
 
-Every database test in this repo ran against `:memory:`. An in-memory database
-dies with the process, so no test had ever watched a worker vanish, a lease
-expire, a transaction tear in half, or a queue row outlive the process that
-created it. The fencing code looked correct on paper and nothing had
-challenged it.
+Every database test in this repo ran against `:memory:`, except
+`tests/test_db_store.py`, which already used a file-backed database but never
+reopened it after an interruption. An in-memory database dies with the
+process, so no test had ever watched a worker vanish, a lease expire, a
+transaction tear in half, or a queue row outlive the process that created it.
+The fencing code looked correct on paper and nothing had challenged it.
 
 This run wrote that missing suite and fixed what it broke. The claim it
 supports:
@@ -67,11 +68,13 @@ mapping comes from `cli.py`: `documents` and `candidates` and `calls` and
 `candidates.jsonl`. Before this, a file truncated at a line boundary parsed
 cleanly, hashed cleanly, and imported as authoritative.
 
-**F2 — a corrupt checkpoint no longer stops recovery.** `checkpoints.py` gained
+**F2 — recovery can step past a corrupt checkpoint.** `checkpoints.py` gained
 `load_valid_checkpoint`, which returns the newest row whose state parses, and
 `list_checkpoints` gained `skip_invalid`. `load_checkpoint` stays strict and
 still raises `CheckpointError`: a caller that asked for a specific version
-still gets told the truth.
+still gets told the truth. No production caller uses the lenient path yet, so
+a corrupt checkpoint still stops `registry.run_log`; the capability is here
+for the resume path that does not exist yet.
 
 **F3 — the outbox has one writer.** `Store._enqueue_projection` calls
 `outbox.enqueue_projection` instead of carrying its own INSERT. The two paths
@@ -141,14 +144,15 @@ uv run pytest tests/test_db_crash_recovery.py
 
 | File | Change |
 |---|---|
-| `tests/test_db_crash_recovery.py` | new, 695 lines, 21 cases |
-| `tests/conftest.py` | new, 229 lines: the six fixture builders moved verbatim from `test_db_store.py`, plus `open_store` and `crash_child` |
+| `tests/test_db_crash_recovery.py` | new, 784 lines, 21 cases |
+| `tests/conftest.py` | new, 254 lines: the six fixture builders moved verbatim from `test_db_store.py`, plus `open_store` and `crash_child` |
 | `tests/test_db_store.py` | +14 / -199: the builders moved out, three assertions added, no assertion weakened |
 | `src/product_hunter/db/store.py` | +57 / -28: F1 and F3 |
 | `src/product_hunter/db/checkpoints.py` | +72 / -14: F2, plus a `LIMIT 1` restored on the strict load path |
-| `docs/reasonix/specs/phase2-crash-recovery.md` | new, 209 lines |
-| `docs/reasonix/plans/phase2-crash-recovery.md` | new, 163 lines |
-| `docs/reasonix/prompts/phase2-crash-recovery-implement.md` | new, the implement node's brief |
+| `docs/reasonix/specs/phase2-crash-recovery.md` | new, 272 lines |
+| `docs/reasonix/plans/phase2-crash-recovery.md` | new, 231 lines |
+| `docs/reasonix/prompts/phase2-crash-recovery-implement.md` | new, 118 lines, the implement node's brief |
+| `docs/reasonix/handoffs/phase2-crash-recovery-handoff.md` | new, 111 lines, the cross-node handoff |
 | `docs/reasonix/reports/phase2-crash-recovery.md` | this file |
 
 ## Not proven, and known limits
