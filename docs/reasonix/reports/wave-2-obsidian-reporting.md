@@ -6,8 +6,8 @@
 **Risk:** declared medium, floor medium
 **Branch:** `wave2/obsidian-reporting`
 **Code commit:** `9a892bbb0c846ff0b590c8877acdad524bbf3ba3`
-**Report commit:** the commit that carries this file, which is the second
-commit on the branch
+**Branch commits:** `9a892bb` the layer, `58c751a` this report, `3c3188e` two
+mechanism corrections in it
 
 ## What this session delivered
 
