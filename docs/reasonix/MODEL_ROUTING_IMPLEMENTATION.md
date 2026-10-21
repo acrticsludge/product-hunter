@@ -109,10 +109,28 @@ enum of thirteen roles: `extraction`, `classification`, `normalization`,
 expands the chain, takes the first candidate the catalogue reports as
 available, and raises `NoModelAvailable` when nothing is available. The chain
 falls through at selection time: a candidate the catalogue reports as
-unavailable is skipped and the next one is taken, while a model that passes
-selection and then fails at call time fails its chunk into a rejection, and
-that chunk is not retried with another model. `UnknownRole` is raised for a
+unavailable is skipped and the next one is taken. `UnknownRole` is raised for a
 role that is not in the enum.
+
+The chain falls through at call time as well. `FallbackGenerator`, in the same
+module, is a `TextGenerator` that asks the router for the next candidate with
+the failed ones excluded, and retries the same request. The provider factory is
+injected, so the module does not import it and no import cycle is possible.
+Every provider call is kept as a `GenerationAttempt`: the selection that made
+it, its latency, whether it answered, and the reason it failed. One call may
+try three candidates, the primary and two fallbacks, because the free tier
+catalogue holds 29 models and a provider that is down costs the configured
+timeout per attempt, 120 s today, so one chunk can cost 3 x 120 s. When the
+chain is exhausted the last provider error is raised, and it is remembered for
+the rest of the run, so every chunk of a run whose models are down fails with
+that reason and not with "no available model". The error is a
+`ModelCallFailed`, a `ProviderError` that carries the provider and the model
+of the call that failed, so the record of a failure names the candidate that
+failed it and not the one the run was built from. `check()` walks the same
+way, so a model that left the catalogue between the discovery and the check
+falls through instead of refusing the run, and a candidate the provider
+refuses at the check is kept as a failed attempt, so the run says which
+candidate was skipped and why.
 
 `ModelSelection` carries `role`, `identity`, `selection_source`,
 `fallback_index`, `is_fallback`, `catalog_version`, and `resolved_at`.
@@ -153,6 +171,19 @@ behind. The row carries
 `latency_ms`, `status`, and `error`. `list_inventory()` and
 `list_executions()` read them back.
 
+`ph db import-run` writes the run and its provenance in one transaction. The
+catalogue, the role binding and the execution rows travel with the run in a
+`RunProvenance`, and the store writes them inside the transaction the import
+already owns, so a run is never in the store without the provenance it
+recorded. The four write functions open a transaction only when the connection
+is not already in one, and they never commit a transaction they do not own. A
+run that recorded no routing imports as it is, and nothing extra is written.
+The provenance is read before the import opens its transaction, so a
+provenance file that cannot be read refuses the import: the run does not land
+without the provenance it recorded, the message names the file and says that
+the run was not imported, and the operator fixes the file or removes it and
+imports the run again.
+
 ## The command surface
 
 `IMPLEMENTED` (`src/product_hunter/cli.py`, `src/product_hunter/llm/__init__.py`).
@@ -175,22 +206,35 @@ the next refresh. Neither needs a source edit, and neither is instant. That
 delay is the price of the only mechanism the current OpenCode surface offers.
 
 The generation path uses the router. `ph extract` resolves the `extraction`
-role through `ModelRouter`, binds the selected model to the generator, and
-writes the run's `model_executions.jsonl`, one row per model call, and a
-`model_routing` block in the manifest, whose top-level provider and model name
-the model that ran. The call records name the model that was called, on a
-failed call as well as a successful one: the extraction reads the same bound
-config the generator was built from, so a call that fails at call time is
-attributed to the model that failed. A router that cannot answer never stops
-a run: the model pinned in `config/extraction.yaml` runs it, and the manifest
-and a `routing_failed` rejection say why. A generator a caller supplies is
-used as it is, and the router is not consulted at all, so that run records no
-routing.
+role through `ModelRouter`, runs the role through a `FallbackGenerator`, binds
+the selected model to the generator, and writes the run's
+`model_executions.jsonl`, one row per provider call, and a `model_routing`
+block in the manifest. The manifest's top-level provider and model name the
+model the router chose, which is the policy of the run: a candidate that
+fails and a later one that answers do not change it, so the store records the
+same `model_policy_version` for the run. The call records name the model that
+answered, and on a call that failed they name the model that failed, which
+the error carries. The execution rows are per provider call, so they name the
+candidate that made each one, and a chain that fell through says which
+candidate failed and which one answered. A router that cannot answer never
+stops a run: the model pinned in `config/extraction.yaml` runs it, and the
+manifest and a `routing_failed` rejection say why. A generator a caller
+supplies is used as it is, and the router is not consulted at all, so that run
+records no routing.
 
-The fallback happens at selection time. A model the catalogue reports as
-unavailable is skipped and the next candidate of the chain is taken. A model
-that passes selection and then fails at call time fails its chunk into a
-rejection, and that chunk is not retried with another model.
+The fallback happens at selection time and at call time. A model the catalogue
+reports as unavailable is skipped and the next candidate of the chain is taken.
+A model that passes selection and then fails at call time is retried with the
+next candidate, and the run records both calls: the one that failed and the
+one that answered. The limit is three candidates per call, so a provider that
+is down costs three timeouts and not the whole catalogue. A candidate that
+failed is not tried again in that run, so a provider that stays down costs one
+timeout per candidate and not one per chunk. The row of the call that answered
+carries the fallback index of the candidate that answered; the manifest names
+the primary selection, so a run that only succeeded on the second candidate
+still names the model the router chose. A candidate the provider refuses at
+the check is a row of its own, so the file says which candidate was skipped
+and why.
 
 The extraction chain in `config/model_routing.yaml` leads with the deepseek
 family, and the router takes the cheapest model that matches the family. That

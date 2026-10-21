@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 from product_hunter.cli import (
@@ -14,6 +15,7 @@ from product_hunter.cli import (
 )
 from product_hunter.config import (
     CatalogSettings,
+    ExtractionConfig,
     RoutingConfig,
     load_config,
     load_routing_config,
@@ -303,16 +305,30 @@ def run_routed_extract(
     discovery,
     *,
     routing_config: RoutingConfig | None = None,
+    config: ExtractionConfig | None = None,
 ) -> int:
     """Extract the seeded capture with the model the router chooses."""
     return extract_command(
         limit=1,
         repo_root=root,
-        config=load_config(),
+        config=config if config is not None else load_config(),
         discovery=discovery,
         routing_config=routing_config,
         run_id=run_id,
     )
+
+
+def two_chunk_config() -> ExtractionConfig:
+    """The extraction config that splits the seeded capture into two chunks.
+
+    The capture is one document of 162 characters, so a chunk of 120 with an
+    overlap of 20 cuts it in two.
+    """
+    config = load_config()
+    limits = config.limits.model_copy(
+        update={"chunk_chars": 120, "chunk_overlap_chars": 20}
+    )
+    return config.model_copy(update={"limits": limits})
 
 
 def test_extract_command_resolves_the_model_through_the_router(
@@ -407,8 +423,10 @@ def test_a_vanished_model_falls_through_to_the_next_candidate(
     assert calls[0]["model"] == "beta-flash"
 
 
-def test_the_manifest_names_the_model_that_ran(tmp_path, capsys, monkeypatch):
-    """The manifest names the model that ran, not the one pinned in the config."""
+def test_the_manifest_names_the_model_the_router_chose(
+    tmp_path, capsys, monkeypatch
+):
+    """The manifest names the model the router chose, not the pinned one."""
     seed_repo(tmp_path)
     catalog = fake_catalog("beta-flash")
     patch_generators(monkeypatch)
@@ -436,10 +454,10 @@ def test_the_manifest_names_the_model_that_ran(tmp_path, capsys, monkeypatch):
     assert manifest["model_routing"]["selection_source"] == "pattern"
 
 
-def test_the_import_records_the_policy_of_the_model_that_ran(
+def test_the_import_records_the_policy_of_the_selected_model(
     tmp_path, capsys, monkeypatch
 ):
-    """The store names the model that ran, not the one pinned in the config."""
+    """The store names the model the router chose, not the pinned one."""
     seed_repo(tmp_path)
     catalog = fake_catalog("beta-flash")
     patch_generators(monkeypatch)
@@ -604,6 +622,357 @@ def test_a_failed_routed_call_names_the_model_that_ran(tmp_path, capsys, monkeyp
     assert rows[0]["model_id"] == "alpha-flash"
     assert rows[0]["model_id"] != load_config().model_id
     assert "exploded at call time" in rows[0]["error"]
+
+
+def test_a_failed_call_falls_through_and_both_calls_are_recorded(
+    tmp_path, capsys, monkeypatch
+):
+    """A model that fails at call time is retried, and both calls are recorded."""
+    seed_repo(tmp_path)
+    catalog = fake_catalog("alpha-flash", "beta-flash")
+
+    def factory(config):
+        if config.model_id == "alpha-flash":
+            return ExplodingRoutedGenerator(config)
+        return RoutedGenerator(config)
+
+    monkeypatch.setattr("product_hunter.llm.build_generator", factory)
+    monkeypatch.setattr("product_hunter.cli.build_generator", factory)
+
+    code = run_routed_extract(tmp_path, "fallback-run", FakeDiscovery(catalog))
+
+    assert code == 0
+    capsys.readouterr()
+    out = tmp_path / "data" / "processed" / "fallback-run"
+    # The chunk was extracted by the model that answered.
+    calls = read_jsonl(out / "calls.jsonl")
+    assert len(calls) == 1
+    assert calls[0]["status"] == "ok"
+    assert calls[0]["model"] == "beta-flash"
+    # Both provider calls are recorded, one per attempt.
+    rows = read_jsonl(out / "model_executions.jsonl")
+    assert len(rows) == 2
+    assert rows[0]["status"] == "error"
+    assert "exploded at call time" in rows[0]["error"]
+    assert rows[0]["model_id"] == "alpha-flash"
+    assert rows[0]["fallback_index"] == 0
+    assert rows[1]["status"] == "ok"
+    assert rows[1]["error"] is None
+    assert rows[1]["model_id"] == "beta-flash"
+    # The call that only succeeded on the second candidate is the fallback it
+    # was.
+    assert rows[1]["fallback_index"] == 1
+    assert rows[1]["is_fallback"] is True
+    assert rows[0]["execution_id"] != rows[1]["execution_id"]
+    # And the run names the model the router chose, not the model that
+    # answered: the run's policy does not depend on provider luck.
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["provider"] == "opencode-go"
+    assert manifest["model"] == "alpha-flash"
+    assert manifest["model_routing"]["model_id"] == "alpha-flash"
+    assert manifest["model_routing"]["fallback_index"] == 0
+    assert manifest["model_routing"]["is_fallback"] is False
+
+
+def test_every_candidate_failing_records_a_rejection_and_the_attempts(
+    tmp_path, capsys, monkeypatch
+):
+    """A chain that answers nowhere fails the chunk, and the run goes on."""
+    seed_repo(tmp_path)
+    catalog = fake_catalog("alpha-flash", "beta-flash")
+
+    def factory(config):
+        return ExplodingRoutedGenerator(config)
+
+    monkeypatch.setattr("product_hunter.llm.build_generator", factory)
+    monkeypatch.setattr("product_hunter.cli.build_generator", factory)
+
+    code = run_routed_extract(tmp_path, "exhausted-run", FakeDiscovery(catalog))
+
+    assert code == 1
+    capsys.readouterr()
+    out = tmp_path / "data" / "processed" / "exhausted-run"
+    # The chunk failed into a rejection.
+    rejects = read_jsonl(out / "rejects.jsonl")
+    assert len(rejects) == 1
+    assert rejects[0]["reason_code"] == "provider_error"
+    # The failed calls are recorded anyway.
+    rows = read_jsonl(out / "model_executions.jsonl")
+    assert len(rows) == 2
+    assert [row["status"] for row in rows] == ["error", "error"]
+    assert "exploded at call time" in rows[0]["error"]
+    assert rows[0]["model_id"] == "alpha-flash"
+    assert rows[1]["model_id"] == "beta-flash"
+    # The run left its records behind.
+    assert (out / "manifest.json").is_file()
+    calls = read_jsonl(out / "calls.jsonl")
+    assert len(calls) == 1
+    assert calls[0]["status"] == "provider_error"
+    # The call and the rejection name the candidate that failed, which is the
+    # second one: the chain fell through and the last candidate is the one
+    # that failed.
+    assert calls[0]["model"] == "beta-flash"
+    assert rejects[0]["model"] == "beta-flash"
+    # And they agree with the execution row of that attempt.
+    assert calls[0]["model"] == rows[1]["model_id"]
+    assert calls[0]["provider"] == rows[1]["provider_id"]
+
+
+def test_every_chunk_fails_with_the_reason_the_models_were_down(
+    tmp_path, capsys, monkeypatch
+):
+    """A run whose models are down fails every chunk with the same reason."""
+    seed_repo(tmp_path)
+    catalog = fake_catalog("alpha-flash", "beta-flash")
+
+    def factory(config):
+        return ExplodingRoutedGenerator(config)
+
+    monkeypatch.setattr("product_hunter.llm.build_generator", factory)
+    monkeypatch.setattr("product_hunter.cli.build_generator", factory)
+
+    code = run_routed_extract(
+        tmp_path,
+        "down-run",
+        FakeDiscovery(catalog),
+        config=two_chunk_config(),
+    )
+
+    assert code == 1
+    capsys.readouterr()
+    out = tmp_path / "data" / "processed" / "down-run"
+    calls = read_jsonl(out / "calls.jsonl")
+    # The capture was cut in two, so the run made two calls.
+    assert len(calls) == 2
+    for call in calls:
+        # Both chunks failed with the reason the models were down, and not
+        # with "no available model", which is what the exhausted chain says.
+        assert call["status"] == "provider_error"
+        assert "exploded at call time" in call["error"]
+        assert "no available model" not in call["error"]
+        assert call["model"] == "beta-flash"
+    rejects = read_jsonl(out / "rejects.jsonl")
+    assert len(rejects) == 2
+    assert {reject["reason_code"] for reject in rejects} == {"provider_error"}
+
+
+def test_a_candidate_refused_at_the_check_is_recorded(
+    tmp_path, capsys, monkeypatch
+):
+    """The candidate the provider refuses is in the execution file, and why."""
+    seed_repo(tmp_path)
+    catalog = fake_catalog("alpha-flash", "beta-flash")
+
+    class RefusesThePrimary(RoutedGenerator):
+        """A generator whose check refuses the primary candidate."""
+
+        def check(self) -> dict[str, object]:
+            if self.model_id == "alpha-flash":
+                raise ProviderUnavailable("alpha-flash is not in the registry")
+            return {"ok": True}
+
+    def factory(config):
+        return RefusesThePrimary(config)
+
+    monkeypatch.setattr("product_hunter.llm.build_generator", factory)
+    monkeypatch.setattr("product_hunter.cli.build_generator", factory)
+
+    code = run_routed_extract(tmp_path, "refused-run", FakeDiscovery(catalog))
+
+    assert code == 0
+    capsys.readouterr()
+    out = tmp_path / "data" / "processed" / "refused-run"
+    rows = read_jsonl(out / "model_executions.jsonl")
+    # The refused candidate is the first row, and it says why it was skipped.
+    assert len(rows) == 2
+    assert rows[0]["model_id"] == "alpha-flash"
+    assert rows[0]["fallback_index"] == 0
+    assert rows[0]["status"] == "error"
+    assert "not in the registry" in rows[0]["error"]
+    # And the candidate that answered is the second row.
+    assert rows[1]["model_id"] == "beta-flash"
+    assert rows[1]["fallback_index"] == 1
+    assert rows[1]["is_fallback"] is True
+    assert rows[1]["status"] == "ok"
+    # The run names the model the router chose, not the one that answered.
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["model"] == "alpha-flash"
+
+
+def test_every_answered_call_is_the_row_of_the_attempt_that_answered_it(
+    tmp_path, capsys, monkeypatch
+):
+    """Two chunks, two answered calls, and each one has its own row."""
+    seed_repo(tmp_path)
+    catalog = fake_catalog("alpha-flash", "beta-flash")
+    answers = ["not json at all", json.dumps({"candidates": []})]
+
+    class Scripted(RoutedGenerator):
+        """A generator that answers with the next scripted answer."""
+
+        def generate(self, request: GenerationRequest) -> GenerationResponse:
+            self.prompts.append(request.prompt)
+            return GenerationResponse(
+                text=answers.pop(0),
+                provider=self.provider_id,
+                model=self.model_id,
+                extractor_version="phase1-0.3",
+                input_chars=len(request.prompt),
+                latency_ms=7,
+            )
+
+    def factory(config):
+        if config.model_id == "alpha-flash":
+            return ExplodingRoutedGenerator(config)
+        return Scripted(config)
+
+    monkeypatch.setattr("product_hunter.llm.build_generator", factory)
+    monkeypatch.setattr("product_hunter.cli.build_generator", factory)
+
+    code = run_routed_extract(
+        tmp_path,
+        "two-chunk-run",
+        FakeDiscovery(catalog),
+        config=two_chunk_config(),
+    )
+
+    assert code == 0
+    capsys.readouterr()
+    out = tmp_path / "data" / "processed" / "two-chunk-run"
+    calls = read_jsonl(out / "calls.jsonl")
+    assert len(calls) == 2
+    # The first chunk's answer was not usable, the second one was.
+    assert [call["status"] for call in calls] == ["invalid_json", "ok"]
+    rows = read_jsonl(out / "model_executions.jsonl")
+    # One row per provider call: the failed one, and one per answered chunk.
+    assert len(rows) == 3
+    assert rows[0]["model_id"] == "alpha-flash"
+    assert rows[0]["status"] == "error"
+    assert "exploded at call time" in rows[0]["error"]
+    # The row of the first answered attempt carries the outcome of its own
+    # call, and not the outcome of the call that came after it.
+    assert rows[1]["model_id"] == "beta-flash"
+    assert rows[1]["status"] == "error"
+    assert rows[1]["error"].startswith("invalid_json: ")
+    # And the row of the second answered attempt is the one that is ok.
+    assert rows[2]["model_id"] == "beta-flash"
+    assert rows[2]["status"] == "ok"
+    assert rows[2]["error"] is None
+
+
+def test_a_corrupt_provenance_file_refuses_the_import(tmp_path, capsys):
+    """A run whose provenance cannot be read is not imported, and says why."""
+    seed_repo(tmp_path)
+    run_extract(tmp_path)
+    capsys.readouterr()
+    out = tmp_path / "data" / "processed" / "test-run"
+    (out / "model_executions.jsonl").write_text(
+        '{"execution_id": "exec-1"}\n', encoding="utf-8"
+    )
+
+    db_path = tmp_path / "product_hunter.db"
+    store = Store.open(db_path)
+    store.close()
+
+    code = db_import_run_command("test-run", db_path=db_path, repo_root=tmp_path)
+
+    assert code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    # The message names the file and says what to do about it.
+    assert "model_executions.jsonl" in payload["error"]
+    assert "not imported" in payload["error"]
+    conn = connect(db_path)
+    try:
+        run = conn.execute(
+            "SELECT count(*) FROM research_runs WHERE run_id = ?", ("test-run",)
+        ).fetchone()
+        assert run is not None
+        assert run[0] == 0
+    finally:
+        conn.close()
+
+
+def test_a_failed_provenance_write_rolls_the_run_import_back(
+    tmp_path, capsys, monkeypatch
+):
+    """The run and its provenance are one transaction, or neither lands."""
+    seed_repo(tmp_path)
+    catalog = fake_catalog("alpha-flash")
+    patch_generators(monkeypatch)
+    code = run_routed_extract(tmp_path, "rollback-run", FakeDiscovery(catalog))
+    assert code == 0
+    capsys.readouterr()
+
+    db_path = tmp_path / "product_hunter.db"
+    store = Store.open(db_path)
+    store.close()
+
+    def boom(conn, executions):
+        raise sqlite3.OperationalError("the provenance write failed")
+
+    monkeypatch.setattr("product_hunter.db.store.record_model_executions", boom)
+
+    code = db_import_run_command("rollback-run", db_path=db_path, repo_root=tmp_path)
+
+    assert code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+
+    conn = connect(db_path)
+    try:
+        # The run did not land, so it did not land without its provenance.
+        run = conn.execute(
+            "SELECT count(*) FROM research_runs WHERE run_id = ?", ("rollback-run",)
+        ).fetchone()
+        assert run is not None
+        assert run[0] == 0
+        assert list_executions(conn, run_id="rollback-run") == []
+        assert list_inventory(conn) == []
+        bindings = conn.execute(
+            "SELECT count(*) FROM model_role_bindings"
+        ).fetchone()
+        assert bindings is not None
+        assert bindings[0] == 0
+    finally:
+        conn.close()
+
+
+def test_a_run_without_provenance_still_imports(tmp_path, capsys):
+    """A run that recorded no routing imports, and the store keeps no routing."""
+    seed_repo(tmp_path)
+    run_extract(tmp_path)
+    capsys.readouterr()
+    out = tmp_path / "data" / "processed" / "test-run"
+    # Such a run has no routing state at all.
+    assert not (out / "model_executions.jsonl").exists()
+    assert not (out / "model_catalog.json").exists()
+
+    db_path = tmp_path / "product_hunter.db"
+    store = Store.open(db_path)
+    store.close()
+
+    code = db_import_run_command("test-run", db_path=db_path, repo_root=tmp_path)
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    conn = connect(db_path)
+    try:
+        run = conn.execute(
+            "SELECT count(*) FROM research_runs WHERE run_id = ?", ("test-run",)
+        ).fetchone()
+        assert run is not None
+        assert run[0] == 1
+        assert list_executions(conn, run_id="test-run") == []
+        assert list_inventory(conn) == []
+        bindings = conn.execute(
+            "SELECT count(*) FROM model_role_bindings"
+        ).fetchone()
+        assert bindings is not None
+        assert bindings[0] == 0
+    finally:
+        conn.close()
 
 
 def test_importing_a_run_writes_the_model_provenance(tmp_path, capsys, monkeypatch):

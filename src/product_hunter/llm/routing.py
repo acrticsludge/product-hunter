@@ -10,15 +10,22 @@ SQLite.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from datetime import datetime
+import time
+from collections.abc import Callable, Iterable
+from datetime import datetime, timedelta
 from enum import Enum
 from fnmatch import fnmatchcase
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, TypeVar
 
 from pydantic import BaseModel, Field, model_validator
 
-from product_hunter.llm.base import ProviderError
+from product_hunter.llm.base import (
+    GenerationRequest,
+    GenerationResponse,
+    ModelCallFailed,
+    ProviderError,
+    TextGenerator,
+)
 from product_hunter.llm.catalog import (
     Availability,
     CatalogError,
@@ -31,6 +38,8 @@ from product_hunter.llm.discovery import CatalogSource
 
 if TYPE_CHECKING:
     from product_hunter.config import RoutingConfig
+
+_T = TypeVar("_T")
 
 
 class RoutingError(ProviderError):
@@ -128,6 +137,16 @@ class ModelExecution(BaseModel):
     config_version: str
     latency_ms: int = 0
     status: str
+    error: str | None = None
+    created_at: str
+
+
+class GenerationAttempt(BaseModel):
+    """One provider call, with what came of it."""
+
+    selection: ModelSelection
+    latency_ms: int = 0
+    ok: bool
     error: str | None = None
     created_at: str
 
@@ -255,6 +274,151 @@ class ModelRouter:
         """The catalogue source's last discovery failure, when it keeps one."""
         error = getattr(self.catalog_source, "last_error", None)
         return error if isinstance(error, str) else None
+
+
+# The primary candidate plus two fallbacks. The free tier catalogue holds 29
+# models and a provider that is down costs the configured timeout per
+# attempt, 120 s today, so one chunk can cost 3 x 120 s and an unbounded
+# chain would hang it for the whole catalogue.
+MAX_FALLBACK_ATTEMPTS = 3
+
+
+class FallbackGenerator:
+    """A text generator that falls through a role's chain when a call fails.
+
+    The router owns the chain; the generator asks it for the next candidate
+    with the failed ones excluded, and retries the same request. Every
+    provider call is recorded, so a run can say what it tried.
+    """
+
+    name = "fallback"
+
+    def __init__(
+        self,
+        router: ModelRouter,
+        role: ModelRole | str,
+        build: Callable[[ModelSelection], TextGenerator],
+    ) -> None:
+        self.router = router
+        self.role = _role(role)
+        self.build = build
+        self.attempts: list[GenerationAttempt] = []
+        self._failed: list[ModelIdentity] = []
+        self._last_at: datetime | None = None
+        self._last_failure: ProviderError | None = None
+
+    def generate(self, request: GenerationRequest) -> GenerationResponse:
+        """The answer of the first candidate of the chain that answers."""
+
+        def call(
+            selection: ModelSelection, generator: TextGenerator
+        ) -> GenerationResponse:
+            started = time.monotonic()
+            try:
+                response = generator.generate(request)
+            except ProviderError as exc:
+                self._failed_attempt(selection, started, exc)
+                raise
+            self.attempts.append(
+                GenerationAttempt(
+                    selection=selection,
+                    latency_ms=response.latency_ms,
+                    ok=True,
+                    created_at=self._stamp(),
+                )
+            )
+            return response
+
+        return self._walk(call)
+
+    def check(self) -> dict[str, object]:
+        """The check of the first candidate of the chain the provider accepts.
+
+        A model that left the catalogue between the discovery and the check
+        is refused here, and the next candidate is tried instead. A refused
+        candidate is recorded as a failed attempt, so the run says which
+        candidate was skipped and why. A candidate that passes the check is
+        not an attempt: it is not a generation.
+        """
+
+        def probe(
+            selection: ModelSelection, generator: TextGenerator
+        ) -> dict[str, object]:
+            started = time.monotonic()
+            try:
+                return generator.check()
+            except ProviderError as exc:
+                self._failed_attempt(selection, started, exc)
+                raise
+
+        return self._walk(probe)
+
+    def _failed_attempt(
+        self, selection: ModelSelection, started: float, error: ProviderError
+    ) -> None:
+        """One failed attempt: the candidate that failed it and why."""
+        self.attempts.append(
+            GenerationAttempt(
+                selection=selection,
+                latency_ms=_elapsed_ms(started),
+                ok=False,
+                error=str(error),
+                created_at=self._stamp(),
+            )
+        )
+
+    def _stamp(self) -> str:
+        """The moment of the call, after the moment of the call before it.
+
+        The clock is coarse, so two calls in the same millisecond would take
+        the same stamp and the execution log would lose their order.
+        """
+        now = utcnow()
+        if self._last_at is not None and now <= self._last_at:
+            now = self._last_at + timedelta(microseconds=1)
+        self._last_at = now
+        return now.isoformat()
+
+    def _walk(self, action: Callable[[ModelSelection, TextGenerator], _T]) -> _T:
+        """Run one action against the candidates of the chain, in order.
+
+        A candidate that fails is excluded and the next one is tried. The
+        last failure is raised when the chain is exhausted, so the reason the
+        run stopped is the reason the last model gave. The failure is
+        remembered for the whole generator, so a later chunk fails with that
+        reason and not with "no model available".
+        """
+        for _ in range(MAX_FALLBACK_ATTEMPTS):
+            try:
+                selection = self.router.select(self.role, exclude=self._failed)
+            except ProviderError as exc:
+                if self._last_failure is not None:
+                    raise self._last_failure from exc
+                raise
+            try:
+                return action(selection, self.build(selection))
+            except ProviderError as exc:
+                # The error names the candidate that failed, so the record of
+                # the failure names the model that made it.
+                self._last_failure = _call_failed(selection, exc)
+                self._failed.append(selection.identity)
+        if self._last_failure is not None:
+            raise self._last_failure
+        raise RoutingError(f"no candidate to try for role {self.role.value!r}")
+
+
+def _call_failed(selection: ModelSelection, error: ProviderError) -> ModelCallFailed:
+    """The error of a failed call, carrying the candidate that failed it."""
+    return ModelCallFailed(
+        str(error),
+        provider_id=selection.identity.provider_id,
+        model_id=selection.identity.model_id,
+    )
+
+
+def _elapsed_ms(started: float) -> int:
+    """The milliseconds a call took."""
+    return round((time.monotonic() - started) * 1000)
 
 
 def _role(role: ModelRole | str) -> ModelRole:

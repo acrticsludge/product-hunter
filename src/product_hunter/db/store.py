@@ -20,6 +20,12 @@ from pydantic import BaseModel
 
 from product_hunter.db.connection import connect
 from product_hunter.db.migrations import migrate
+from product_hunter.db.model_routing import (
+    RunProvenance,
+    record_catalog,
+    record_model_executions,
+    record_selection,
+)
 from product_hunter.db.outbox import enqueue_projection
 from product_hunter.documents import Document
 from product_hunter.extraction import ExtractedCandidate, ExtractionCall, ExtractionReject
@@ -496,8 +502,15 @@ class Store:
         *,
         fetch_log: str | Path,
         registry: SourceRegistry,
+        provenance: RunProvenance | None = None,
     ) -> ImportSummary:
-        """Import one ``data/processed/<run_id>`` directory in a transaction."""
+        """Import one ``data/processed/<run_id>`` directory in a transaction.
+
+        The routing state the run recorded is imported with it, in the same
+        transaction: the catalogue the run decided against, the model the
+        role resolved to, and the model calls. A run without that state
+        imports as it is, and nothing extra is written.
+        """
         root = Path(run_dir)
         manifest = _read_manifest(root)
         run_id = str(manifest.get("run_id") or root.name)
@@ -587,6 +600,7 @@ class Store:
                     call.model_dump_json(),
                 )
             counts["artifacts"] = self._record_artifacts(root, run_id)
+            self._write_provenance(provenance, manifest)
             self._insert_event(
                 run_id,
                 "run_imported",
@@ -607,6 +621,23 @@ class Store:
             self.conn.execute("ROLLBACK")
             raise
         return ImportSummary(**counts)
+
+    def _write_provenance(
+        self, provenance: RunProvenance | None, manifest: dict[str, object]
+    ) -> None:
+        """Write the routing state of the run, in the import's transaction.
+
+        The writes join the transaction the import already owns, so the run
+        and its provenance are all there or none of them are.
+        """
+        if provenance is None:
+            return
+        if provenance.catalog is not None:
+            record_catalog(self.conn, provenance.catalog)
+        config_version = _routing_config_version(manifest)
+        for selection in provenance.selections:
+            record_selection(self.conn, selection, config_version=config_version)
+        record_model_executions(self.conn, provenance.executions)
 
     def _upsert_run(self, manifest: dict[str, object], run_id: str) -> None:
         started_at = _text(manifest.get("started_at")) or utcnow().isoformat()
@@ -829,6 +860,19 @@ def _check_manifest_counts(
             f"the manifest declares {key}={declared} but the run has {count} {key}; "
             f"checked against {name!r}"
         )
+
+
+def _routing_config_version(manifest: dict[str, object]) -> str:
+    """The routing config version the run recorded, or an empty string.
+
+    A run that recorded no routing has no version, and the binding it leaves
+    says so.
+    """
+    block = manifest.get("model_routing")
+    if not isinstance(block, dict):
+        return ""
+    version = block.get("config_version")
+    return version if isinstance(version, str) else ""
 
 
 def _community_for(document: Document) -> tuple[str, str | None]:

@@ -27,12 +27,10 @@ from product_hunter.db import (
     current_version,
     list_jobs,
     list_projection_tasks,
-    record_catalog,
-    record_model_executions,
-    record_selection,
     recover_expired_leases,
     recover_projection_leases,
 )
+from product_hunter.db.model_routing import RunProvenance
 from product_hunter.documents import (
     Document,
     DocumentChunk,
@@ -74,7 +72,11 @@ from product_hunter.fetch import (
     JsonlLog,
     utcnow,
 )
-from product_hunter.llm import build_generator, build_role_generator, build_router
+from product_hunter.llm import (
+    build_generator,
+    build_generator_for_selection,
+    build_router,
+)
 from product_hunter.llm.base import ProviderError, TextGenerator
 from product_hunter.llm.catalog import (
     CatalogError,
@@ -84,6 +86,8 @@ from product_hunter.llm.catalog import (
 )
 from product_hunter.llm.discovery import ModelDiscovery
 from product_hunter.llm.routing import (
+    FallbackGenerator,
+    GenerationAttempt,
     ModelExecution,
     ModelRole,
     ModelRouter,
@@ -112,6 +116,10 @@ RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 # The pipeline stage an extraction call belongs to. The store names the same
 # stage for the run it imports.
 PAIN_EXTRACTION_STAGE = "PAIN_EXTRACTION"
+
+# The call statuses that mean the provider answered. The call record of such
+# a call belongs to the attempt that answered it.
+ANSWERED_CALL_STATUSES = ("ok", "invalid_json", "schema_invalid")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -465,9 +473,11 @@ def extract_command(
     catalog: ModelCatalog | None = None
     routing_failure: str | None = None
     routing_version = ""
+    fallback: FallbackGenerator | None = None
     if generator is None:
         # The model is a runtime decision: the router resolves the extraction
-        # role against the live catalogue.
+        # role against the live catalogue, and a call that fails is retried
+        # with the next candidate of the chain.
         try:
             routing = (
                 routing_config
@@ -476,9 +486,13 @@ def extract_command(
             )
             routing_version = routing.config_version
             router = build_router(routing, config, discovery=discovery)
-            generator, selection = build_role_generator(
-                config, router, ModelRole.extraction
+            selection = router.select(ModelRole.extraction)
+            fallback = FallbackGenerator(
+                router,
+                ModelRole.extraction,
+                lambda chosen: build_generator_for_selection(config, chosen),
             )
+            generator = fallback
             catalog = _router_catalog(router, selection)
         except (OSError, ValueError, ProviderError) as exc:
             # A broken router must never stop an extraction run.
@@ -498,9 +512,9 @@ def extract_command(
         selection = _default_selection(config)
 
     # The generator is bound to the model the router selected, and the call
-    # records are written from the config the extraction reads, so both must
-    # name the same model. A call that fails is attributed to the model that
-    # failed, not to the model pinned in the config.
+    # records are written from the config the extraction reads, so both name
+    # the model the run is bound to. A call that fails is attributed to the
+    # model that failed, and the error carries it.
     run_config = _bound_config(config, selection)
 
     if generator is not None:
@@ -551,10 +565,12 @@ def extract_command(
     _write_jsonl(out_dir / "pain_points.jsonl", [c for c in candidates if c.accepted])
     _write_jsonl(out_dir / "calls.jsonl", calls)
     _write_jsonl(out_dir / "rejects.jsonl", rejects)
-    # The manifest names the model that ran the extraction, not the model
-    # pinned in the config. A run whose router answered ran the model it
-    # selected; a run whose router failed ran the pinned one, and its
-    # selection is the pinned model.
+    # The manifest names the model the router chose, not the model pinned in
+    # the config, and not the model that happened to answer the last call.
+    # The top-level model is the policy of the run: it is what the router
+    # decided, and it does not change with provider luck. A run whose router
+    # failed ran the pinned model, and its selection is the pinned model.
+    # Which model made which call is in the execution rows.
     provider_id, model_id = _model_pair(config, selection)
     manifest = {
         "run_id": run_id,
@@ -581,10 +597,19 @@ def extract_command(
         manifest["model_routing"] = _routing_block(
             selection, config_version=routing_version, reason=routing_failure
         )
-        _write_jsonl(
-            out_dir / "model_executions.jsonl",
-            _model_executions(run_id, calls, selection, routing_version),
-        )
+        if fallback is not None:
+            # One row per provider call: a call that failed is a row of its
+            # own, and the call that answered is the one the chunk records.
+            rows = _attempt_executions(
+                run_id,
+                fallback.attempts,
+                calls,
+                config_version=routing_version,
+                prompt_version=config.prompt_version,
+            )
+        else:
+            rows = _model_executions(run_id, calls, selection, routing_version)
+        _write_jsonl(out_dir / "model_executions.jsonl", rows)
     if catalog is not None:
         # The catalogue the run decided against, so the import can rebuild the
         # model inventory from it. A run whose router failed has no catalogue
@@ -1043,8 +1068,11 @@ def db_import_run_command(
 ) -> int:
     """Import one processed run into SQLite. Returns 0 or 1.
 
-    The run's model provenance is imported with it: the model calls, and the
-    model the role resolved to.
+    The run's model provenance is imported with it, in the same transaction:
+    the model calls, the model the role resolved to, and the catalogue the
+    run decided against. A provenance file that cannot be read refuses the
+    import: the run does not land without the provenance it recorded, and
+    the message names the file to fix.
     """
     if not _valid_run_id(run_id):
         print(json.dumps({"ok": False, "error": f"invalid run id {run_id!r}"}))
@@ -1059,36 +1087,30 @@ def db_import_run_command(
     )
     try:
         registry = registry if registry is not None else load_registry()
+        try:
+            provenance = _run_provenance(run_dir)
+        except (OSError, ValueError) as exc:
+            # The provenance is refused on its own: the run is not imported,
+            # because a run without the provenance it recorded is a lie. The
+            # message names the file and what to do about it.
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": f"provenance: {exc}; the run was not imported. "
+                        "Fix the file or remove it, then import the run again.",
+                    }
+                )
+            )
+            return 1
         store = Store.open(path)
         try:
             summary = store.import_run(
                 run_dir,
                 fetch_log=fetch_path,
                 registry=registry,
+                provenance=provenance,
             )
-            # The provenance of the run: the model calls, and the model the
-            # role resolved to. The two writes follow the import, one after
-            # the other; the rows are derivable from the run artifacts, so a
-            # failed write is recoverable by importing the run again.
-            executions = _read_model_executions(
-                run_dir / "model_executions.jsonl"
-            )
-            if executions:
-                record_model_executions(store.conn, executions)
-            block = _read_routing_block(run_dir / "manifest.json")
-            selection = _selection_from_block(block) if block else None
-            if selection is not None:
-                record_selection(
-                    store.conn,
-                    selection,
-                    config_version=str(block.get("config_version") or ""),
-                )
-            # The catalogue the run decided against, so the inventory knows
-            # which models existed and when they were seen. A run without one
-            # leaves the inventory alone.
-            catalog = _read_model_catalog(run_dir / "model_catalog.json")
-            if catalog is not None:
-                record_catalog(store.conn, catalog)
         finally:
             store.close()
     except Exception as exc:
@@ -1338,6 +1360,21 @@ def _read_model_executions(path: Path) -> list[ModelExecution]:
     return executions
 
 
+def _run_provenance(run_dir: Path) -> RunProvenance:
+    """The routing state one run recorded, to be imported with the run.
+
+    A run without the files has no routing state, and nothing extra is
+    written for it.
+    """
+    block = _read_routing_block(run_dir / "manifest.json")
+    selection = _selection_from_block(block) if block else None
+    return RunProvenance(
+        catalog=_read_model_catalog(run_dir / "model_catalog.json"),
+        selections=(selection,) if selection is not None else (),
+        executions=tuple(_read_model_executions(run_dir / "model_executions.jsonl")),
+    )
+
+
 def _read_routing_block(path: Path) -> dict[str, object] | None:
     """The model routing block of a run manifest, or None when it has none."""
     if not path.is_file():
@@ -1436,12 +1473,12 @@ def _model_pair(
 def _bound_config(
     config: ExtractionConfig, selection: ModelSelection | None
 ) -> ExtractionConfig:
-    """The config that names the model that ran.
+    """The config that names the model the run is bound to.
 
     The generator is built from a copy of the config that carries the
-    selected provider and model, so the extraction reads that copy too: the
-    call it records and the execution row it writes name the model that was
-    called, on the success path and on the failure path alike.
+    selected provider and model, so the extraction reads that copy too. A
+    call that answered names the model that answered it, and a call that
+    failed names the model that failed it, which the error carries.
     """
     if selection is None:
         return config
@@ -1572,6 +1609,67 @@ def _model_executions(
         )
         for call in calls
     ]
+
+
+def _attempt_executions(
+    run_id: str,
+    attempts: list[GenerationAttempt],
+    calls: list[ExtractionCall],
+    *,
+    config_version: str,
+    prompt_version: str,
+) -> list[ModelExecution]:
+    """One execution row per provider call of the run.
+
+    A call that did not answer is a row of its own, with the reason it
+    failed, and so is a candidate the provider refused at the check. The
+    call that answered carries the outcome of the chunk it answered, because
+    the extraction, not the provider, decides whether an answer is usable.
+    Every row names the candidate that made the call, so a run that only
+    succeeded on the second candidate says so.
+    """
+    answered = [call for call in calls if call.status in ANSWERED_CALL_STATUSES]
+    rows: list[ModelExecution] = []
+    position = 0
+    for index, attempt in enumerate(attempts):
+        if attempt.ok:
+            call = answered[position] if position < len(answered) else None
+            position += 1
+            status = "ok" if call is None or call.status == "ok" else "error"
+            error = None if call is None else _call_error(call)
+        else:
+            status = "error"
+            error = attempt.error
+        rows.append(
+            ModelExecution(
+                execution_id=_attempt_execution_id(run_id, index, attempt),
+                run_id=run_id,
+                stage=PAIN_EXTRACTION_STAGE,
+                role=attempt.selection.role,
+                provider_id=attempt.selection.identity.provider_id,
+                model_id=attempt.selection.identity.model_id,
+                selection_source=attempt.selection.selection_source,
+                fallback_index=attempt.selection.fallback_index,
+                is_fallback=attempt.selection.is_fallback,
+                catalog_version=attempt.selection.catalog_version,
+                prompt_version=prompt_version,
+                config_version=config_version,
+                latency_ms=attempt.latency_ms,
+                status=status,
+                error=error,
+                created_at=attempt.created_at,
+            )
+        )
+    return rows
+
+
+def _attempt_execution_id(
+    run_id: str, position: int, attempt: GenerationAttempt
+) -> str:
+    """The id of one execution: the run, the attempt's place, and the model."""
+    identity = attempt.selection.identity
+    basis = f"{run_id}|{position}|{identity.provider_id}|{identity.model_id}"
+    return "exec_" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
 
 
 def _execution_id(run_id: str, call_id: str) -> str:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -22,8 +22,14 @@ from product_hunter.db import (
     record_model_executions,
     record_selection,
 )
-from product_hunter.llm import build_role_generator
-from product_hunter.llm.base import ProviderError
+from product_hunter.llm import build_generator_for_selection
+from product_hunter.llm.base import (
+    GenerationRequest,
+    GenerationResponse,
+    ModelCallFailed,
+    ProviderError,
+    TextGenerator,
+)
 from product_hunter.llm.catalog import (
     Availability,
     CatalogError,
@@ -33,9 +39,12 @@ from product_hunter.llm.catalog import (
 )
 from product_hunter.llm.discovery import CatalogRefresher, DiscoveryError
 from product_hunter.llm.routing import (
+    MAX_FALLBACK_ATTEMPTS,
+    FallbackGenerator,
     ModelExecution,
     ModelRole,
     ModelRouter,
+    ModelSelection,
     NoModelAvailable,
     RouteCandidate,
     RoutingError,
@@ -50,7 +59,7 @@ DEFAULT = ModelIdentity(provider_id=CONFIG.provider_id, model_id=CONFIG.model_id
 def stamp(day: int) -> datetime:
     """A moment in October 2026, so two catalogues can be ordered against
     each other without depending on the clock."""
-    return datetime(2026, 10, day, tzinfo=timezone.utc)
+    return datetime(2026, 10, day, tzinfo=UTC)
 
 
 def fixture_catalog(
@@ -162,6 +171,47 @@ def model(value: str) -> RouteCandidate:
     return RouteCandidate(kind="model", value=value)
 
 
+class ScriptedGenerator:
+    """A generator that answers with one response, or fails on demand."""
+
+    name = "fake"
+
+    def __init__(self, model_id: str, *, fails: bool = False) -> None:
+        self.model_id = model_id
+        self.fails = fails
+        self.calls = 0
+
+    def generate(self, request: GenerationRequest) -> GenerationResponse:
+        self.calls += 1
+        if self.fails:
+            raise ProviderError(f"{self.model_id} is down")
+        return GenerationResponse(
+            text='{"candidates": []}',
+            provider=DEFAULT.provider_id,
+            model=self.model_id,
+            extractor_version="phase1-0.3",
+            input_chars=len(request.prompt),
+            latency_ms=5,
+        )
+
+    def check(self) -> dict[str, object]:
+        if self.fails:
+            raise ProviderError(f"{self.model_id} is not in the registry")
+        return {"ok": True}
+
+
+def build_for(failing: set[str]):
+    """A builder of a generator that fails for the models named."""
+
+    def build(selection: ModelSelection) -> TextGenerator:
+        return ScriptedGenerator(
+            selection.identity.model_id,
+            fails=selection.identity.model_id in failing,
+        )
+
+    return build
+
+
 # The model the shipped role file must pick for a role: the cheapest flash
 # model, except for the roles that ask for a deepseek model first. The
 # extraction role asks for it first too, so it takes the cheapest deepseek
@@ -268,7 +318,7 @@ def test_a_malformed_extraction_file_is_a_value_error(tmp_path) -> None:
     assert "expected" in message
 
 
-def test_a_role_generator_is_bound_to_the_selected_model(monkeypatch) -> None:
+def test_a_generator_for_a_selection_is_bound_to_the_selected_model(monkeypatch) -> None:
     """The generator runs the model the router chose, not the pinned one."""
     catalog = fixture_catalog("alpha-flash")
     router = router_for(
@@ -282,10 +332,9 @@ def test_a_role_generator_is_bound_to_the_selected_model(monkeypatch) -> None:
         return object()
 
     monkeypatch.setattr("product_hunter.llm.build_generator", factory)
+    selection = router.select(ModelRole.extraction)
 
-    generator, selection = build_role_generator(
-        CONFIG, router, ModelRole.extraction
-    )
+    generator = build_generator_for_selection(CONFIG, selection)
 
     assert generator is not None
     assert selection.identity.model_id == "alpha-flash"
@@ -411,6 +460,185 @@ def test_fallback_moves_to_the_next_candidate() -> None:
     assert fallback.identity.model_id == "beta-fast"
     assert fallback.fallback_index == 1
     assert fallback.is_fallback is True
+
+
+def test_a_failed_call_falls_through_to_the_next_candidate() -> None:
+    """A model that fails at call time is retried with the next candidate."""
+    catalog = fixture_catalog("alpha-fast", "beta-fast")
+    router = router_for(
+        {ModelRole.extraction: [pattern(f"{DEFAULT.provider_id}/*-fast")]},
+        catalog,
+    )
+    generator = FallbackGenerator(
+        router, ModelRole.extraction, build_for({"alpha-fast"})
+    )
+
+    response = generator.generate(GenerationRequest(prompt="find the pain"))
+
+    assert response.model == "beta-fast"
+    assert [attempt.ok for attempt in generator.attempts] == [False, True]
+    failed = generator.attempts[0]
+    assert failed.selection.identity.model_id == "alpha-fast"
+    assert failed.error is not None
+    assert "alpha-fast is down" in failed.error
+    # The call that answered is the fallback it was.
+    assert generator.attempts[1].selection.fallback_index == 1
+    assert generator.attempts[1].selection.is_fallback is True
+
+
+def test_a_failed_candidate_is_not_tried_again() -> None:
+    """A candidate that failed is excluded from the calls that follow."""
+    catalog = fixture_catalog("alpha-fast", "beta-fast")
+    router = router_for(
+        {ModelRole.extraction: [pattern(f"{DEFAULT.provider_id}/*-fast")]},
+        catalog,
+    )
+    generator = FallbackGenerator(
+        router, ModelRole.extraction, build_for({"alpha-fast"})
+    )
+
+    generator.generate(GenerationRequest(prompt="first"))
+    generator.generate(GenerationRequest(prompt="second"))
+
+    assert [attempt.selection.identity.model_id for attempt in generator.attempts] == [
+        "alpha-fast",
+        "beta-fast",
+        "beta-fast",
+    ]
+
+
+def test_the_number_of_candidates_one_call_may_try_is_bounded() -> None:
+    """A provider that is down costs a timeout per attempt, so the chain ends."""
+    catalog = fixture_catalog(
+        "alpha-fast", "beta-fast", "gamma-fast", "delta-fast"
+    )
+    router = router_for(
+        {ModelRole.extraction: [pattern(f"{DEFAULT.provider_id}/*-fast")]},
+        catalog,
+    )
+    generator = FallbackGenerator(
+        router, ModelRole.extraction, build_for({"alpha-fast", "beta-fast", "gamma-fast", "delta-fast", DEFAULT.model_id})
+    )
+
+    with pytest.raises(ProviderError):
+        generator.generate(GenerationRequest(prompt="find the pain"))
+
+    assert len(generator.attempts) == MAX_FALLBACK_ATTEMPTS
+
+
+def test_the_exhausted_chain_raises_the_last_provider_error() -> None:
+    """The reason the run stopped is the reason the last model gave."""
+    catalog = fixture_catalog("alpha-fast", "beta-fast", include_default=False)
+    router = router_for(
+        {ModelRole.extraction: [pattern(f"{DEFAULT.provider_id}/*-fast")]},
+        catalog,
+    )
+    generator = FallbackGenerator(
+        router, ModelRole.extraction, build_for({"alpha-fast", "beta-fast"})
+    )
+
+    with pytest.raises(ProviderError) as excinfo:
+        generator.generate(GenerationRequest(prompt="find the pain"))
+
+    assert "beta-fast is down" in str(excinfo.value)
+
+
+def test_the_exhausted_chain_names_the_model_that_failed() -> None:
+    """The error names the candidate that failed, not the one the run began on."""
+    catalog = fixture_catalog("alpha-fast", "beta-fast", include_default=False)
+    router = router_for(
+        {ModelRole.extraction: [pattern(f"{DEFAULT.provider_id}/*-fast")]},
+        catalog,
+    )
+    generator = FallbackGenerator(
+        router, ModelRole.extraction, build_for({"alpha-fast", "beta-fast"})
+    )
+
+    with pytest.raises(ModelCallFailed) as excinfo:
+        generator.generate(GenerationRequest(prompt="find the pain"))
+
+    error = excinfo.value
+    assert error.model_id == "beta-fast"
+    assert error.provider_id == DEFAULT.provider_id
+    assert "beta-fast is down" in str(error)
+
+
+def test_the_next_call_fails_with_the_reason_the_models_were_down() -> None:
+    """The chain is exhausted for the whole run, and so is the reason."""
+    catalog = fixture_catalog("alpha-fast", "beta-fast", include_default=False)
+    router = router_for(
+        {ModelRole.extraction: [pattern(f"{DEFAULT.provider_id}/*-fast")]},
+        catalog,
+    )
+    generator = FallbackGenerator(
+        router, ModelRole.extraction, build_for({"alpha-fast", "beta-fast"})
+    )
+
+    with pytest.raises(ProviderError) as first:
+        generator.generate(GenerationRequest(prompt="first"))
+    with pytest.raises(ProviderError) as second:
+        generator.generate(GenerationRequest(prompt="second"))
+
+    assert "beta-fast is down" in str(first.value)
+    assert str(second.value) == str(first.value)
+    # The reason the models were down, and not "no available model", which is
+    # what the exhausted chain would say on its own.
+    assert "no available model" not in str(second.value)
+
+
+def test_a_candidate_refused_at_the_check_is_a_failed_attempt() -> None:
+    """A refused candidate is recorded, so the run says what was skipped."""
+    catalog = fixture_catalog("alpha-fast", "beta-fast")
+    router = router_for(
+        {ModelRole.extraction: [pattern(f"{DEFAULT.provider_id}/*-fast")]},
+        catalog,
+    )
+    generator = FallbackGenerator(
+        router, ModelRole.extraction, build_for({"alpha-fast"})
+    )
+
+    result = generator.check()
+
+    assert result == {"ok": True}
+    # The refused candidate is an attempt, and it is a failed one.
+    assert [attempt.ok for attempt in generator.attempts] == [False]
+    refused = generator.attempts[0]
+    assert refused.selection.identity.model_id == "alpha-fast"
+    assert refused.error is not None
+    assert "alpha-fast is not in the registry" in refused.error
+
+
+def test_a_candidate_that_passes_the_check_is_not_an_attempt() -> None:
+    """A check that passes is not a generation, so it is not recorded."""
+    catalog = fixture_catalog("alpha-fast", "beta-fast")
+    router = router_for(
+        {ModelRole.extraction: [pattern(f"{DEFAULT.provider_id}/*-fast")]},
+        catalog,
+    )
+    generator = FallbackGenerator(router, ModelRole.extraction, build_for(set()))
+
+    generator.check()
+
+    assert generator.attempts == []
+
+
+def test_check_falls_through_to_the_next_candidate() -> None:
+    """A model the provider refuses is not the end of the run."""
+    catalog = fixture_catalog("alpha-fast", "beta-fast")
+    router = router_for(
+        {ModelRole.extraction: [pattern(f"{DEFAULT.provider_id}/*-fast")]},
+        catalog,
+    )
+    generator = FallbackGenerator(
+        router, ModelRole.extraction, build_for({"alpha-fast"})
+    )
+
+    result = generator.check()
+
+    assert result == {"ok": True}
+    # And the refused model is not the one that answers the call.
+    response = generator.generate(GenerationRequest(prompt="find the pain"))
+    assert response.model == "beta-fast"
 
 
 def test_the_cheapest_model_comes_first() -> None:
@@ -872,6 +1100,60 @@ def test_the_selection_is_persisted() -> None:
         assert row["catalog_version"] == catalog.catalog_version
         assert row["config_version"] == "routing-v1-abc"
         assert row["selected_at"] is not None
+    finally:
+        conn.close()
+
+
+def test_a_write_function_commits_only_the_transaction_it_owns() -> None:
+    """A write inside a caller's transaction leaves that transaction open."""
+    conn = connect(":memory:")
+    try:
+        migrate(conn)
+        catalog = fixture_catalog("alpha-flash")
+        router = router_for(
+            {ModelRole.extraction: [pattern(f"{DEFAULT.provider_id}/*-flash")]},
+            catalog,
+        )
+        selection = router.select(ModelRole.extraction)
+        execution = ModelExecution(
+            execution_id="exec-1",
+            run_id="run-1",
+            stage="extraction",
+            role=ModelRole.extraction,
+            provider_id=DEFAULT.provider_id,
+            model_id="alpha-flash",
+            selection_source=SelectionSource.pattern,
+            fallback_index=0,
+            is_fallback=False,
+            catalog_version=catalog.catalog_version,
+            prompt_version="extract-v3",
+            config_version="routing-v1-abc",
+            latency_ms=1,
+            status="ok",
+            error=None,
+            created_at="2026-01-01T00:00:00+00:00",
+        )
+
+        # A free connection: the write owns the transaction and commits it.
+        record_catalog(conn, catalog)
+        assert conn.in_transaction is False
+        record_selection(conn, selection, config_version="routing-v1-abc")
+        assert conn.in_transaction is False
+        record_execution(conn, execution)
+        assert conn.in_transaction is False
+        record_model_executions(conn, [execution])
+        assert conn.in_transaction is False
+
+        # A busy connection: the write joins the transaction and leaves it
+        # to the caller.
+        conn.execute("BEGIN IMMEDIATE")
+        record_catalog(conn, catalog)
+        record_selection(conn, selection, config_version="routing-v1-abc")
+        record_execution(conn, execution)
+        record_model_executions(conn, [execution])
+        assert conn.in_transaction is True
+        conn.execute("COMMIT")
+        assert conn.in_transaction is False
     finally:
         conn.close()
 

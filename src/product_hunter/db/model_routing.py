@@ -10,7 +10,8 @@ module takes plain objects in and hands plain objects back.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -72,6 +73,37 @@ class ExecutionRow:
     created_at: str
 
 
+@dataclass(frozen=True)
+class RunProvenance:
+    """The routing state one run recorded, to be written with the run."""
+
+    catalog: ModelCatalog | None = None
+    selections: tuple[ModelSelection, ...] = ()
+    executions: tuple[ModelExecution, ...] = ()
+
+
+@contextmanager
+def _owned_transaction(conn: sqlite3.Connection) -> Iterator[None]:
+    """The transaction a write owns, or the caller's own.
+
+    A connection that is already in a transaction keeps it: the write joins
+    the caller's transaction and leaves the commit to the caller. A
+    connection that is free gets one, and the write commits it, or rolls it
+    back when the write fails.
+    """
+    owns = not conn.in_transaction
+    try:
+        if owns:
+            conn.execute("BEGIN IMMEDIATE")
+        yield
+        if owns:
+            conn.execute("COMMIT")
+    except BaseException:
+        if owns:
+            _rollback(conn)
+        raise
+
+
 def record_catalog(
     conn: sqlite3.Connection,
     catalog: ModelCatalog,
@@ -85,11 +117,13 @@ def record_catalog(
     the row was last seen before the catalogue was discovered. A catalogue
     older than a row knows nothing about that row, so it neither retires it
     nor moves its stamps backwards.
+
+    A connection that is already in a transaction keeps it: the catalogue is
+    written inside the caller's transaction and is committed with it.
     """
     discovered_at = _aware(catalog.discovered_at)
     discovered_iso = discovered_at.isoformat()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with _owned_transaction(conn):
         conn.execute(
             """
             INSERT INTO model_catalogs (
@@ -112,10 +146,6 @@ def record_catalog(
         _retire_absent_models(conn, catalog, discovered_at, discovered_iso)
         for entry in catalog.entries:
             _record_entry(conn, entry, catalog, discovered_at, discovered_iso)
-        conn.execute("COMMIT")
-    except BaseException:
-        _rollback(conn)
-        raise
     return CatalogRecord(
         catalog_version=catalog.catalog_version,
         source=catalog.source,
@@ -226,32 +256,37 @@ def record_selection(
     config_version: str,
     now: datetime | None = None,
 ) -> None:
-    """Write the model a role resolved to, at its position in the chain."""
-    conn.execute(
-        """
-        INSERT INTO model_role_bindings (
-            role, position, provider_id, model_id, selection_source,
-            catalog_version, config_version, selected_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(role, position) DO UPDATE SET
-            provider_id = excluded.provider_id,
-            model_id = excluded.model_id,
-            selection_source = excluded.selection_source,
-            catalog_version = excluded.catalog_version,
-            config_version = excluded.config_version,
-            selected_at = excluded.selected_at
-        """,
-        (
-            selection.role.value,
-            selection.fallback_index,
-            selection.identity.provider_id,
-            selection.identity.model_id,
-            selection.selection_source.value,
-            selection.catalog_version,
-            config_version,
-            (now or utcnow()).isoformat(),
-        ),
-    )
+    """Write the model a role resolved to, at its position in the chain.
+
+    A connection that is already in a transaction keeps it, so the binding
+    can be written with the run it belongs to.
+    """
+    with _owned_transaction(conn):
+        conn.execute(
+            """
+            INSERT INTO model_role_bindings (
+                role, position, provider_id, model_id, selection_source,
+                catalog_version, config_version, selected_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(role, position) DO UPDATE SET
+                provider_id = excluded.provider_id,
+                model_id = excluded.model_id,
+                selection_source = excluded.selection_source,
+                catalog_version = excluded.catalog_version,
+                config_version = excluded.config_version,
+                selected_at = excluded.selected_at
+            """,
+            (
+                selection.role.value,
+                selection.fallback_index,
+                selection.identity.provider_id,
+                selection.identity.model_id,
+                selection.selection_source.value,
+                selection.catalog_version,
+                config_version,
+                (now or utcnow()).isoformat(),
+            ),
+        )
 
 
 def record_execution(conn: sqlite3.Connection, execution: ModelExecution) -> None:
@@ -261,50 +296,54 @@ def record_execution(conn: sqlite3.Connection, execution: ModelExecution) -> Non
     one row per call, and the second import repairs a row the first one left
     behind. The error text is cut to ``MAX_ERROR_CHARS``: the row keeps the
     beginning of the message, not a page of stderr.
+
+    A connection that is already in a transaction keeps it, so the call can
+    be written with the run it belongs to.
     """
-    conn.execute(
-        """
-        INSERT INTO model_executions (
-            execution_id, run_id, stage, role, provider_id, model_id,
-            selection_source, fallback_index, is_fallback, catalog_version,
-            prompt_version, config_version, latency_ms, status, error, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(execution_id) DO UPDATE SET
-            run_id = excluded.run_id,
-            stage = excluded.stage,
-            role = excluded.role,
-            provider_id = excluded.provider_id,
-            model_id = excluded.model_id,
-            selection_source = excluded.selection_source,
-            fallback_index = excluded.fallback_index,
-            is_fallback = excluded.is_fallback,
-            catalog_version = excluded.catalog_version,
-            prompt_version = excluded.prompt_version,
-            config_version = excluded.config_version,
-            latency_ms = excluded.latency_ms,
-            status = excluded.status,
-            error = excluded.error,
-            created_at = excluded.created_at
-        """,
-        (
-            execution.execution_id,
-            execution.run_id,
-            execution.stage,
-            execution.role.value,
-            execution.provider_id,
-            execution.model_id,
-            execution.selection_source.value,
-            execution.fallback_index,
-            int(execution.is_fallback),
-            execution.catalog_version,
-            execution.prompt_version,
-            execution.config_version,
-            execution.latency_ms,
-            execution.status,
-            _bounded_error(execution.error),
-            execution.created_at,
-        ),
-    )
+    with _owned_transaction(conn):
+        conn.execute(
+            """
+            INSERT INTO model_executions (
+                execution_id, run_id, stage, role, provider_id, model_id,
+                selection_source, fallback_index, is_fallback, catalog_version,
+                prompt_version, config_version, latency_ms, status, error, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(execution_id) DO UPDATE SET
+                run_id = excluded.run_id,
+                stage = excluded.stage,
+                role = excluded.role,
+                provider_id = excluded.provider_id,
+                model_id = excluded.model_id,
+                selection_source = excluded.selection_source,
+                fallback_index = excluded.fallback_index,
+                is_fallback = excluded.is_fallback,
+                catalog_version = excluded.catalog_version,
+                prompt_version = excluded.prompt_version,
+                config_version = excluded.config_version,
+                latency_ms = excluded.latency_ms,
+                status = excluded.status,
+                error = excluded.error,
+                created_at = excluded.created_at
+            """,
+            (
+                execution.execution_id,
+                execution.run_id,
+                execution.stage,
+                execution.role.value,
+                execution.provider_id,
+                execution.model_id,
+                execution.selection_source.value,
+                execution.fallback_index,
+                int(execution.is_fallback),
+                execution.catalog_version,
+                execution.prompt_version,
+                execution.config_version,
+                execution.latency_ms,
+                execution.status,
+                _bounded_error(execution.error),
+                execution.created_at,
+            ),
+        )
 
 
 def record_model_executions(
@@ -312,21 +351,14 @@ def record_model_executions(
 ) -> int:
     """Write every model call of a run, in one transaction.
 
-    The calls of a run are all there or none of them are. The run's role
-    binding is a separate write: the import of the run itself is another
-    transaction, so the two happen in sequence and not in one. The rows are
-    derivable from the run artifacts, so a run whose binding write failed is
-    recoverable by importing it again.
+    The calls of a run are all there or none of them are. A connection that
+    is already in a transaction keeps it, so the calls can be written with
+    the run they belong to.
     """
     rows = list(executions)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with _owned_transaction(conn):
         for execution in rows:
             record_execution(conn, execution)
-        conn.execute("COMMIT")
-    except BaseException:
-        _rollback(conn)
-        raise
     return len(rows)
 
 

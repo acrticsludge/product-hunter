@@ -19,7 +19,7 @@ per-call execution provenance.
 |---|---|
 | catalogue, identity, availability, parsing, diff | `src/product_hunter/llm/catalog.py` |
 | discovery over the OpenCode CLI, TTL refresher | `src/product_hunter/llm/discovery.py` |
-| roles, chains, selector, selection and execution records | `src/product_hunter/llm/routing.py` |
+| roles, chains, selector, selection and execution records, fallback generator | `src/product_hunter/llm/routing.py` |
 | shared argv runner for the OpenCode CLI | `src/product_hunter/llm/opencode.py` |
 | router construction | `src/product_hunter/llm/__init__.py` |
 | routing config loader | `src/product_hunter/config.py` |
@@ -37,11 +37,18 @@ per-call execution provenance.
 
 `ph extract` resolves the `extraction` role through the router, binds the
 selected model to the generator, and writes the run's
-`model_executions.jsonl` plus a `model_routing` block in the manifest. A
+`model_executions.jsonl` plus a `model_routing` block in the manifest. The
+manifest's top-level provider and model name the model the router chose, which
+is the policy of the run: a candidate that fails and a later one that answers
+do not change it. A routed model that fails at call time is retried with the
+next candidate of the chain, and both calls are recorded. A
 router that cannot answer never stops a run: the model pinned in
 `config/extraction.yaml` runs it, and the manifest and a `routing_failed`
-rejection say why. `ph db import-run` writes the calls into
-`model_executions` and the selection into `model_role_bindings`.
+rejection say why. `ph db import-run` writes the run and its provenance in one
+transaction: the calls into `model_executions`, the selection into
+`model_role_bindings`, and the catalogue into the model inventory. A
+provenance file that cannot be read refuses the import: the run does not land
+without the provenance it recorded, and the message names the file to fix.
 
 The run also records the catalogue the router decided against, in
 `model_catalog.json`. The import reads it back and fills the model inventory
@@ -70,16 +77,25 @@ selection = router.select("extraction")
 # selection.identity, selection.selection_source, selection.catalog_version
 ```
 
-The router API can exclude a model that failed at call time, so a caller
-that wants to try the next candidate can:
+The router API can exclude a model that failed at call time, and the
+extraction path uses it. `ph extract` runs the `extraction` role through a
+`FallbackGenerator`, which asks the router for the next candidate with the
+failed ones excluded and retries the same request. Every provider call is kept
+as a `GenerationAttempt`, and the run's `model_executions.jsonl` holds one row
+per provider call: the one that failed, with its reason, and the one that
+answered, with the fallback index of the candidate that answered. A candidate
+the provider refuses at the check is a failed attempt too, so the file says
+which candidate was skipped and why. The error the chain raises when it is
+exhausted carries the model that failed, so the call record and the rejection
+name that model, and the generator remembers it, so every chunk of a run whose
+models are down fails with the reason the models were down.
 
 ```python
 selection = router.select("extraction", exclude=[failed_identity])
 ```
 
-That is the router API, not the extraction path: `ph extract` never calls
-`select(..., exclude=...)`. A routed model that fails at call time fails its
-chunk into a rejection, and the chunk is not retried with another model.
+A call may try three candidates, the primary and two fallbacks. A candidate
+that failed is not tried again in that run.
 
 ## The four properties, and where each one lives
 

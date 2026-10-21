@@ -22,6 +22,7 @@ from product_hunter.documents import Document, DocumentChunk, chunk_documents
 from product_hunter.fetch import utcnow
 from product_hunter.llm.base import (
     GenerationRequest,
+    ModelCallFailed,
     ProviderError,
     TextGenerator,
 )
@@ -558,14 +559,15 @@ def extract_documents(
         try:
             response = generator.generate(GenerationRequest(prompt=prompt))
         except ProviderError as exc:
+            provider, model = _failed_model(config, exc)
             rejects.append(
                 _reject(
                     config,
                     document=document,
                     reason_code="provider_error",
                     detail=str(exc),
-                    provider=config.provider_id,
-                    model=config.model_id,
+                    provider=provider,
+                    model=model,
                     sequence=len(rejects),
                     now=now,
                 )
@@ -578,8 +580,8 @@ def extract_documents(
                     status="provider_error",
                     error=str(exc),
                     input_chars=len(prompt),
-                    provider=config.provider_id,
-                    model=config.model_id,
+                    provider=provider,
+                    model=model,
                     rejected_count=1,
                     sequence=len(calls),
                     now=now,
@@ -740,6 +742,20 @@ def extract_documents(
         documents=selected,
         chunks=chunks,
     )
+
+
+def _failed_model(
+    config: ExtractionConfig, exc: ProviderError
+) -> tuple[str, str]:
+    """The provider and the model the failure names, or the config's.
+
+    A failure that carries the model that failed names it: a chain that fell
+    through failed on another candidate than the one the run was built from.
+    A failure that carries nothing names the model the run was built from.
+    """
+    if isinstance(exc, ModelCallFailed) and exc.model_id:
+        return exc.provider_id or config.provider_id, exc.model_id
+    return config.provider_id, config.model_id
 
 
 def _candidate(
