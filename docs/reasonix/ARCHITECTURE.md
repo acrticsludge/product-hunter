@@ -8,6 +8,12 @@ uncommitted when this was written. They are `IMPLEMENTED` like any other code.
 The full specification is
 [Product-Hunter-Full-Spec.md](specs/Product-Hunter-Full-Spec.md).
 
+**Later waves.** The source-independence package from wave 2 session 5 is in
+the tree and is `IMPLEMENTED`: the independence graph, the entity resolution,
+the propagation detection, and the deterministic independence analytics from
+spec §12. It adds five tables, extends three, and takes the migration number
+`0003`. See [wave-2-independence.md](reports/wave-2-independence.md).
+
 ## Claim labels
 
 Every factual claim here carries one of four labels.
@@ -69,29 +75,38 @@ migration-history table and no checksum, so drift is not detected. Files in
 `db/migrations/` must be named `NNNN_name.sql`, must start at 1, and must be
 contiguous; a gap or a duplicate number raises `MigrationError`. Each migration
 runs inside `BEGIN IMMEDIATE` and `COMMIT`, then sets `PRAGMA user_version`.
-`migrate()` is idempotent and returns 2 on a current database. The runner splits
+`migrate()` is idempotent and returns 3 on a current database. The runner splits
 SQL on `;`, so a semicolon inside a string literal is not supported.
 
-## The twenty-three tables
+## The twenty-eight tables
 
 `IMPLEMENTED` (`db/migrations/0001_initial.sql`,
-`db/migrations/0002_model_routing.sql`). The schema holds twenty-three tables:
-nineteen from the base migration and four from the model routing migration.
+`db/migrations/0002_model_routing.sql`,
+`db/migrations/0003_independence.sql`). The schema holds twenty-eight tables:
+nineteen from the base migration, four from the model routing migration, and
+five from the independence migration.
 
 | Group | Tables |
 |---|---|
 | Collection and provenance | `sources`, `fetches`, `communities`, `documents`, `authors`, `author_links` |
 | Analysis | `evidence`, `pain_points`, `evidence_pain_links` |
+| Independence | `author_identity_links`, `community_links`, `author_clusters`, `author_cluster_members`, `independence_reports` |
 | Research registry | `research_runs`, `research_artifacts`, `research_events`, `research_checkpoints` |
 | Execution | `jobs`, `stage_attempts`, `projection_tasks` |
 | Model routing | `model_catalogs`, `model_inventory`, `model_role_bindings`, `model_executions` |
-| Reserved, no writer | `propagation_edges`, `spend_ledger`, `human_decisions` |
+| Reserved, no writer | `spend_ledger`, `human_decisions` |
 
-Three tables have no writer anywhere in `src/`: `propagation_edges`,
-`spend_ledger`, and `human_decisions`. They exist so a later phase can use them,
-and today they stay empty. The independent-author and propagation analysis from
-spec §12, the budget writes from spec §22, and the approval records from spec
-§37 are the work that would fill them.
+Two tables have no writer anywhere in `src/`: `spend_ledger` and
+`human_decisions`. They exist so a later phase can use them, and today they
+stay empty. The budget writes from spec §22 and the approval records from
+spec §37 are the work that would fill them.
+
+`propagation_edges` is no longer in that list. The independence wave writes
+it, through `IndependenceStore.record_propagation_edge()` in
+`src/product_hunter/db/independence.py`, together with the five tables above.
+See [wave-2-independence.md](reports/wave-2-independence.md) for what the
+independence package computes and what it does not.
+
 
 ## Runtime artifacts
 
@@ -325,6 +340,49 @@ extraction side uses a different vocabulary, described in
 machine from spec §41.2 is not implemented, and neither is `continue` from spec
 §41.6 or cross-chat continuity from spec §41.8.
 
+## Source independence
+
+`IMPLEMENTED` (`src/product_hunter/independence/`,
+`src/product_hunter/db/independence.py`,
+`db/migrations/0003_independence.sql`, `config/independence.yaml`). The
+independence graph and the deterministic evidence-independence analytics from
+spec §12. What it computes, and what it refuses to compute, is written up in
+[wave-2-independence.md](reports/wave-2-independence.md).
+
+The shape of it:
+
+```text
+mentions, authors, communities
+        |
+        +--> resolve_authors()      -> same-person-merged / same-person-suspect
+        +--> resolve_communities()  -> same-community-merged / same-community-suspect
+        +--> detect_propagation()   -> repost / quote / crosspost / syndication
+        |
+        v
+   build_graph()   content groups, author clusters, propagation chains
+        |
+        v
+   analyze()       raw mentions, canonical content, independent authors,
+                   uncertain authors, independent communities, propagation-adjusted
+                   evidence, source and author-cluster concentration
+        |
+        v
+   check_concentration()  a verdict against the limits in config/independence.yaml
+```
+
+Independence is a computed property. A model may supply an identity signal, and
+the resolver applies the configured weight to it; a signal on its own can never
+merge two accounts, and the code caps a pair with no strong signal at the
+suspect threshold so the guarantee holds whatever the configuration says. The
+metrics are built only by `analyze()`, from the graph and from nothing else.
+The analysis package reads no clock, no environment, and no file, so the same
+observations always produce the same numbers.
+
+Every threshold is configuration, including the concentration limits and the
+minimum independent-author and independent-community counts. The two minima
+mirror the validation thresholds in `config/research_contract.yaml`, and a
+test asserts the two files agree.
+
 ## Roles that are not code
 
 **OpenCode.** It is the interaction surface. The operator runs `ph` through it,
@@ -359,12 +417,14 @@ will hit them.
 runtime package is invisible to `git status`, and a plain `git add` would not
 commit it. The package exists on disk but is not in the committed tree.
 
-**The research-gate migration number was taken, and is now reserved.**
+**The research-gate migration number was taken twice, and is now taken.**
 `research/persistence.py` names a planned migration
 `db/migrations/0003_research_gate.sql`. The name was `0002` until
 `0002_model_routing.sql` took that number, and the docstring and the wave spec
-now say `0003`. The file does not exist and `0003` is not taken. The wave that
-persists tool calls has to use `0003` or a later free number.
+now say `0003`. `0003` is now taken as well: the independence wave shipped
+`db/migrations/0003_independence.sql`. The wave that persists tool calls has
+to use `0004` or a later free number, and its docstring has to be corrected
+to say so.
 
 ## What is not implemented
 
@@ -375,11 +435,11 @@ named there and have no code in this branch.
 |---|---|---|
 | Research run lifecycle and transitions | §41.2 | `PLANNED`, full spec only, no wave spec |
 | `continue` and cross-chat continuity | §41.6, §41.8 | `PLANNED`, full spec only, no wave spec |
-| Tool-call and gate-result persistence in SQLite | §6A, §34 | `PLANNED`; `research/persistence.py` holds protocols only and names `0003_research_gate.sql` |
+| Tool-call and gate-result persistence in SQLite | §6A, §34 | `PLANNED`; `research/persistence.py` holds protocols only, and its `0003_research_gate.sql` name is now taken by the independence migration |
 | `spend_ledger` writes and global spend caps | §22 | `PLANNED`; the table exists and stays empty |
 | Opportunity states and scoring | §20, §23 | `PLANNED`, full spec only, no wave spec |
 | Qdrant, DuckDB, and Obsidian projections | §14, §16, §27 | `PLANNED`, full spec only, no wave spec |
-| Independent-author and propagation analysis | §12 | `PLANNED`; the `propagation_edges` table exists and stays empty |
+| DuckDB materialisation of the independence numbers | §16 | `PLANNED`; the numbers are computed in Python over SQLite, and the DuckDB surface is a later wave |
 | Backup, restore, retention, drift canaries | §38B | `PLANNED`, full spec only, no wave spec |
 | Human approval gates | §37 | `BLOCKED` on an external-account, posting, or Git write path that does not exist |
 | MCP server or client | §6 | `PLANNED`; no MCP code exists |
