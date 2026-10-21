@@ -118,15 +118,24 @@ say so.
 
 ## Verification
 
-- `uv run pytest` is the gate. The last run: 783 passed, exit 0.
+- `uv run pytest` is the gate. The last run before this commit: 847 passed,
+  exit 0.
 - The plugin loads in the running server. The log records
   `loading plugin id="...product-hunter.ts"`, and the tool is registered with
   the name `product_hunter`.
+- A model called the tool from a live OpenCode session in this repository, with
+  `{"action":"status","research_id":"RH-20261021-0003"}` and
+  `{"action":"list"}`. Both calls returned the state layer's own text. The
+  tool is exposed to the Code Mode runtime as well as to the model natively,
+  because the plugin no longer sets `options: { codemode: false }`.
 - The state layer was driven end to end through the shipped transport:
   `python -m product_hunter.registry create|list|status|pause|continue`. The
   bare `continue` with two eligible runs returned `needs_selection` and both
   candidates, and an unknown id returned `unknown_research` with the known ids
   and exit code 1.
+- A clean export of `HEAD` was checked: it carries the plugin, the ten command
+  templates, the registry and its tests, and the registry runs from that
+  export against the real database.
 - A run with no worker lease reads `worker: not running`.
 
 ## What the run produced
@@ -145,6 +154,15 @@ caps and the equals-form argument passing, and the registry grew the refusal
 event, the requester on every event, the path-free missing-database message,
 and the server-side limit clamp.
 
+## What the model actually sees
+
+The model reads the tool's `output` text and nothing else. The metadata goes
+to the client. So every instruction the model needs has to be in the text: the
+bare continue with more than one eligible run puts "More than one run is
+eligible; ask the user which one to continue. Never pick one on the user's
+behalf." ahead of the candidate list, and the command templates name what the
+tool reports rather than a field the model cannot read.
+
 ## The commit boundary
 
 `cli.py` and `README.md` are shared with another agent whose benchmark work is
@@ -157,3 +175,19 @@ and untouched.
 The `docs/resonix` to `docs/reasonix` rename is also theirs and uncommitted.
 This run's documents sit under `docs/reasonix/`, so they follow the rename
 without staging it.
+
+## Where the plugin file lives
+
+`.opencode/plugins/product-hunter.ts` is committed in `8e5172c`, a commit of
+the parallel agent, not in this run's commit `351d962`. The reason is the
+shared file: that agent added the project-root resolution to the plugin while
+this run was writing it, and committed the result.
+
+The interface is whole in the committed tree either way. A clean export of
+`HEAD` was checked: it carries the plugin, the ten command templates, the
+registry and its tests, and the registry runs from that export against the
+real database. The dependency only matters if that agent's history is
+rewritten. If it is, keep `.opencode/plugins/product-hunter.ts` in the tree:
+without it the commands have no tool to call. The file is small, needs
+nothing beyond the Node standard library, and can be restored from `8e5172c`
+or from the working tree.

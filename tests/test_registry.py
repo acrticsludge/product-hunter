@@ -163,6 +163,36 @@ def test_create_with_a_terminal_run_creates_a_new_run(conn):
     assert conn.execute("SELECT count(*) FROM research_runs").fetchone()[0] == 2
 
 
+def test_the_create_text_of_a_reused_run_says_it_was_reused(conn):
+    first = _create(conn, "Compare CRM tools")
+
+    result = execute(conn, "create", objective="compare crm tools")
+
+    assert result.ok is True
+    assert result.run is not None
+    assert result.run.public_id == first.public_id
+    # The model reads the text, so the text opens with what happened.
+    first_line = result.text.splitlines()[0]
+    assert first.public_id in first_line
+    assert "already holds this objective" in first_line
+    assert "reused" in first_line
+    assert "created" not in first_line
+    # The run block still follows the first line.
+    assert render_run(result.run) in result.text
+
+
+def test_the_create_text_of_a_new_run_says_it_was_created(conn):
+    result = execute(conn, "create", objective="Track the billing pain")
+
+    assert result.ok is True
+    assert result.run is not None
+    first_line = result.text.splitlines()[0]
+    assert "created" in first_line
+    assert result.run.public_id in first_line
+    # The run block still follows the first line.
+    assert render_run(result.run) in result.text
+
+
 # --- list and status ------------------------------------------------------
 
 
@@ -331,6 +361,24 @@ def test_bare_continue_with_two_eligible_runs_asks_and_never_guesses(conn):
         second.public_id,
     }
     assert len(result.runs) == 2
+
+
+def test_bare_continue_with_two_eligible_runs_tells_the_model_to_ask(conn):
+    first = _create(conn, "First topic")
+    second = _create(conn, "Second topic")
+
+    result = execute(conn, "continue")
+
+    assert result.ok is True
+    assert result.needs_selection is True
+    # The model reads the text, so the text has to say what to do.
+    assert "ask the user" in result.text
+    assert "never pick one on the user's behalf" in result.text.lower()
+    # The candidates stay in the text, so the model can offer them.
+    assert first.public_id in result.text
+    assert second.public_id in result.text
+    # The instruction comes before the list.
+    assert result.text.index("ask the user") < result.text.index(first.public_id)
 
 
 def test_bare_continue_with_no_eligible_run_reports_no_candidates(conn):

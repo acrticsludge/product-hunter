@@ -1023,8 +1023,14 @@ def _execute(
             if reused
             else f"created run {run.public_id}"
         )
+        # The model reads the text, not the metadata, so the text opens with
+        # what happened before the run block.
         return CommandResult(
-            ok=True, action="create", message=message, text=render_run(run), run=run
+            ok=True,
+            action="create",
+            message=message,
+            text=f"{message}\n{render_run(run)}",
+            run=run,
         )
 
     if action == "list":
@@ -1062,11 +1068,18 @@ def _execute(
                 text=message,
             )
         if len(candidates) > 1:
+            # The model reads the text, not the metadata, so the text carries
+            # the instruction as well as the candidates.
+            instruction = (
+                "More than one run is eligible; ask the user which one to "
+                "continue, then call continue with the research id the user "
+                "picked. Never pick one on the user's behalf."
+            )
             return CommandResult(
                 ok=True,
                 action="continue",
                 message="more than one run is eligible; pick one",
-                text=render_runs(candidates),
+                text=f"{instruction}\n{render_runs(candidates)}",
                 runs=candidates,
                 needs_selection=True,
             )

@@ -116,19 +116,77 @@ The gate was red for a while because of that agent's in-flight model routing
 and scheduler tests. This run's files were green throughout, and the suite
 returned to green before the commit.
 
+## The three open items, closed
+
+**The native session check.** The tool answers a live call from inside a
+running OpenCode session. A model called it twice, `{"action":"status",
+"research_id":"RH-20261021-0003"}` and `{"action":"list"}`, and both calls
+returned the state layer's own text: the run block for `RH-20261021-0003` with
+`worker: not running`, and the list of three runs. The tool appears in the
+session's tool catalog with its full input schema, and the server logs the
+plugin load.
+
+To make that possible the plugin no longer sets `options: { codemode: false }`,
+so the control surface is reachable from the Code Mode runtime as well as from
+the model natively. The earlier `opencode run` attempts were unreliable: the
+client attaches to the most recent session in the working directory, so one
+attempt streamed another session's transcript and a second produced no output
+at all before it was stopped. Calling the tool from the session that is
+already open removes that ambiguity.
+
+An earlier transcript from a live session in this repository also shows the
+model making the same two calls and printing the same two outputs, so the
+model-driven path was already working before the option was removed. A session
+started under an explicit id, `ses_phverify_20261021`, was then asked for the
+status of one run and made the same call through the code runtime, with the
+same result.
+
+**The two smoke-test runs.** `RH-20261021-0001` and `RH-20261021-0002` were
+cancelled through the interface itself, so their history stays and the
+cancellation is recorded as an event. `RH-20261021-0003` is not this run's
+and was left alone.
+
+**The plugin's commit provenance.** The plugin file is committed in `8e5172c`,
+a commit of the parallel agent, because that agent added the project-root
+resolution to the file while this run was writing it. The committed tree is
+whole regardless: a clean export of `HEAD` carries the plugin, the ten
+command templates, the registry and its tests, and the registry runs from that
+export against the real database. The handoff now names the file and the
+commit, so the dependency survives any later history surgery.
+
+**One more defect the re-review surfaced, and its fix.** The model only ever
+reads the tool's `output` text. The metadata never reaches it. The bare
+continue used to hand the model a bare list of eligible runs with no reason to
+stop and ask, and the command template keyed off a metadata field the model
+cannot see. So a bare `/continue` with two eligible runs could have let the
+model pick one, which the spec forbids. The registry now puts the instruction
+in the text, ahead of the candidate list: "More than one run is eligible; ask
+the user which one to continue. Never pick one on the user's behalf." The
+metadata, the message, the flag, the list and the response shape are unchanged,
+and the template no longer refers to metadata at all.
+
+The rule is still enforced by the model reading that text. Nothing below the
+text layer can stop a model that ignores it.
+
+The same class of defect was in the create action, and the re-review found it.
+The sentence that says a live run already holds the objective lived only in
+the message, and the plugin drops the message whenever a text is set. So a
+second create for the same objective reused the run while the model saw only
+the run block, and could have reported a new run for a run that already
+existed. The create text now opens with what happened, "created run RH-..." or
+"run RH-... already holds this objective; reused it", and the run block
+follows. The command template keys off that text.
+
 ## Not done, and not checked
 
 - The scheduler, the worker loop, the stage handlers, the research contract,
   the tool gate, and the Obsidian projection. The interface only requests
   work and reads durable state.
 - The `product-hunter` agent and its subagents.
-- A native OpenCode session was not driven end to end. The tool was proven to
-  load and to register; the state layer was proven through the shipped
-  transport. A first `opencode run` attempt in the repository timed out
-  without output, so the model-driven path is unproven.
 - The plugin has no committed test of its own. The repo has no JavaScript test
   runner, and adding one was out of scope. The plugin's behaviour was proven
-  with a harness outside the repository.
+  with a harness outside the repository, and by live calls from a running
+  session.
 - Two interface processes acting on one run at the same time was not tested
   under contention. SQLite's busy timeout covers the lock window.
 - Per-run evidence and opportunity counts are not shown. The Phase 2 schema

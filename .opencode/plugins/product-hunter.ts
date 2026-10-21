@@ -210,7 +210,6 @@ export default {
           additionalProperties: false,
         },
         output: { type: "string" },
-        options: { codemode: false },
         execute: async (input: any, toolCtx: any) => {
           const action = String(input?.action ?? "")
           if (!ACTIONS.includes(action)) {
