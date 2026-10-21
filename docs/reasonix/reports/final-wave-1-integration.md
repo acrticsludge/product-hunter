@@ -134,13 +134,44 @@ until the integration commit.
 The consequence for the Wave 2 sessions: their branches still fork from
 `3d7bc68` and will need a merge against `984c278`.
 
+### The stale copies in the shared tree
+
+The first part of this run edited the shared directory directly, before the
+Wave 2 session's writes there made that untenable. When the work moved to the
+dedicated worktree, those early edits stayed behind as uncommitted changes in
+a tree another session was using. They were stale intermediate versions —
+superseded by the round-2 fixes — and they were a hazard: any session
+committing in that directory would have swept them into its own commit.
+
+They were restored to the base commit. The shared tree is back at `3d7bc68`,
+clean apart from the `.worktrees/` directory the Wave 2 sessions created
+inside it. The finished work is on `main` and nowhere else.
+
 ### Migration numbering
 
-The gate's migration was planned as `0003` and the Wave 2 clustering session
-took `0004` in the shared tree. In the integration worktree the numbering is
-`0001`, `0002`, `0003` (the gate), and `0004` remains free for the clustering
-migration. No conflict, but the two branches will need their migration files
-reconciled at merge time.
+The gate's migration is `0003_research_gate.sql` on `main`. Two Wave 2
+sessions took `0003` for themselves in their own worktrees, which fork from
+`3d7bc68` and cannot see the gate migration:
+
+| Worktree | Migration it wrote | Conflict |
+|---|---|---|
+| `.worktrees/wave2-clustering` | `db/migrations/0003_clustering.sql` | Yes. Same number as the gate's. |
+| `.worktrees/wave2-collection-engine` | `db/migrations/0003_collection.sql` | Yes. Same number as the gate's. |
+| `.worktrees/wave2-investigation` | none | No. |
+| `.worktrees/wave2-obsidian-reporting` | none | No. |
+
+**When those branches merge against `main`, their migrations must be renumbered
+to `0004` and `0005`.** The migration loader refuses a gap in the numbering and
+refuses a duplicate number, so an unreviewed merge fails loudly at
+`db init` rather than silently. That is the correct failure, but it is a
+known break in the merge and it is the Wave 2 sessions' to fix.
+
+The shared working tree was left at the base commit `3d7bc68`, clean apart
+from the `.worktrees/` directory the Wave 2 sessions created inside it. The
+stale intermediate copies of this run's changes that were sitting there have
+been removed, because the finished work is committed on `main` and a second
+copy in a shared tree is a hazard: any session committing there would have
+swept them into its own commit.
 
 ### The review against the code
 
@@ -476,9 +507,11 @@ Nothing blocks the commit. The following block the **next** phase:
    rollback notes. This is the largest single gap in operational readiness,
    and it is the reason the system is **not** production-ready for unattended
    long-term operation.
-5. **A migration to reconcile** with the Wave 2 branches, which fork from
-   `3d7bc68` and will need a merge against `984c278`, including the
-   `0004_clustering.sql` numbering.
+5. **A migration-numbering break in the Wave 2 merges.** The clustering and
+   collection sessions each wrote a `0003` migration in their own worktree.
+   Both must be renumbered to `0004` and `0005` when they merge against
+   `main`. The loader refuses a duplicate number and refuses a gap, so the
+   break fails loudly at `db init` rather than silently.
 
 ## 13. Honest assessment
 
