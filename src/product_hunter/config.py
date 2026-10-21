@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, model_validator
 
 CONFIG_NAME = Path("config") / "extraction.yaml"
 ENV_FILE = ".env"
+DEFAULT_DB_NAME = Path("db") / "product_hunter.db"
 
 # Config field -> PH_ environment override. Empty values are ignored.
 _ENV_OVERRIDES = {
@@ -67,6 +68,17 @@ def repo_root() -> Path:
         if (parent / "pyproject.toml").is_file():
             return parent
     raise RuntimeError("repository root not found: no pyproject.toml above the package")
+
+
+def database_path(root: Path | None = None) -> Path:
+    """The SQLite path: ``PH_DB_PATH`` when set, otherwise ``db/product_hunter.db``."""
+    base = Path(root) if root is not None else repo_root()
+    load_dotenv(base / ENV_FILE, override=False)
+    raw = os.environ.get("PH_DB_PATH")
+    if raw:
+        path = Path(raw).expanduser()
+        return path if path.is_absolute() else base / path
+    return base / DEFAULT_DB_NAME
 
 
 def load_config(path: Path | None = None) -> ExtractionConfig:

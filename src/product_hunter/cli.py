@@ -6,13 +6,28 @@ import json
 import re
 import secrets
 from collections.abc import Iterable
+from dataclasses import asdict
 from pathlib import Path
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
 from product_hunter import __version__
-from product_hunter.config import ExtractionConfig, load_config, repo_root
+from product_hunter.config import (
+    ExtractionConfig,
+    database_path,
+    load_config,
+    repo_root,
+)
+from product_hunter.db import (
+    Store,
+    connect,
+    current_version,
+    list_jobs,
+    list_projection_tasks,
+    recover_expired_leases,
+    recover_projection_leases,
+)
 from product_hunter.documents import (
     Document,
     DocumentChunk,
@@ -89,6 +104,30 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser = commands.add_parser("report", help="report the metrics of one run")
     report_parser.add_argument("--run", dest="run_id", required=True)
     report_parser.add_argument("--out", dest="out", default=None)
+    db_parser = commands.add_parser("db", help="authoritative SQLite store")
+    db_commands = db_parser.add_subparsers(dest="db_command", required=True)
+    db_init = db_commands.add_parser("init", help="create and migrate the database")
+    db_init.add_argument("--path", dest="db_path", default=None)
+    db_status = db_commands.add_parser("status", help="show schema version and counts")
+    db_status.add_argument("--path", dest="db_path", default=None)
+    db_import = db_commands.add_parser(
+        "import-run", help="import one processed extraction run"
+    )
+    db_import.add_argument("--run", dest="run_id", required=True)
+    db_import.add_argument("--fetch-log", dest="fetch_log", default=None)
+    db_import.add_argument("--path", dest="db_path", default=None)
+    db_recover = db_commands.add_parser(
+        "recover", help="requeue expired jobs and projections"
+    )
+    db_recover.add_argument("--path", dest="db_path", default=None)
+    db_jobs = db_commands.add_parser("jobs", help="list jobs as JSON")
+    db_jobs.add_argument("--status", default=None)
+    db_jobs.add_argument("--path", dest="db_path", default=None)
+    db_outbox = db_commands.add_parser("outbox", help="list projection tasks as JSON")
+    db_outbox.add_argument("--status", default=None)
+    db_outbox.add_argument("--path", dest="db_path", default=None)
+    db_check = db_commands.add_parser("check", help="run SQLite integrity checks")
+    db_check.add_argument("--path", dest="db_path", default=None)
     return parser
 
 
@@ -402,6 +441,284 @@ def report_command(
     return 0
 
 
+DB_STATUS_TABLES = (
+    "sources",
+    "fetches",
+    "documents",
+    "authors",
+    "communities",
+    "author_links",
+    "evidence",
+    "pain_points",
+    "evidence_pain_links",
+    "propagation_edges",
+    "research_runs",
+    "research_artifacts",
+    "research_events",
+    "research_checkpoints",
+    "jobs",
+    "stage_attempts",
+    "projection_tasks",
+    "spend_ledger",
+    "human_decisions",
+)
+
+
+def db_init_command(
+    *, db_path: str | Path | None = None, repo_root: Path | None = None
+) -> int:
+    """Create and migrate the authoritative database. Returns 0 or 1."""
+    root = _root(repo_root)
+    path = _db_path(db_path, root)
+    try:
+        store = Store.open(path)
+        try:
+            version = current_version(store.conn)
+        finally:
+            store.close()
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    print(json.dumps({"ok": True, "path": str(path), "version": version}))
+    return 0
+
+
+def db_status_command(
+    *, db_path: str | Path | None = None, repo_root: Path | None = None
+) -> int:
+    """Show schema version and row counts without creating the database."""
+    root = _root(repo_root)
+    path = _db_path(db_path, root)
+    if not path.is_file():
+        print(json.dumps({"ok": False, "error": f"database does not exist: {path}"}))
+        return 1
+    try:
+        conn = connect(path, read_only=True)
+        try:
+            version = current_version(conn)
+            if version == 0:
+                print(
+                    json.dumps(
+                        {"ok": False, "error": "database is not migrated", "path": str(path)}
+                    )
+                )
+                return 1
+            counts = {
+                table: int(
+                    conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                )
+                for table in DB_STATUS_TABLES
+            }
+            jobs = {
+                row["status"]: int(row["n"])
+                for row in conn.execute(
+                    "SELECT status, count(*) AS n FROM jobs GROUP BY status"
+                )
+            }
+            projections = {
+                row["status"]: int(row["n"])
+                for row in conn.execute(
+                    "SELECT status, count(*) AS n FROM projection_tasks GROUP BY status"
+                )
+            }
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "path": str(path),
+                "version": version,
+                "tables": counts,
+                "jobs": jobs,
+                "projections": projections,
+            }
+        )
+    )
+    return 0
+
+
+def db_import_run_command(
+    run_id: str,
+    *,
+    fetch_log: str | Path | None = None,
+    db_path: str | Path | None = None,
+    repo_root: Path | None = None,
+    registry=None,
+) -> int:
+    """Import one processed run into SQLite. Returns 0 or 1."""
+    if not _valid_run_id(run_id):
+        print(json.dumps({"ok": False, "error": f"invalid run id {run_id!r}"}))
+        return 1
+    root = _root(repo_root)
+    path = _db_path(db_path, root)
+    if not _require_db(path):
+        return 1
+    run_dir = root / PROCESSED_DIR / run_id
+    fetch_path = (
+        _resolve_path(fetch_log, root) if fetch_log is not None else root / FETCH_LOG
+    )
+    try:
+        registry = registry if registry is not None else load_registry()
+        store = Store.open(path)
+        try:
+            summary = store.import_run(
+                run_dir,
+                fetch_log=fetch_path,
+                registry=registry,
+            )
+        finally:
+            store.close()
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    print(json.dumps({"ok": True, **asdict(summary)}))
+    return 0
+
+
+def db_recover_command(
+    *, db_path: str | Path | None = None, repo_root: Path | None = None
+) -> int:
+    """Requeue expired job and projection leases. Returns 0 or 1."""
+    root = _root(repo_root)
+    path = _db_path(db_path, root)
+    if not _require_db(path):
+        return 1
+    try:
+        store = Store.open(path)
+        try:
+            jobs = recover_expired_leases(store.conn)
+            projections = recover_projection_leases(store.conn)
+        finally:
+            store.close()
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "jobs_recovered": jobs,
+                "projections_recovered": projections,
+            }
+        )
+    )
+    return 0
+
+
+def db_jobs_command(
+    *,
+    status: str | None = None,
+    db_path: str | Path | None = None,
+    repo_root: Path | None = None,
+) -> int:
+    root = _root(repo_root)
+    path = _db_path(db_path, root)
+    if not _require_db(path):
+        return 1
+    try:
+        store = Store.open(path)
+        try:
+            jobs = list_jobs(store.conn, status=status)
+        finally:
+            store.close()
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    print(json.dumps([asdict(job) for job in jobs]))
+    return 0
+
+
+def db_outbox_command(
+    *,
+    status: str | None = None,
+    db_path: str | Path | None = None,
+    repo_root: Path | None = None,
+) -> int:
+    root = _root(repo_root)
+    path = _db_path(db_path, root)
+    if not _require_db(path):
+        return 1
+    try:
+        store = Store.open(path)
+        try:
+            tasks = list_projection_tasks(store.conn, status=status)
+        finally:
+            store.close()
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    print(json.dumps([asdict(task) for task in tasks]))
+    return 0
+
+
+def db_check_command(
+    *, db_path: str | Path | None = None, repo_root: Path | None = None
+) -> int:
+    root = _root(repo_root)
+    path = _db_path(db_path, root)
+    if not _require_db(path):
+        return 1
+    try:
+        store = Store.open(path)
+        try:
+            integrity = store.integrity_check()
+            violations = [dict(row) for row in store.foreign_key_violations()]
+        finally:
+            store.close()
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    ok = integrity == "ok" and not violations
+    print(
+        json.dumps(
+            {
+                "ok": ok,
+                "integrity": integrity,
+                "foreign_key_violations": violations,
+            }
+        )
+    )
+    return 0 if ok else 1
+
+
+def _run_db_command(args: argparse.Namespace) -> int:
+    if args.db_command == "init":
+        return db_init_command(db_path=args.db_path)
+    if args.db_command == "status":
+        return db_status_command(db_path=args.db_path)
+    if args.db_command == "import-run":
+        return db_import_run_command(
+            args.run_id, fetch_log=args.fetch_log, db_path=args.db_path
+        )
+    if args.db_command == "recover":
+        return db_recover_command(db_path=args.db_path)
+    if args.db_command == "jobs":
+        return db_jobs_command(status=args.status, db_path=args.db_path)
+    if args.db_command == "outbox":
+        return db_outbox_command(status=args.status, db_path=args.db_path)
+    if args.db_command == "check":
+        return db_check_command(db_path=args.db_path)
+    return 1
+
+
+def _require_db(path: Path) -> bool:
+    if path.is_file():
+        return True
+    print(json.dumps({"ok": False, "error": f"database does not exist: {path}"}))
+    return False
+
+
+def _db_path(value: str | Path | None, root: Path) -> Path:
+    if value is None:
+        return database_path(root)
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else root / path
+
+
 def _root(root: Path | None) -> Path:
     """The repository root to work in: the injected one, or the real one."""
     return Path(root) if root is not None else repo_root()
@@ -570,5 +887,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "report":
         return report_command(args.run_id, Path(args.out) if args.out else None)
+    if args.command == "db":
+        return _run_db_command(args)
     parser.print_help()
     return 0
