@@ -157,6 +157,37 @@ so the surface never implies that work is in flight when the database does not
 say so.
 
 
+## Scheduler
+
+Phase 2 adds a scheduler above the SQLite job queue. It decides what work
+exists, in what order, and when a failed attempt runs again. It creates jobs;
+it never runs them. The worker claims and runs what the scheduler writes.
+
+A schedule is a recurring definition: a name, a stage, an interval, a
+priority band, and optionally a source and a research run. The priorities are
+the ones the spec names, P0 for a user continuation down to P4 for
+maintenance, and the queue serves the larger number first.
+
+Occurrence times come from a fixed UTC grid, so nothing about a schedule's
+state is stored anywhere. The occurrence is the identity of the work: the job
+carries the key `schedule:<name>:<occurrence>`, and the queue's own
+idempotency check turns a repeated occurrence into a no-op. A scheduler that
+restarts computes the same occurrences from the clock and creates nothing
+twice.
+
+One tick walks the enabled schedules, applies the source gate, and writes the
+due occurrences. A schedule that names a source creates no work when that
+source is unknown, disabled, or whose terms are not reviewed or permitted. The
+tick reports what it did, including the occurrences it dropped and the ones
+that conflicted with a stored job, and it runs in one transaction so a tick
+that fails leaves the queue as it was.
+
+The cadence the spec asks for, 15 minute collection, hourly processing, 6
+hour re-clustering, nightly investigation and a morning brief, is expressed
+as data in `default_schedules()`. Nothing starts it yet, because no stage
+handler implements those stages and a running scheduler with nothing to
+execute would only spin.
+
 ## Project skills
 
 Five skills under `.opencode/skills/`: `source-discovery`, `pain-point-extraction`,

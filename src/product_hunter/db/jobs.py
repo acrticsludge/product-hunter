@@ -14,7 +14,7 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
 from product_hunter.fetch import utcnow
@@ -146,7 +146,7 @@ def claim_job(
             """
             SELECT id FROM jobs
             WHERE status = 'queued' AND scheduled_for <= ?
-            ORDER BY priority DESC, scheduled_for ASC, created_at ASC
+            ORDER BY priority DESC, scheduled_for ASC, created_at ASC, id ASC
             LIMIT 1
             """,
             (now_iso,),
@@ -509,7 +509,16 @@ def _hash_id(prefix: str, basis: str) -> str:
 
 
 def _now(value: datetime | None) -> datetime:
-    return value if value is not None else utcnow()
+    """The instant to compare against, always in UTC.
+
+    An aware value is converted, a naive one is read as UTC, so the queue and
+    the scheduler read the clock the same way.
+    """
+    if value is None:
+        return utcnow()
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _after(now: datetime, seconds: int) -> str:

@@ -8,11 +8,13 @@ applied.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Callable
 from threading import Event
 
 from product_hunter.db.jobs import (
+    Job,
     JobContext,
     JobOutcome,
     LeaseLost,
@@ -23,6 +25,13 @@ from product_hunter.db.jobs import (
 )
 
 Handler = Callable[[JobContext], dict[str, object] | None]
+Backoff = Callable[[Job], int]
+
+logger = logging.getLogger(__name__)
+
+# A retry delay longer than a day is a bug in the backoff hook, and the
+# worker does not park a job for longer than that.
+_MAX_BACKOFF_SECONDS = 86_400
 
 
 class Worker:
@@ -34,6 +43,7 @@ class Worker:
         *,
         lease_seconds: int = 60,
         backoff_seconds: int = 5,
+        backoff: Backoff | None = None,
     ) -> None:
         if not worker_id.strip():
             raise ValueError("a worker needs an id")
@@ -44,6 +54,36 @@ class Worker:
         self.handlers = dict(handlers)
         self.lease_seconds = lease_seconds
         self.backoff_seconds = backoff_seconds
+        self.backoff = backoff
+
+    def _delay(self, job: Job) -> int:
+        """The requeue delay for a failed job: the hook's, or the flat one.
+
+        The hook may not return a delay that requeues the job straight back
+        into the queue, and it may not raise: a broken hook falls back to
+        the flat delay rather than killing the worker. Every delay is
+        capped, so a huge one cannot overflow the requeue into a crash.
+        """
+        if self.backoff is None:
+            # The flat delay is the caller's own value: it keeps the delay it
+            # was configured with, so a worker that asks for no delay retries
+            # at once. The cap still applies, so a huge one cannot overflow
+            # the requeue.
+            return min(self.backoff_seconds, _MAX_BACKOFF_SECONDS)
+        try:
+            delay = int(self.backoff(job))
+        except Exception as exc:
+            # The log names the delay that was applied, not the one the
+            # worker was configured with, so the clamp is visible in the
+            # one line that explains the fallback.
+            delay = min(max(1, self.backoff_seconds), _MAX_BACKOFF_SECONDS)
+            logger.warning(
+                "the backoff hook failed for job %s (%s); using %s seconds",
+                job.id,
+                exc,
+                delay,
+            )
+        return min(max(1, delay), _MAX_BACKOFF_SECONDS)
 
     def recover(self) -> int:
         return recover_expired_leases(self.conn)
@@ -63,7 +103,7 @@ class Worker:
                     worker_id=self.worker_id,
                     lease_epoch=job.lease_epoch,
                     error=f"no handler for stage {job.stage!r}",
-                    backoff_seconds=self.backoff_seconds,
+                    backoff_seconds=self._delay(job),
                 )
             except LeaseLost:
                 return JobOutcome(job.id, "lease_lost")
@@ -89,7 +129,7 @@ class Worker:
                     worker_id=self.worker_id,
                     lease_epoch=job.lease_epoch,
                     error=f"{type(exc).__name__}: {exc}",
-                    backoff_seconds=self.backoff_seconds,
+                    backoff_seconds=self._delay(job),
                 )
             except LeaseLost:
                 return JobOutcome(job.id, "lease_lost")
