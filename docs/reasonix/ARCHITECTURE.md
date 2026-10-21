@@ -385,15 +385,17 @@ rather than an approval gate.
 One is live and two are closed. All three are worth recording because an
 operator will hit them.
 
-**The migration number `0003` is taken twice, in two branches.** The
-clustering wave on `wave2/clustering` has `db/migrations/0003_clustering.sql`.
-The tool-call wave holds an uncommitted `db/migrations/0003_research_gate.sql`
-in its own worktree. Migrations have to be contiguous, so both branches are
-correct on their own and the two files cannot be merged as they are. One of
-them has to be renumbered, and `tests/test_db_migrations.py` is edited by both
-waves, so the schema version assertion has to be re-applied after the rename.
-The file name is the only thing that changes: no statement inside either file
-depends on the number.
+**The migration number `0003` is taken twice, in two branches.** `main` carries
+`db/migrations/0003_research_gate.sql`, committed at `59e29fa`. The clustering
+wave on `wave2/clustering` has `db/migrations/0003_clustering.sql`, and the
+collection wave on `wave2/collection-engine` has `db/migrations/0003_collection.sql`.
+Migrations have to be contiguous and the runner refuses a duplicate number, so
+the clustering file has to be renumbered to `0004` and the collection file to
+`0005` when those branches merge against `main`.
+`tests/test_db_migrations.py` is edited by every wave that adds a migration, so
+the schema version assertion has to be re-applied after each rename. The file
+name is the only thing that changes: no statement inside any of the three files
+depends on the number, and each branch is self-consistent on its own.
 
 **The `.gitignore` hazard was closed.** This document used to say that
 `.gitignore` hides `src/product_hunter/runtime/`. It does not: the pattern is

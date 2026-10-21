@@ -76,7 +76,9 @@ The three `shortcut:` markers, quoted: the engine is quadratic in the corpus and
 
 ## 9. The residuals
 
-The real embedding path never ran, because `sentence-transformers` is not installed; the adjudicator never ran against a live model, only against a scripted double; the store has no caller, so no real run has ever written a cluster; the engine's quadratic cost is taken on trust from the `shortcut:` comment; the migration number `0003` collides with the tool-call wave's uncommitted `0003_research_gate.sql`, and one of the two files has to be renumbered before the branches merge, with the schema version assertion re-applied after the rename.
+The real embedding path never ran, because `sentence-transformers` is not installed; the adjudicator never ran against a live model, only against a scripted double; the store has no caller, so no real run has ever written a cluster; the engine's quadratic cost is taken on trust from the `shortcut:` comment.
+
+The migration number `0003` is taken twice. `main` now carries `db/migrations/0003_research_gate.sql`, committed at `59e29fa`, and this branch carries `db/migrations/0003_clustering.sql`. The loader refuses a duplicate number, so this branch's file has to be renumbered to `0004_clustering.sql` when the branch merges against `main`, and the schema version assertion in `tests/test_db_migrations.py` has to be re-applied from 3 to 4 after the rename. The file name is the only thing that changes: no statement inside either file depends on the number, and this branch is self-consistent on its own.
 
 The repository root held another wave's uncommitted work while this wave ran, so the wave was moved into its own worktree at `.worktrees/wave2-clustering` and the root was left exactly as it was found. The branch is `wave2/clustering`; nothing was pushed and no other wave's branch was merged.
 

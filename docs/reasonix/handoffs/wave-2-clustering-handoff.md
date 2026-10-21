@@ -60,7 +60,7 @@ The wave adds `db/migrations/0003_clustering.sql`. No other wave has taken 0003 
 - The clustering code exists: `src/product_hunter/clustering/` with six modules, `src/product_hunter/db/clustering.py`, `config/clustering.yaml`, the `ClusteringConfig` models and the loader in `src/product_hunter/config.py`, and `db/migrations/0003_clustering.sql` with six tables.
 - `sentence-transformers` and `numpy` are not installed, and the wave added no dependency. The embedding adapter imports `sentence-transformers` lazily and the tests inject a scripted embedder.
 - The global handoff file at `%TEMP%\loop-handoff\handoff.md` holds the handoff of an unrelated project. It was not merged into this one.
-- The migration number `0003` is taken on this branch. The tool-call wave holds an uncommitted `0003_research_gate.sql` in its own worktree, and one of the two files has to be renumbered before the branches merge. The name is the only thing that changes.
+- The migration number `0003` is taken on this branch. `main` now carries `db/migrations/0003_research_gate.sql`, committed at `59e29fa`, and the collection wave has `db/migrations/0003_collection.sql`. When this branch merges against `main`, its file has to be renumbered to `0004_clustering.sql` and the schema version assertion in `tests/test_db_migrations.py` re-applied from 3 to 4. The name is the only thing that changes, and this branch is self-consistent on its own.
 
 ## 6. The radius the wave touched
 
