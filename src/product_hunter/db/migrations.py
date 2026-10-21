@@ -4,6 +4,8 @@ import re
 import sqlite3
 from pathlib import Path
 
+from product_hunter.db.connection import rollback
+
 MIGRATIONS_DIR = Path(__file__).resolve().parents[3] / "db" / "migrations"
 
 _MIGRATION_RE = re.compile(r"^(\d+)_.+\.sql$")
@@ -77,19 +79,12 @@ def _apply(conn: sqlite3.Connection, number: int, path: Path) -> None:
         conn.execute(f"PRAGMA user_version = {number}")
         conn.execute("COMMIT")
     except BaseException as exc:
-        _rollback(conn)
+        rollback(conn)
         if isinstance(exc, sqlite3.Error):
             raise MigrationError(
                 f"{path.name} failed on statement {statement!r}: {exc}"
             ) from exc
         raise
-
-
-def _rollback(conn: sqlite3.Connection) -> None:
-    try:
-        conn.execute("ROLLBACK")
-    except sqlite3.Error:
-        pass
 
 
 def _split_statements(sql: str) -> list[str]:

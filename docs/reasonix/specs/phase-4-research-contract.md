@@ -512,19 +512,21 @@ The violation names the dimension, not the scope that overran. `exceeded_against
 
 ## 9. Persistence
 
-This wave does not change SQLite. `research/persistence.py` defines the protocols the future implementation satisfies:
+The persistence wave shipped. `db/migrations/0003_research_gate.sql` exists, and
+`research/persistence.py` defines the protocols that the SQLite implementation in
+`product_hunter.db.research_gate` codes against:
 
 ```text
 ToolCallStore
-  append_tool_call(call: ToolCallProvenance) -> None
-  list_tool_calls(run_id, *, stage=None) -> list[ToolCallProvenance]
+  append_tool_call(call: ToolCallProvenance, *, attempt: int, source_id: str | None = None) -> None
+  list_tool_calls(run_id: str, *, stage: str | None = None) -> list[ToolCallProvenance]
 
 GateResultStore
-  record_gate_result(result: GateResult) -> None
-  list_gate_results(run_id) -> list[GateResult]
+  record_gate_result(result: GateResult, *, contract_fingerprint: str) -> None
+  list_gate_results(run_id: str) -> list[GateResult]
 ```
 
-The planned migration is `db/migrations/0003_research_gate.sql` with two tables:
+The migration creates the two tables the protocols name:
 
 ```sql
 CREATE TABLE tool_calls (
@@ -541,7 +543,10 @@ CREATE TABLE tool_calls (
     query_family  TEXT,
     duration_ms   INTEGER,
     error         TEXT,
-    occurred_at   TEXT NOT NULL
+    occurred_at   TEXT NOT NULL,
+    attempt       INTEGER NOT NULL DEFAULT 1,
+    source_id     TEXT,
+    id_is_declared INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE stage_gate_results (
@@ -551,11 +556,30 @@ CREATE TABLE stage_gate_results (
     passed         INTEGER NOT NULL,
     violations_json TEXT NOT NULL,
     metrics_json   TEXT NOT NULL,
+    contract_fingerprint TEXT,
     checked_at     TEXT NOT NULL
 );
 ```
 
-The number is 0003 because 0002 is taken by `0002_model_routing.sql`. The migration ships with the wave that persists tool calls. The protocols are the contract that wave codes against.
+and three more that hold the evidence the gate judges: `research_stage_executions`,
+`research_stage_artifacts` and `research_claims`. The number is 0003 because 0002 is
+taken by `0002_model_routing.sql`.
+
+`stage_gate_results.stage` is nullable, and the row with no stage holds the verdict
+of the run as a whole: the violations the gate found for the run and not for any
+stage, which are the run-level thresholds. The gate result id of that row is minted
+on its own prefix, so a stage cannot collide with it. `list_gate_results` returns
+the per-stage verdicts, and `load_run_result` merges the run-level row back in, so
+a verdict read from the database carries the same run-level violations as the
+verdict that was computed.
+
+The protocols changed twice. `record_gate_result` takes the fingerprint of the
+contract the verdict was judged under, and it is required: a verdict with no
+contract behind it is bound to nothing. `append_tool_call` takes the attempt of the
+stage that made the call and the source it was made against, and the attempt is
+required: a caller states the attempt of the call it files, because a call filed
+under an attempt nobody named is filed under the wrong one, and the gate then
+judges a re-run stage on the evidence of the attempt before it.
 
 ## 10. Shipped baseline
 
@@ -595,5 +619,5 @@ All tests are deterministic. No network, no clock dependency beyond injected tim
 | A5 | A budget overrun blocks the next call, and the gate reports it against the limits the contract declares | section 8, `tests/test_research_budget.py` and the budget tests in `tests/test_research_gate.py`, including `test_a_non_finite_budget_amount_is_refused` and `test_a_non_finite_amount_raises_the_named_refusal` |
 | A6 | Promotion is blocked when a mandatory stage failed, timed out, was missing, or produced invalid artifacts | section 7.4, the promotion tests in `tests/test_research_gate.py` |
 | A7 | No collector, scrape, or discovery execution is implemented | the package holds no collector, scrape, or network module |
-| A8 | SQLite is unchanged | `db/migrations/` holds no file for this wave; the migration is a plan in a docstring |
+| A8 | SQLite carries the evidence and the verdicts of a run | section 9, `db/migrations/0003_research_gate.sql` and the store tests in `tests/test_db_research_gate.py` |
 | A9 | A run result is bound to the contract that judged it, and promotion refuses a result judged under another contract | sections 4.6 and 7.4, `tests/test_research_gate.py::test_a_run_result_judged_under_another_contract_is_not_promoted` and `tests/test_research_contract.py::test_the_contract_fingerprint_ignores_a_list_order_that_changes_nothing` |

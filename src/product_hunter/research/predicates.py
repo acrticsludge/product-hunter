@@ -18,6 +18,13 @@ from product_hunter.research.evidence import (
     ToolCallProvenance,
     ToolCallStatus,
 )
+from product_hunter.research.query_plan import (
+    MANDATORY_FAMILIES_BY_STAGE,
+    covered_families,
+    has_visible_text,
+    is_known_family,
+    uncovered_mandatory_families,
+)
 
 # Artifact kinds the metrics and predicates read.
 KIND_DOCUMENT = "document"
@@ -122,10 +129,12 @@ def _host_of(url: str) -> str | None:
 def distinct_query_set(execution: StageExecution) -> set[str]:
     """The distinct non-empty queries among the successful search calls."""
     # The query is trimmed before it goes into the set: trailing whitespace
-    # would make one query look like several.
+    # would make one query look like several. A query with no visible
+    # character is no query at all, and it is left out.
     queries = {
         call.query_or_operation.strip()
         for call in _successful(stage_calls(execution), TOOL_SEARCH)
+        if has_visible_text(call.query_or_operation)
     }
     queries.discard("")
     return queries
@@ -137,14 +146,12 @@ def distinct_queries(execution: StageExecution) -> int:
 
 
 def query_family_set(execution: StageExecution) -> set[str]:
-    """The distinct query families among the successful search calls."""
-    families = {
-        call.query_family.strip()
-        for call in _successful(stage_calls(execution), TOOL_SEARCH)
-        if call.query_family
-    }
-    families.discard("")
-    return families
+    """The distinct query families among the successful search calls.
+
+    The plan owns the one implementation of the rule, so the metric and the
+    mandatory family check cannot drift apart.
+    """
+    return set(covered_families(execution))
 
 
 def query_families(execution: StageExecution) -> int:
@@ -370,9 +377,10 @@ def non_empty_queries(context: PredicateContext) -> tuple[bool, str]:
     in it, and the detail ends up in a persisted violation.
     """
     for call in _successful(stage_calls(context.execution), TOOL_SEARCH):
-        # The query is trimmed before the emptiness test, so the predicate and
-        # the distinct_queries metric answer the same question.
-        if call.query_or_operation.strip():
+        # The emptiness test is the shared one, so the predicate, the
+        # distinct_queries metric and the covering test answer the same
+        # question about a query that holds no visible character.
+        if has_visible_text(call.query_or_operation):
             if call.tool_call_id:
                 return True, f"search call {call.tool_call_id} carries a query"
             return True, "a search call carries a query"
@@ -437,6 +445,49 @@ def claim_evidence_links(context: PredicateContext) -> tuple[bool, str]:
     return True, "every claim carries an evidence reference"
 
 
+def mandatory_query_families(context: PredicateContext) -> tuple[bool, str]:
+    """True when the stage searched every query family it has to search.
+
+    A family is covered by a search that carries a query: a search with a
+    whitespace-only query covers nothing, so it does not count towards the
+    families the stage had to search.
+
+    The missing families are named: they are the worker's own constants, not
+    text from the evidence. A stage that has no mandatory family passes.
+    """
+    stage = context.execution.stage
+    required = MANDATORY_FAMILIES_BY_STAGE.get(stage, ())
+    if not required:
+        return True, "the stage has no mandatory query family"
+    missing = uncovered_mandatory_families(context.execution, stage)
+    if missing:
+        return False, (
+            f"the mandatory query families were not searched: {', '.join(missing)}"
+        )
+    return True, f"every mandatory query family was searched ({len(required)} families)"
+
+
+def known_query_families(context: PredicateContext) -> tuple[bool, str]:
+    """True when every search call of the stage names a family the worker owns.
+
+    A search with no family at all fails: an unassigned search is not a
+    worker-assigned query. The family names come from the tool calls, so the
+    reason reports counts and never the names themselves.
+    """
+    calls = [call for call in stage_calls(context.execution) if call.tool == TOOL_SEARCH]
+    if not calls:
+        return False, "the stage made no search call"
+    unnamed = [call for call in calls if not (call.query_family or "").strip()]
+    if unnamed:
+        return False, f"{len(unnamed)} search calls carry no query family"
+    unknown = [call for call in calls if not is_known_family(call.query_family or "")]
+    if unknown:
+        return False, (
+            f"{len(unknown)} search calls name a query family the worker does not own"
+        )
+    return True, f"{len(calls)} search calls name a worker-owned query family"
+
+
 PREDICATES: dict[str, PredicateFn] = {
     "non_empty_queries": non_empty_queries,
     "source_diversity": source_diversity,
@@ -446,14 +497,16 @@ PREDICATES: dict[str, PredicateFn] = {
     "provenance_complete": provenance_complete,
     "artifacts_valid": artifacts_valid,
     "claim_evidence_links": claim_evidence_links,
+    "mandatory_query_families": mandatory_query_families,
+    "known_query_families": known_query_families,
 }
 
 # The artifact kind each artifact-reading predicate reads. The predicate
 # functions read the same KIND_* constants, so the mapping and the functions
 # cannot drift. The absent ones read tool calls (non_empty_queries,
-# source_diversity, provenance_complete), every artifact kind
-# (artifacts_valid), or the run's claims (claim_evidence_links), so none of
-# them names a single kind.
+# source_diversity, provenance_complete, mandatory_query_families,
+# known_query_families), every artifact kind (artifacts_valid), or the run's
+# claims (claim_evidence_links), so none of them names a single kind.
 PREDICATE_ARTIFACT_KINDS: dict[str, str] = {
     "nearest_neighbor_checked": KIND_NEIGHBOR_CHECK,
     "duplicate_candidates_reviewed": KIND_DUPLICATE_REVIEW,

@@ -14,10 +14,10 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Iterator
 
-from product_hunter.fetch import utcnow
+from product_hunter.db.connection import rollback, utc_now
 
 
 class JobError(Exception):
@@ -91,7 +91,7 @@ def enqueue_job(
                 f"job key {idempotency_key!r} is already used by different content"
             )
         return existing
-    now_dt = _now(now)
+    now_dt = utc_now(now)
     scheduled = scheduled_for or now_dt.isoformat()
     conn.execute(
         """
@@ -136,7 +136,7 @@ def claim_job(
     """Recover expired leases, then claim the highest-priority queued job."""
     if lease_seconds < 1:
         raise JobError("lease_seconds must be at least 1")
-    now_dt = _now(now)
+    now_dt = utc_now(now)
     recover_expired_leases(conn, now=now_dt)
     now_iso = now_dt.isoformat()
     expires = _after(now_dt, lease_seconds)
@@ -193,7 +193,7 @@ def claim_job(
         conn.execute("COMMIT")
         return job
     except BaseException:
-        _rollback(conn)
+        rollback(conn)
         raise
 
 
@@ -207,7 +207,7 @@ def renew_lease(
     now: datetime | None = None,
 ) -> str:
     """Extend a live lease. A stale worker gets ``LeaseLost``."""
-    now_dt = _now(now)
+    now_dt = utc_now(now)
     now_iso = now_dt.isoformat()
     expires = _after(now_dt, lease_seconds)
     changed = conn.execute(
@@ -236,7 +236,7 @@ def complete_job(
     now: datetime | None = None,
 ) -> Job:
     """Mark a job succeeded only while the caller still owns the lease."""
-    now_iso = _now(now).isoformat()
+    now_iso = utc_now(now).isoformat()
     result_json = json.dumps(result, sort_keys=True) if result is not None else None
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -266,7 +266,7 @@ def complete_job(
         )
         conn.execute("COMMIT")
     except BaseException:
-        _rollback(conn)
+        rollback(conn)
         raise
     completed = get_job(conn, job.id)
     if completed is None:  # pragma: no cover
@@ -285,7 +285,7 @@ def fail_job(
     now: datetime | None = None,
 ) -> Job:
     """Record a handler failure, requeue it, or mark it dead."""
-    now_dt = _now(now)
+    now_dt = utc_now(now)
     now_iso = now_dt.isoformat()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -340,7 +340,7 @@ def fail_job(
         )
         conn.execute("COMMIT")
     except BaseException:
-        _rollback(conn)
+        rollback(conn)
         raise
     failed = get_job(conn, job.id)
     if failed is None:  # pragma: no cover
@@ -352,7 +352,7 @@ def recover_expired_leases(
     conn: sqlite3.Connection, *, now: datetime | None = None
 ) -> int:
     """Requeue expired leases, or mark them dead at the attempt ceiling."""
-    now_dt = _now(now)
+    now_dt = utc_now(now)
     now_iso = now_dt.isoformat()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -393,7 +393,7 @@ def recover_expired_leases(
         conn.execute("COMMIT")
         return len(rows)
     except BaseException:
-        _rollback(conn)
+        rollback(conn)
         raise
 
 
@@ -435,7 +435,7 @@ class JobContext:
             row is None
             or not _owns(row, self.worker_id, self.job.lease_epoch)
             or row["lease_expires_at"] is None
-            or row["lease_expires_at"] <= utcnow().isoformat()
+            or row["lease_expires_at"] <= utc_now().isoformat()
         ):
             raise LeaseLost(
                 f"job {self.job.id!r} is no longer leased to "
@@ -462,7 +462,7 @@ class JobContext:
             self.assert_lease()
             self.conn.execute("COMMIT")
         except BaseException:
-            _rollback(self.conn)
+            rollback(self.conn)
             raise
 
 
@@ -497,28 +497,8 @@ def _row_to_job(row: sqlite3.Row) -> Job:
     )
 
 
-def _rollback(conn: sqlite3.Connection) -> None:
-    try:
-        conn.execute("ROLLBACK")
-    except sqlite3.Error:
-        pass
-
-
 def _hash_id(prefix: str, basis: str) -> str:
     return prefix + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
-
-
-def _now(value: datetime | None) -> datetime:
-    """The instant to compare against, always in UTC.
-
-    An aware value is converted, a naive one is read as UTC, so the queue and
-    the scheduler read the clock the same way.
-    """
-    if value is None:
-        return utcnow()
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 def _after(now: datetime, seconds: int) -> str:

@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from product_hunter.research.budget import BudgetExceeded, BudgetSpec, BudgetTracker
-from product_hunter.research.contract import ResearchContract
+from product_hunter.research.contract import ResearchContract, load_research_contract
 from product_hunter.research.evidence import (
     ArtifactRecord,
     ResearchClaim,
@@ -1907,3 +1907,47 @@ def test_a_foreign_call_does_not_count_for_the_stage_that_is_judged():
     strict_result = evaluate_stage(strict, "run-1", "discovery", execution)
 
     assert "provenance_mismatch" in _codes(strict_result)
+
+
+def test_the_shipped_contract_fails_a_stage_that_missed_a_mandatory_query_family():
+    contract = load_research_contract()
+    # Six distinct queries over three worker-owned families: everything the
+    # shipped contract asks of the counter-evidence stage is met, except the
+    # negative family, which is mandatory for validation.
+    families = ("direct_pain", "alternative_to", "manual_workflow", "direct_pain")
+    calls = [
+        _call(
+            "counter_evidence",
+            tool_call_id=f"counter_evidence-call-{index}",
+            query_or_operation=f"query {index}",
+            query_family=family,
+        )
+        for index, family in enumerate(families, start=1)
+    ]
+    calls.extend(
+        _call(
+            "counter_evidence",
+            tool_call_id=f"counter_evidence-call-{index}",
+            query_or_operation=f"query {index}",
+            query_family="direct_pain",
+        )
+        for index in range(5, 7)
+    )
+    execution = _execution(
+        "counter_evidence",
+        tool_calls=calls,
+        artifacts=[_artifact("counter_evidence", item_count=1)],
+    )
+
+    result = evaluate_stage(contract, "run-1", "counter_evidence", execution)
+
+    # The gate enforces the plan, so the stage fails on the family it never
+    # searched and on nothing else.
+    checks = {
+        violation.detail.get("check")
+        for violation in result.violations
+        if violation.code is ViolationCode.quality_check_failed
+    }
+    assert checks == {"mandatory_query_families"}
+    assert result.passed is False
+    assert "failed_solution" in str(result.violations[0].detail)

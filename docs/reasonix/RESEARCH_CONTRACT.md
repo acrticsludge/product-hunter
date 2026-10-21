@@ -184,10 +184,17 @@ are fixed until a deliberate vocabulary change and a new normalization version.
 
 ## The honest limit
 
-Nothing outside the research package imports it. No CLI command calls it, there
-is no worker handler, and there is no caller, so the gate is complete and
-reachable as a library and gates nothing yet. The persistence layer is
-protocols only.
+The gate is enforceable and now has a home. `db/migrations/0003_research_gate.sql`
+holds the tool calls, the stage executions, the stage artifacts, the claims, and
+the gate verdicts. `src/product_hunter/db/research_gate.py` writes them, reads
+them back, rebuilds a `RunEvidence` from the stored rows, measures the budget
+from the same rows, and exposes `require_promotable()`, which raises
+`GateBlocked` when a run may not be promoted.
+
+What is still missing is the caller. No worker handler records a tool call or
+an artifact, no CLI command evaluates a run, and there is no promotion path to
+refuse. The gate is enforced in a library, and the pipeline that would make it
+bite is the next wave's work.
 
 Three of the six hard-requirement flags are enforced through the stage gate
 only. `require_provenance` is read by the stage check. `require_qdrant_check`
@@ -200,12 +207,31 @@ or on a qdrant or duckdb tool that never ran, can still be promoted. The
 shipped contract sets the flag to true, so the shipped baseline is not exposed
 to it. This is a known limit of the promotion path, and it is recorded as one.
 
+## The worker-owned query families (`IMPLEMENTED`)
+
+The query families are not left to the model. `src/product_hunter/research/query_plan.py`
+owns the ten families of spec §7A, the eight controlled wording variants, the
+mandatory query templates, and the per-stage mapping of which families a stage
+must cover.
+
+Two predicates enforce it through the existing gate.
+`mandatory_query_families` fails when a stage did not search every family its
+mapping requires, and the covering call must carry a non-empty query: a
+whitespace-only search covers no family. `known_query_families` fails when a
+search names a family the worker does not own, and it fails when a search names
+no family at all, because an unassigned search is not a worker-assigned query.
+The reason reports a count and never quotes the offending string, because a
+family name arrives on a tool call and is therefore data.
+
+The shipped contract asks for both checks on every stage that searches. The
+negative and alternative-to families are mandatory, which is the spec's rule
+that a validation run may not only collect people who agree with the thesis.
+
 ## What is planned (`PLANNED`)
 
-Two pieces remain. The first is persisting tool calls and gate results in
-SQLite, which needs the migration that `persistence.py` names. The second is
-wiring the gate into a stage so that it decides something, rather than being
-reachable only from a caller that a human has to write.
+Two pieces remain. The first is a stage handler that records the tool calls and
+the artifacts a stage produced, so the gate has something to judge. The second
+is the promotion path, so a refused run has something to refuse.
 
 ## The baseline thresholds (`PLANNED`)
 

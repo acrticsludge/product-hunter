@@ -125,6 +125,8 @@ def test_the_predicate_artifact_kinds_cover_every_artifact_reading_predicate():
         "provenance_complete",
         "artifacts_valid",
         "claim_evidence_links",
+        "mandatory_query_families",
+        "known_query_families",
     }
 
 

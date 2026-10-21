@@ -72,11 +72,13 @@ runs inside `BEGIN IMMEDIATE` and `COMMIT`, then sets `PRAGMA user_version`.
 `migrate()` is idempotent and returns 2 on a current database. The runner splits
 SQL on `;`, so a semicolon inside a string literal is not supported.
 
-## The twenty-three tables
+## The twenty-eight tables
 
 `IMPLEMENTED` (`db/migrations/0001_initial.sql`,
-`db/migrations/0002_model_routing.sql`). The schema holds twenty-three tables:
-nineteen from the base migration and four from the model routing migration.
+`db/migrations/0002_model_routing.sql`,
+`db/migrations/0003_research_gate.sql`). The schema holds twenty-eight tables:
+nineteen from the base migration, four from the model routing migration, and
+five from the research gate migration.
 
 | Group | Tables |
 |---|---|
@@ -85,6 +87,7 @@ nineteen from the base migration and four from the model routing migration.
 | Research registry | `research_runs`, `research_artifacts`, `research_events`, `research_checkpoints` |
 | Execution | `jobs`, `stage_attempts`, `projection_tasks` |
 | Model routing | `model_catalogs`, `model_inventory`, `model_role_bindings`, `model_executions` |
+| Research gate | `tool_calls`, `research_stage_executions`, `research_stage_artifacts`, `research_claims`, `stage_gate_results` |
 | Reserved, no writer | `propagation_edges`, `spend_ledger`, `human_decisions` |
 
 Three tables have no writer anywhere in `src/`: `propagation_edges`,
@@ -92,6 +95,10 @@ Three tables have no writer anywhere in `src/`: `propagation_edges`,
 and today they stay empty. The independent-author and propagation analysis from
 spec §12, the budget writes from spec §22, and the approval records from spec
 §37 are the work that would fill them.
+
+`research_stage_artifacts` is not `research_artifacts`. The first holds the
+files of an extraction run, the second holds the stage outputs the research gate
+judges. They are different things and they are not merged.
 
 ## Runtime artifacts
 
@@ -201,6 +208,22 @@ fields as design intent; the code implements the container, not the contents.
 Nothing in the codebase calls `load_checkpoint()` to resume work, so the resume
 orchestration does not exist.
 
+A checkpoint written by a leased worker is fenced. `save_checkpoint()` takes
+optional `worker_id` and `lease_epoch`; a write with only one of the two is
+refused, and a write with both is refused unless the caller holds a live lease
+on a job for that run and stage. The lease is compared against the store's
+clock, not against a timestamp the caller supplies, so a caller cannot make an
+expired lease look live. A write with neither is the control plane, not a
+leased worker, and is unfenced.
+
+The check and the insert share one transaction. A caller that already owns a
+transaction keeps it and commits it; a caller with none gets one from
+`save_checkpoint()`. The fence and the write therefore cannot be separated by
+another writer.
+
+The check itself lives in `src/product_hunter/db/leases.py` and is shared. The
+research gate's five write paths use the same one.
+
 ### The transactional outbox
 
 `IMPLEMENTED` (`src/product_hunter/db/outbox.py`,
@@ -241,11 +264,14 @@ not call it yet.
 `src/product_hunter/llm/routing.py`, `src/product_hunter/db/model_routing.py`,
 `config/model_routing.yaml`). The router resolves a role to a `provider/model`
 identity through an ordered chain of candidates and takes the first available
-one. `ph models` uses it. What does not use it is the generation path:
-`OpenCodeGenerateProvider` in `src/product_hunter/llm/opencode.py` still calls the
-model pinned in `config/extraction.yaml`. The router exists and routes the `ph
-models` command; an extraction run does not go through it. That distinction is
-the whole story and it is told in
+one. It routes two things: the `ph models` command, and the extraction run.
+`ph extract` resolves the `extraction` role against the live catalogue, binds
+the selected model to the provider, and records the selection, the catalogue
+version, and the fallback index in the run manifest. A router that cannot
+answer falls back to the model pinned in `config/extraction.yaml`, and the
+manifest says which one ran. No model is named in the business logic: the
+chains are patterns in `config/model_routing.yaml`, resolved against a
+catalogue discovered from OpenCode at runtime. The full story is in
 [MODEL_ROUTING_IMPLEMENTATION.md](MODEL_ROUTING_IMPLEMENTATION.md).
 
 **The research contract and gate engine.** `IMPLEMENTED`
@@ -256,7 +282,7 @@ hard limit. A gate verdict measures an overrun against the limits the contract
 declares, so a tracker built from a looser budget cannot widen them. An
 artifact counts towards a threshold only when it is valid, belongs to the stage
 being judged, and traces to a successful call of that stage, and the same rule
-governs the two artifact-reading quality predicates. A call filed under another
+governes the two artifact-reading quality predicates. A call filed under another
 stage is not that stage's evidence either: it counts towards no threshold and
 satisfies no required tool, while the same call is still reported as a
 provenance mismatch when the contract requires provenance. At run level, a
@@ -267,11 +293,23 @@ that names a threshold or a quality check on an artifact kind its own stage
 does not declare is refused. Three of the six hard-requirement flags are
 enforced through the stage gate only, so with
 `promotion.require_all_stages_passed: false` they are not enforced at
-promotion time, and the shipped contract sets the flag to true. What does not
-call it is anything: nothing outside the package imports it, no CLI command
-calls it, and there is no worker handler, so the gate is complete and reachable
-as a library and gates nothing yet. What the code enforces about research
-quality is in [RESEARCH_CONTRACT.md](RESEARCH_CONTRACT.md).
+promotion time, and the shipped contract sets the flag to true.
+
+The gate has a home now. `db/migrations/0003_research_gate.sql` holds the
+evidence the gate judges — `tool_calls`, `research_stage_executions`,
+`research_stage_artifacts`, `research_claims` — and the verdicts it produced,
+`stage_gate_results`. `src/product_hunter/db/research_gate.py` writes and reads
+them, rebuilds a `RunEvidence` from the stored rows, and exposes
+`require_promotable()`, which raises `GateBlocked` when a run may not be
+promoted. The budget is measured from the stored rows, so an over-budget run is
+refused. A verdict carries the fingerprint of the contract it was judged under,
+and a verdict judged under a different contract is not promoted.
+
+What does not call it is still the pipeline: no worker handler records a tool
+call or an artifact, no CLI command evaluates a run, and there is no promotion
+path to refuse. The gate is enforceable and enforced in a library, and the
+caller that makes it bite is the next wave's work. What the code enforces
+about research quality is in [RESEARCH_CONTRACT.md](RESEARCH_CONTRACT.md).
 
 **The scheduler.** `IMPLEMENTED` (`src/product_hunter/db/scheduler.py`).
 `Scheduler.tick()` enqueues through `enqueue_job()` with an idempotency key of
@@ -351,20 +389,30 @@ rather than an approval gate.
 
 ## Hazards
 
-One is live and one is closed. Both are worth recording because an operator
-will hit them.
+One is closed, one is closed, and one is a standing limit.
 
-**`.gitignore` hides the worker runtime package.** `.gitignore` contains
-`runtime/`, which also matches `src/product_hunter/runtime/`. The worker
-runtime package is invisible to `git status`, and a plain `git add` would not
-commit it. The package exists on disk but is not in the committed tree.
+**`.gitignore` hides the worker runtime package.** `CLOSED`. `.gitignore` holds
+`/runtime/`, and the leading slash anchors the pattern to the repository root,
+so it matches the top-level runtime directory and not
+`src/product_hunter/runtime/`. All six files of the worker runtime package are
+tracked, and `git check-ignore src/product_hunter/runtime/worker.py` reports
+nothing. An earlier revision of this document recorded this as a live hazard on
+the strength of the pattern text alone; the pattern is anchored and the package
+is in the committed tree.
 
 **The research-gate migration number was taken, and is now reserved.**
-`research/persistence.py` names a planned migration
+`CLOSED`. `research/persistence.py` named a planned migration
 `db/migrations/0003_research_gate.sql`. The name was `0002` until
 `0002_model_routing.sql` took that number, and the docstring and the wave spec
-now say `0003`. The file does not exist and `0003` is not taken. The wave that
-persists tool calls has to use `0003` or a later free number.
+now say `0003`. The file exists and holds the five tables the gate needs, and
+`0003` is taken by it.
+
+**The gate has a home but no caller.** `OPEN`. The evidence, the verdicts, the
+budget measurement, and the fail-closed `require_promotable()` all exist and
+are tested. Nothing in the running system calls them yet: no worker handler
+records a tool call or an artifact, no CLI command evaluates a run, and there
+is no promotion path to refuse. The gate is enforceable and enforced in a
+library, and the caller that makes it bite is the next wave's work.
 
 ## What is not implemented
 
@@ -375,8 +423,7 @@ named there and have no code in this branch.
 |---|---|---|
 | Research run lifecycle and transitions | §41.2 | `PLANNED`, full spec only, no wave spec |
 | `continue` and cross-chat continuity | §41.6, §41.8 | `PLANNED`, full spec only, no wave spec |
-| Tool-call and gate-result persistence in SQLite | §6A, §34 | `PLANNED`; `research/persistence.py` holds protocols only and names `0003_research_gate.sql` |
-| `spend_ledger` writes and global spend caps | §22 | `PLANNED`; the table exists and stays empty |
+| `spend_ledger` writes and global spend caps | §22 | `PLANNED`; the table exists and stays empty, and the gate reads it for the budget it measures |
 | Opportunity states and scoring | §20, §23 | `PLANNED`, full spec only, no wave spec |
 | Qdrant, DuckDB, and Obsidian projections | §14, §16, §27 | `PLANNED`, full spec only, no wave spec |
 | Independent-author and propagation analysis | §12 | `PLANNED`; the `propagation_edges` table exists and stays empty |
@@ -384,6 +431,8 @@ named there and have no code in this branch.
 | Human approval gates | §37 | `BLOCKED` on an external-account, posting, or Git write path that does not exist |
 | MCP server or client | §6 | `PLANNED`; no MCP code exists |
 | Obsidian projection handler for the outbox | §15A, §27 | `PLANNED` |
+| A persistent query frontier with novelty and saturation | §7A | `PARTIAL`; the families, the controlled variants, and the mandatory templates are worker-owned and enforced, and the frontier's novelty and saturation bookkeeping is not built |
+| A stage handler that records tool calls and artifacts | §6A | `PLANNED`; the stores and the fence exist, and no handler writes to them yet |
 
 Model selection and its honest status are in
 [MODEL_ROUTING_IMPLEMENTATION.md](MODEL_ROUTING_IMPLEMENTATION.md). What the code
