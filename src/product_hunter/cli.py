@@ -133,6 +133,12 @@ def build_parser() -> argparse.ArgumentParser:
     db_outbox.add_argument("--path", dest="db_path", default=None)
     db_check = db_commands.add_parser("check", help="run SQLite integrity checks")
     db_check.add_argument("--path", dest="db_path", default=None)
+    research_parser = commands.add_parser("research", help="control research runs")
+    research_parser.add_argument("action")
+    research_parser.add_argument("target", nargs="?", default=None)
+    research_parser.add_argument("--objective", default=None)
+    research_parser.add_argument("--chat-id", dest="chat_id", default=None)
+    research_parser.add_argument("--limit", type=int, default=50)
     models_parser = commands.add_parser(
         "models", help="list the model catalog as JSON"
     )
@@ -1004,5 +1010,19 @@ def main(argv: list[str] | None = None) -> int:
         return models_command(refresh=args.refresh, role=args.role)
     if args.command == "db":
         return _run_db_command(args)
+    if args.command == "research":
+        # The import stays inside the branch, so this module loads the same
+        # way when the registry is absent.
+        from product_hunter.registry import main as registry_main
+
+        argv = ["research", args.action]
+        if args.target is not None:
+            argv.append(args.target)
+        if args.objective is not None:
+            argv += ["--objective", args.objective]
+        if args.chat_id is not None:
+            argv += ["--chat-id", args.chat_id]
+        argv += ["--limit", str(args.limit)]
+        return registry_main(argv)
     parser.print_help()
     return 0

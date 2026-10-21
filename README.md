@@ -20,6 +20,11 @@ small scale. Clustering, scoring, and market validity wait for later phases.
 - `ph eval --labels PATH [--out PATH] [--quote-failures N]` scores a filled
   review sheet and prints the report as JSON.
 - `ph report --run RUN_ID [--out PATH]` reports one run from its own artifacts.
+- `ph research <action> [ID] [--objective TEXT] [--chat-id ID] [--limit N]`
+  controls the research runs. The actions are `create`, `list`, `status`,
+  `continue`, `resume`, `pause`, `retry`, `cancel`, and `log`. It prints one
+  JSON object and exits 1 on a refusal. `PH_DB_PATH` moves the database.
+
 - `ph models [--refresh] [--role ROLE]` lists the model catalogue OpenCode
   offers as JSON. `--refresh` re-discovers it first, and `--role` prints the
   resolved chain for one pipeline role instead of the whole catalogue.
@@ -117,6 +122,40 @@ claims nothing.
 
 No handler for the real stages is registered yet, so a worker started today
 recovers expired leases and reports that it has no handlers.
+
+## OpenCode control surface
+
+`.opencode/plugins/product-hunter.ts` registers one OpenCode tool named
+`product_hunter`. It takes an `action` (`create`, `list`, `status`, `continue`,
+`resume`, `pause`, `retry`, `cancel`, `log`), an optional `research_id`, an
+optional `objective`, and an optional `limit`. The plugin runs the state layer
+as a subprocess with an argument vector, never a shell string, and returns the
+text the state layer wrote.
+
+Ten command files under `.opencode/commands/` use that tool:
+
+| Command | Action |
+| --- | --- |
+| `/research` | `create` |
+| `/list-research` | `list` |
+| `/research-status` | `status` |
+| `/continue-research` | `continue` |
+| `/continue` | `continue` |
+| `/pause-research` | `pause` |
+| `/resume-research` | `resume` |
+| `/retry-research` | `retry` |
+| `/cancel-research` | `cancel` |
+| `/research-log` | `log` |
+
+`/continue` without a research id continues the one eligible run. When more
+than one run is eligible it returns the candidates and asks, through the
+`question` tool, which one to continue. It never guesses.
+
+The interface owns the request, the durable state, and the wording. The worker
+owns the execution. A run with no live worker lease says `worker: not running`,
+so the surface never implies that work is in flight when the database does not
+say so.
+
 
 ## Project skills
 
