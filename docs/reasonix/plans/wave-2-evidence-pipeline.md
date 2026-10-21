@@ -25,8 +25,9 @@ the record; the report is the record.
 | `tests/test_db_migrations.py` | edit | 13 |
 | `docs/reasonix/specs/wave-2-evidence-pipeline.md` | new | 463 |
 | `docs/reasonix/plans/wave-2-evidence-pipeline.md` | new | this file |
-| `docs/reasonix/prompts/wave-2-evidence-pipeline-*.md` | new | 4 files, 322 lines |
-| `docs/reasonix/reports/wave-2-evidence-pipeline.md` | new | about 480 |
+| `docs/reasonix/prompts/wave-2-evidence-pipeline-*.md` | new | 5 files, 390 lines |
+| `docs/reasonix/decisions/2026-10-21-evidence-pipeline.md` | new | 155 |
+| `docs/reasonix/reports/wave-2-evidence-pipeline.md` | new | about 500 |
 | `docs/reasonix/ARCHITECTURE.md` | edit | 88 |
 
 Three files the plan did not name are in the wave, and the plan was

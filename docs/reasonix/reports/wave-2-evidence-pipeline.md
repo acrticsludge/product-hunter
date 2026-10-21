@@ -354,6 +354,8 @@ New:
 | `docs/reasonix/prompts/wave-2-evidence-pipeline-verify.md` | 36 |
 | `docs/reasonix/prompts/wave-2-evidence-pipeline-harden.md` | 63 |
 | `docs/reasonix/prompts/wave-2-evidence-pipeline-review.md` | 87 |
+| `docs/reasonix/prompts/wave-2-evidence-pipeline-report.md` | 68 |
+| `docs/reasonix/decisions/2026-10-21-evidence-pipeline.md` | 155 |
 | `docs/reasonix/reports/wave-2-evidence-pipeline.md` | this file |
 
 Edited:
@@ -476,7 +478,20 @@ same complaint does not inflate it.
   the fetch, the source, the identity, and the parser version. A re-capture
   therefore keeps the same `doc_id` and moves to a new content version.
 
-## 11. Not checked
+## 11. Decisions recorded
+
+Six conventions came out of this wave that a later phase will reuse. They
+are in `docs/reasonix/decisions/2026-10-21-evidence-pipeline.md`, because
+each one is easy to break by accident.
+
+1. The traceability rule is a trigger, not a convention.
+2. Strength and reliability are derived, never reported.
+3. The dedup key is the content, and the count is of canonical spans.
+4. The span id is checked against the span, not trusted.
+5. The quote is re-derived from the stored text, never taken from the model.
+6. The migration runner ends a statement where SQLite says one is complete.
+
+## 12. Not checked
 
 - The pipeline was not run against a real Phase 1 run directory, so the
   mixed path, a Wave 1 row beside a pipeline row, is argued from code and
