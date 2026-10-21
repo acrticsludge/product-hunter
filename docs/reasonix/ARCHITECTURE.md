@@ -426,6 +426,16 @@ now say `0003`. `0003` is now taken as well: the independence wave shipped
 to use `0004` or a later free number, and its docstring has to be corrected
 to say so.
 
+**Four branches claim the migration number `0003`.** The runner needs the
+numbers contiguous, so the integrator has to renumber them. As of the
+independence wave's commit: `main` has `0003_research_gate.sql`,
+`wave2/clustering` has `0003_clustering.sql`, `wave2/evidence-pipeline` has
+`0003_evidence_pipeline.sql`, and `wave2/independence` has
+`0003_independence.sql`. The files have to end up numbered `0003`, `0004`,
+`0005`, and `0006`, and the `PRAGMA user_version` expectations in
+`tests/test_db_migrations.py` have to follow. Every wave branch was cut from
+`3d7bc68`, where `0003` was free, so each of them took the same next number.
+
 ## What is not implemented
 
 The full specification describes an eight-phase system. These requirements are
