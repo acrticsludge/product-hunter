@@ -61,10 +61,11 @@ The gate was also proven to bite rather than merely to pass. The HTML escape
 in the sanitizer was removed on a scratch copy of the file, the suite went
 red on `test_html_is_escaped` and
 `test_a_leading_quote_does_not_open_a_blockquote`, and the file was restored
-byte for byte (sha256
-`1533E5F408858198BFF4C67285A15D5DA7C99F72941981670CE1E08C5C3F867A` before and
-after). The implementer did the same for every later fix round and reported
-which of the new tests fail against the old code.
+byte for byte: the sha256 of the file was
+`1533E5F408858198BFF4C67285A15D5DA7C99F72941981670CE1E08C5C3F867A` before
+and after the restore. The file has changed since, through the hardening
+fixes below. The implementer did the same for every later fix round and
+reported which of the new tests fail against the old code.
 
 One caveat on the gate: the code-gate subagent was unavailable at the
 provider for the whole session (three attempts on rung 1, one on rung 2, both
@@ -216,13 +217,14 @@ give text meaning inside a vault: `&`, `<` and `>` so no HTML tag and no
 embedded script survives; the backtick so no code fence can be opened, and a
 tilde fence is escaped as well; `[[` so a wikilink and an embed stay text;
 `{{` and `}}` so a Templater expression is not evaluated; `%%` so a comment
-and a Dataview inline block stay text; a line-leading `#`, `|`, `>`, `---` and
-`= ` so scraped text cannot make a heading, a table row, a blockquote, a
-frontmatter delimiter or a Dataview query. The line-start escapes fire after
-an indentation of up to three spaces, because CommonMark still reads a
-heading, a rule or a query there. A URL whose scheme is not `http` or `https`
-is replaced with `blocked:<scheme>`, and a URL is written as inline code so
-a reader cannot click straight from the vault into a hostile address.
+and a Dataview inline block stay text; a line-leading `#`, `|`, `---` and
+`= ` so scraped text cannot make a heading, a table row, a frontmatter
+delimiter or a Dataview query. The angle brackets are escaped everywhere, so
+a blockquote cannot open either. The line-start escapes fire after an
+indentation of up to three spaces, because CommonMark still reads a heading,
+a rule or a query there. A URL whose scheme is not `http` or `https` is
+replaced with `blocked:<scheme>`, and a URL is written as inline code so a
+reader cannot click straight from the vault into a hostile address.
 
 A quote is rendered inside a fenced block tagged `text`, and the escaping
 still runs, so the fence cannot be closed from inside.
