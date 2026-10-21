@@ -1,8 +1,10 @@
 # Handoff — Phase 2 crash recovery
 
 RUN_ID: wave1-crash-recovery-20261021
-Base commit: `205a4ba` (Phase 2 step 1, authoritative SQLite evidence core)
-Branch: `main`
+Commit: `0eb75c2` ("phase2: harden crash recovery"), branch `main`
+Base commit at the time of the commit: `679d0df`. The base moved from
+`205a4ba` to `679d0df` while this run worked, because other loop runs share
+this worktree and were committing alongside it.
 Risk: medium (store, queue, outbox and checkpoint layer; no schema, auth, payment, secret or infrastructure path)
 Blast radius: `src/product_hunter/db/store.py`,
 `src/product_hunter/db/checkpoints.py`, `tests/conftest.py`,
@@ -21,7 +23,7 @@ docs.
   `tests/conftest.py` now holds the shared run-directory builders, so a new
   test file can import them rather than copying them.
 - `docs/reasonix/` — `specs/`, `plans/`, `prompts/`, `handoffs/`. The phase-1
-  reports live in `docs/reports/`.
+  reports live in `docs/reasonix/reports/`.
 - `.loop/adapter.json` — the gate is `uv run pytest`. Python 3.14.
 
 ## What changed
@@ -106,6 +108,6 @@ is unchanged.
 
 ## Gate
 
-`uv run pytest` — `747 passed` in the shared worktree, `485 passed` in a clean
-worktree holding base commit `2039d4b` plus only this run's five files. The
-second number is the one that describes this change.
+`uv run pytest` — `747 passed` in the shared worktree, `485 passed` on the
+exact committed tree `0eb75c2` in a clean scratch worktree. The second number
+is the one that describes this change.

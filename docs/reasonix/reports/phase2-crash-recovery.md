@@ -122,16 +122,15 @@ Full suite in this worktree, which other loop runs also share:
 747 passed in 10.77s
 ```
 
-The same change alone, in a clean worktree at base commit `2039d4b` plus only
-this run's five files:
+The same change alone, checked out clean in a scratch worktree as the exact
+committed tree `0eb75c2`, with none of the other runs' files in the picture:
 
 ```
-485 passed in 9.53s
+485 passed in 8.64s
 ```
 
 That second number is the one that matters for this commit. 464 of those tests
-are the pre-existing suite at base commit `2039d4b`, unchanged, and 21 are
-this run's.
+are the pre-existing suite, unchanged, and 21 are this run's.
 
 ```
 uv run pytest tests/test_db_crash_recovery.py
@@ -150,7 +149,7 @@ uv run pytest tests/test_db_crash_recovery.py
 | `docs/reasonix/specs/phase2-crash-recovery.md` | new, 209 lines |
 | `docs/reasonix/plans/phase2-crash-recovery.md` | new, 163 lines |
 | `docs/reasonix/prompts/phase2-crash-recovery-implement.md` | new, the implement node's brief |
-| `docs/reports/phase2-crash-recovery.md` | this file |
+| `docs/reasonix/reports/phase2-crash-recovery.md` | this file |
 
 ## Not proven, and known limits
 
@@ -201,9 +200,9 @@ it into test output.
 
 ## Worktree note
 
-Other loop runs share this worktree and were editing it throughout. Three of
+Other loop runs share this worktree and were editing it throughout. Four of
 them committed while this run was working, so the base moved from `205a4ba` to
-`2039d4b`. The committed change is exactly the ten files listed above, staged
+`679d0df`. The committed change is exactly the ten files listed above, staged
 by explicit path. `db/worker.py`, `db/__init__.py`,
 `db/migrations/0002_model_routing.sql`, `config/model_routing.yaml`,
 `src/product_hunter/research/`, `src/product_hunter/eval/` and the `docs/`
@@ -212,3 +211,8 @@ tree restructure belong to those runs and are not part of this commit.
 The base commit moving is why the isolated run above matters. It re-checks
 this change against the tree as it stands now, with none of those other runs'
 files in the picture.
+
+This report was written at `docs/reports/` and moved to
+`docs/reasonix/reports/` by a concurrent run's docs restructure, after the
+commit above was made. The figures were corrected to match the exact
+committed tree at the same time.
