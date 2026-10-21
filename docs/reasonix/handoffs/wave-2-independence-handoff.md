@@ -113,8 +113,22 @@ and `min_independent_communities` mirror the validation thresholds in
 ## Open threads for the next session
 
 1. `research/persistence.py` names a planned `0003_research_gate.sql`. This
-   wave took `0003`. The tool-call persistence wave must take `0004` or later.
-2. The DuckDB materialisation of these numbers is not built. The numbers are
+   wave took `0003`. The tool-call persistence wave must take `0004` or later
+   and must correct that docstring.
+2. **The migration number is contested.** Four branches claim `0003`:
+   `main` has `0003_research_gate.sql`, `wave2/clustering` has
+   `0003_clustering.sql`, `wave2/evidence-pipeline` has
+   `0003_evidence_pipeline.sql`, and this wave has `0003_independence.sql`.
+   The runner needs the numbers contiguous, so the integrator has to renumber
+   the four files into `0003`, `0004`, `0005`, and `0006`, and the
+   `PRAGMA user_version` expectations in `tests/test_db_migrations.py` have to
+   follow. This branch is cut from `3d7bc68`, where `0003` was free.
+3. The DuckDB materialisation of these numbers is not built. The numbers are
    computed in Python over SQLite.
-3. The propagation detector is text-only. A paraphrase reads as a separate
+4. The propagation detector is text-only. A paraphrase reads as a separate
    canonical content, so the error is under-counting propagation.
+5. Nothing in `src/` writes `documents.live_status`. The collector marks a
+   document deleted in a later wave.
+6. `record_author_clusters` writes the complete set of identity groups and
+   ungroups every author whose cluster is not in that set. A run that
+   analysed part of the corpus must not call it.

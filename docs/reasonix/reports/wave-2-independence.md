@@ -124,8 +124,26 @@ stored value is not one dictionary lookup away from a low-entropy raw key.
 
 `research/persistence.py` names a planned `0003_research_gate.sql`. This wave
 took `0003` because the runner demands contiguous numbers and `0003` was the
-next free one. The wave that persists tool calls must take `0004` or later
-and must correct that docstring.
+next free one on the base this branch was cut from. The wave that persists
+tool calls must take `0004` or later and must correct that docstring.
+
+### The migration number is contested
+
+Four branches claim `0003`, and the runner needs the numbers contiguous, so
+the integrator has to renumber them into a sequence. As of this commit:
+
+| Branch | Migration |
+|---|---|
+| `main` | `0003_research_gate.sql` |
+| `wave2/clustering` | `0003_clustering.sql` |
+| `wave2/evidence-pipeline` | `0003_evidence_pipeline.sql` |
+| `wave2/independence` (this wave) | `0003_independence.sql` |
+
+This branch is cut from `3d7bc68`, where `0003` was free, and it does not
+contain the research-gate migration. Whichever order the integrator merges
+in, the files have to end up numbered `0003`, `0004`, `0005`, and `0006` in
+that order, and the `PRAGMA user_version` expectations in
+`tests/test_db_migrations.py` have to follow.
 
 ## 5. Tests
 
