@@ -1,6 +1,8 @@
 # Handoff — plugin project root
 
 **Run:** loop-free, 2026-10-21
+**Run id:** `ses_ea2c6ab9fffeJ2fPemcOo9zsg3-20261021`
+**Commit:** `8e5172c61faf5fd0ea56a8d41842d44992d6566f`
 **Baseline:** branch `main`, HEAD `205a4ba` ("Phase 2 step 1: authoritative
 SQLite evidence core"), working tree dirty before this change. The tree is
 mixed: the Phase 2 work is in flight and uncommitted, and this run did not

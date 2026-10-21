@@ -1,6 +1,8 @@
 # Plugin project root — Report
 
 **Date:** 2026-10-21
+**Run id:** `ses_ea2c6ab9fffeJ2fPemcOo9zsg3-20261021`
+**Commit:** `8e5172c61faf5fd0ea56a8d41842d44992d6566f`
 **Spec:** `docs/reasonix/specs/plugin-project-root-spec.md`
 **Plan:** `docs/reasonix/plans/plugin-project-root-plan.md`
 **Risk:** medium, the floor this repository already carries.
