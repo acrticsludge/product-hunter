@@ -3,6 +3,9 @@
 **Branch:** `wave2/independence`
 **Base commit:** `3d7bc68` (main)
 **Implementation commit:** `a9974b8fc09b0927d29a3a3e73d7517d14448d6a`
+**Commits on the branch:** `a9974b8` the engine, `d89af46` this report,
+`4470577` the migration-collision note, `98452b6` the architecture hazard.
+Nothing is pushed.
 **Spec:** [`../specs/wave-2-independence.md`](../specs/wave-2-independence.md)
 **Plan:** [`../plans/wave-2-independence.md`](../plans/wave-2-independence.md)
 
