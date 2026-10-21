@@ -547,5 +547,12 @@ subject phase2: integrate wave 1 implementation
  33 files changed, 6167 insertions(+), 234 deletions(-)
 ```
 
-The working tree is clean at that commit. The full suite passes from the
-committed state: **1085 passed, exit 0**. Nothing was pushed.
+Two documentation commits follow it, both adding to the report:
+
+```
+7ffdf47  docs: add the final wave 1 integration report
+0b29388  docs: correct the migration-numbering break in the wave 2 merges
+```
+
+The working tree is clean. The full suite passes from the committed state:
+**1085 passed, exit 0**. Nothing was pushed.
