@@ -50,6 +50,18 @@ class ClaimKind(str, Enum):
     no_strong_competitor = "no_strong_competitor"
     no_counter_evidence_found = "no_counter_evidence_found"
     opportunity_exists = "opportunity_exists"
+    competitors_exist = "competitors_exist"
+    existing_solution_exists = "existing_solution_exists"
+    market_validated = "market_validated"
+    willingness_to_pay = "willingness_to_pay"
+    distribution_accessible = "distribution_accessible"
+    problem_exists = "problem_exists"
+    problem_recurs = "problem_recurs"
+    problem_is_severe = "problem_is_severe"
+    independent_population_exists = "independent_population_exists"
+    market_is_large = "market_is_large"
+    buildable = "buildable"
+    timing_is_right = "timing_is_right"
 
 
 class ToolCallProvenance(BaseModel):
