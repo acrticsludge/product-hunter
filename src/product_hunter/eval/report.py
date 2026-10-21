@@ -144,6 +144,8 @@ def _not_measured(run: EvalRun) -> list[str]:
         if task.scored == task.cases and task.cases
     ]
     lines = ["## What was not measured", ""]
+    if not run.tasks:
+        lines.append("The dataset holds no task, so nothing was measured.")
     if blocked:
         lines.append(
             "These tasks carried no human label, so their quality metrics are "
@@ -153,7 +155,7 @@ def _not_measured(run: EvalRun) -> list[str]:
         lines.append(f"For {name} no case of this task could be scored.")
     if partly:
         lines.append(f"Only part of these tasks was measured: {', '.join(partly)}.")
-    if not blocked and not unscored and not partly:
+    if run.tasks and not blocked and not unscored and not partly:
         lines.append("Every task of the dataset was measured.")
     if measured:
         lines.append("")

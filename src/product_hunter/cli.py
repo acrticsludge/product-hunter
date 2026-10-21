@@ -790,6 +790,7 @@ def bench_compare_command(
         return 1
     payload = comparison.model_dump()
     payload["ok"] = comparison.verdict != "regression"
+    payload["reason"] = _compare_reason(comparison)
     print(json.dumps(payload))
     return 1 if comparison.verdict == "regression" else 0
 
@@ -869,6 +870,32 @@ def _run_reason(run) -> str:
         failed = ", ".join(run.thresholds.failed)
         return f"the thresholds failed: {failed}" if failed else "the thresholds failed"
     return "no threshold could be evaluated"
+
+
+def _compare_reason(comparison) -> str:
+    """Why a comparison says what it says, in one plain sentence."""
+    if comparison.verdict == "not_comparable":
+        return "the two runs are not comparable"
+    if comparison.verdict == "regression":
+        names = _moved_metrics(comparison, "regressed")
+        if not names:
+            return "the candidate regressed"
+        return f"the candidate regressed on {', '.join(names)}"
+    if comparison.verdict == "improvement":
+        names = _moved_metrics(comparison, "improved")
+        if not names:
+            return "the candidate improved"
+        return f"the candidate improved on {', '.join(names)}"
+    return "nothing changed"
+
+
+def _moved_metrics(comparison, status: str) -> list[str]:
+    """The task and metric of every metric that moved the way it was asked."""
+    return [
+        f"{delta.task}.{delta.metric}"
+        for delta in comparison.metric_deltas
+        if delta.status == status
+    ]
 
 
 def _verdict(passed: bool | None) -> str:

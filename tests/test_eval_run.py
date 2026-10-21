@@ -550,6 +550,28 @@ def test_a_missing_threshold_file_is_refused(tmp_path):
         load_thresholds(tmp_path / "absent.yaml")
 
 
+def test_a_threshold_file_with_a_negative_tolerance_is_refused(tmp_path):
+    """A negative tolerance hides every regression, so the file is refused."""
+    path = tmp_path / "thresholds.yaml"
+    path.write_text("tolerance: -0.1\n", encoding="utf-8")
+
+    with pytest.raises(EvalError) as excinfo:
+        load_thresholds(path)
+
+    message = str(excinfo.value)
+    assert "thresholds.yaml" in message
+    assert "tolerance" in message
+
+
+def test_a_threshold_file_with_a_tolerance_is_accepted(tmp_path):
+    path = tmp_path / "thresholds.yaml"
+    path.write_text("tolerance: 0.05\n", encoding="utf-8")
+
+    thresholds = load_thresholds(path)
+
+    assert thresholds.tolerance == 0.05
+
+
 def test_a_blocked_threshold_check_carries_its_reason(tmp_path):
     """A null metric is blocked, and the two reasons are told apart."""
     unlabeled = make_run(
@@ -1065,6 +1087,20 @@ def test_the_report_names_a_task_whose_every_case_errored_as_unmeasured(tmp_path
     assert "pain_extraction" in section
     assert "no case of this task could be scored" in section
     assert "Every task of the dataset was measured." not in markdown
+
+
+def test_the_report_does_not_claim_a_task_was_measured_when_there_is_none(
+    tmp_path,
+):
+    """A dataset with no case has no task, so no task was measured."""
+    run = make_run(tmp_path, [], [])
+
+    markdown = render_benchmark_markdown(run)
+
+    assert run.tasks == []
+    section = markdown.split("## What was not measured")[1]
+    assert "Every task of the dataset was measured." not in markdown
+    assert "The dataset holds no task, so nothing was measured." in section
 
 
 # --- the task values --------------------------------------------------------

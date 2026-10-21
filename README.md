@@ -20,6 +20,13 @@ small scale. Clustering, scoring, and market validity wait for later phases.
 - `ph eval --labels PATH [--out PATH] [--quote-failures N]` scores a filled
   review sheet and prints the report as JSON.
 - `ph report --run RUN_ID [--out PATH]` reports one run from its own artifacts.
+
+- `ph db init|status|import-run|recover|jobs|outbox|check` operates the
+  authoritative SQLite store. `init` creates and migrates it, `status` shows
+  the schema version and the row counts, `import-run` loads one processed
+  extraction run, `recover` requeues expired job and projection leases, `jobs`
+  and `outbox` list the queue and the projection tasks as JSON, and `check`
+  runs the SQLite integrity and foreign-key checks.
 - `ph research <action> [ID] [--objective TEXT] [--chat-id ID] [--limit N]`
   controls the research runs. The actions are `create`, `list`, `status`,
   `continue`, `resume`, `pause`, `retry`, `cancel`, and `log`. It prints one
@@ -35,8 +42,8 @@ small scale. Clustering, scoring, and market validity wait for later phases.
   results and reports the regressions.
 - `ph bench report --run PATH --out PATH [--compare PATH]` writes the
   benchmark report of one run.
-- `ph bench labels --cases PATH` prints how much of a dataset a human has
-  labelled.
+- `ph bench labels --cases PATH [--out PATH]` prints how much of a dataset a
+  human has labelled.
 
 ## Fetch safety
 
@@ -55,8 +62,10 @@ every blocked or failed fetch writes a rejection record.
 Pain point extraction uses the OpenCode V2 one-shot route through the `opencode
 api` CLI. The call is stateless, it reads the OpenCode auth store, and this
 repo holds no provider key. That route is a Phase 1 bridge behind the
-`TextGenerator` protocol: Phase 2 swaps in a direct provider adapter, and the
-extraction logic does not change.
+`TextGenerator` protocol. Phase 2 added a model router instead of a direct
+provider adapter, and the router does not drive extraction yet:
+`OpenCodeGenerateProvider` still calls the model pinned in
+`config/extraction.yaml`. The extraction logic does not change either way.
 
 Under strict extraction the model proposes candidates; the code decides which
 ones are real. A candidate is stored only when its quote is an exact span inside
@@ -225,8 +234,10 @@ execute would only spin.
 
 ## Project skills
 
-Five skills under `.opencode/skills/`: `source-discovery`, `pain-point-extraction`,
-`pain-point-normalization`, `evidence-provenance`, and `evidence-validation`.
+Ten skills under `.opencode/skills/`: `entity-resolution`,
+`evidence-provenance`, `evidence-validation`, `frequency-analysis`,
+`pain-point-extraction`, `pain-point-normalization`, `problem-clustering`,
+`source-discovery`, `source-independence`, and `source-reliability`.
 
 ## Secrets
 

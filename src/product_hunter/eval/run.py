@@ -91,7 +91,8 @@ class Thresholds(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: int = 1
-    tolerance: float = 0.0
+    # A negative tolerance would hide every regression, so it is refused.
+    tolerance: float = Field(default=0.0, ge=0)
     defaults: dict[str, float] = Field(default_factory=dict)
     tasks: dict[TaskName, dict[str, float]] = Field(default_factory=dict)
 

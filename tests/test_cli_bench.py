@@ -329,6 +329,60 @@ def test_bench_compare_reports_no_change_between_two_equal_runs(tmp_path, capsys
     assert payload["regressions"] == 0
 
 
+def test_bench_compare_carries_a_reason_for_a_regression(tmp_path, capsys):
+    """The exit code is never the only evidence, so the JSON says why."""
+    dataset = write_dataset(tmp_path)
+    baseline_outputs = write_outputs(tmp_path, good_outputs())
+    baseline_spec = write_spec(tmp_path, baseline_outputs, run_id="baseline")
+    baseline = tmp_path / "baseline.json"
+    assert bench_run_command(dataset, baseline_spec, baseline, repo_root=tmp_path) == 0
+    capsys.readouterr()
+
+    candidate_outputs = write_outputs(
+        tmp_path,
+        [
+            {"case_id": "quote-1", "output": {"quote": PARAPHRASE}},
+            good_outputs()[1],
+        ],
+    )
+    candidate_spec = write_spec(tmp_path, candidate_outputs, run_id="candidate")
+    candidate = tmp_path / "candidate.json"
+    assert (
+        bench_run_command(dataset, candidate_spec, candidate, repo_root=tmp_path) == 0
+    )
+    capsys.readouterr()
+
+    code = bench_compare_command(
+        baseline, candidate, tmp_path / "comparison.json", repo_root=tmp_path
+    )
+
+    assert code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reason"]
+    assert "regressed" in payload["reason"]
+    assert "quote_fidelity" in payload["reason"]
+
+
+def test_bench_compare_carries_a_reason_when_nothing_regressed(tmp_path, capsys):
+    dataset = write_dataset(tmp_path)
+    outputs = write_outputs(tmp_path, good_outputs())
+    spec = write_spec(tmp_path, outputs)
+    baseline = tmp_path / "baseline.json"
+    candidate = tmp_path / "candidate.json"
+    assert bench_run_command(dataset, spec, baseline, repo_root=tmp_path) == 0
+    assert bench_run_command(dataset, spec, candidate, repo_root=tmp_path) == 0
+    capsys.readouterr()
+
+    code = bench_compare_command(
+        baseline, candidate, tmp_path / "comparison.json", repo_root=tmp_path
+    )
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reason"]
+    assert payload["reason"] == "nothing changed"
+
+
 def test_bench_compare_refuses_a_threshold_path_that_is_not_a_file(tmp_path, capsys):
     dataset = write_dataset(tmp_path)
     outputs = write_outputs(tmp_path, good_outputs())
