@@ -27,6 +27,7 @@ from product_hunter.db import (
     current_version,
     list_jobs,
     list_projection_tasks,
+    record_catalog,
     record_model_executions,
     record_selection,
     recover_expired_leases,
@@ -59,11 +60,17 @@ from product_hunter.fetch import (
 )
 from product_hunter.llm import build_generator, build_role_generator, build_router
 from product_hunter.llm.base import ProviderError, TextGenerator
-from product_hunter.llm.catalog import CatalogError, ModelEntry, ModelIdentity
+from product_hunter.llm.catalog import (
+    CatalogError,
+    ModelCatalog,
+    ModelEntry,
+    ModelIdentity,
+)
 from product_hunter.llm.discovery import ModelDiscovery
 from product_hunter.llm.routing import (
     ModelExecution,
     ModelRole,
+    ModelRouter,
     ModelSelection,
     SelectionSource,
 )
@@ -408,6 +415,7 @@ def extract_command(
 
     error: str | None = None
     selection: ModelSelection | None = None
+    catalog: ModelCatalog | None = None
     routing_failure: str | None = None
     routing_version = ""
     if generator is None:
@@ -424,6 +432,7 @@ def extract_command(
             generator, selection = build_role_generator(
                 config, router, ModelRole.extraction
             )
+            catalog = _router_catalog(router, selection)
         except (OSError, ValueError, ProviderError) as exc:
             # A broken router must never stop an extraction run.
             routing_failure = f"{type(exc).__name__}: {exc}"
@@ -528,6 +537,13 @@ def extract_command(
         _write_jsonl(
             out_dir / "model_executions.jsonl",
             _model_executions(run_id, calls, selection, routing_version),
+        )
+    if catalog is not None:
+        # The catalogue the run decided against, so the import can rebuild the
+        # model inventory from it. A run whose router failed has no catalogue
+        # to record, and an empty one would be a lie.
+        (out_dir / "model_catalog.json").write_text(
+            catalog.model_dump_json() + "\n", encoding="utf-8"
         )
     (out_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
@@ -802,6 +818,12 @@ def db_import_run_command(
                     selection,
                     config_version=str(block.get("config_version") or ""),
                 )
+            # The catalogue the run decided against, so the inventory knows
+            # which models existed and when they were seen. A run without one
+            # leaves the inventory alone.
+            catalog = _read_model_catalog(run_dir / "model_catalog.json")
+            if catalog is not None:
+                record_catalog(store.conn, catalog)
         finally:
             store.close()
     except Exception as exc:
@@ -1065,6 +1087,20 @@ def _read_routing_block(path: Path) -> dict[str, object] | None:
     return block if isinstance(block, dict) else None
 
 
+def _read_model_catalog(path: Path) -> ModelCatalog | None:
+    """The catalogue a run recorded, or None when the run has none.
+
+    A run without the file was written before the router recorded a
+    catalogue, or it ran on a generator a caller supplied.
+    """
+    if not path.is_file():
+        return None
+    try:
+        return ModelCatalog.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{path}: not a model catalog: {exc}") from exc
+
+
 def _selection_from_block(block: dict[str, object]) -> ModelSelection | None:
     """The selection a routing block records, or None when it is unusable."""
     try:
@@ -1180,6 +1216,24 @@ def _run_reject(
         prompt_version=config.prompt_version,
         created_at=utcnow().isoformat(),
     )
+
+
+def _router_catalog(
+    router: ModelRouter, selection: ModelSelection
+) -> ModelCatalog | None:
+    """The catalogue the router decided against, or None when there is none.
+
+    The router holds one catalogue and the selection names its version, so a
+    catalogue that was re-discovered in between is not the one the decision
+    was made against and is not recorded.
+    """
+    try:
+        catalog = router.catalog_source.catalog()
+    except (CatalogError, ProviderError):
+        return None
+    if catalog.catalog_version != selection.catalog_version:
+        return None
+    return catalog
 
 
 def _default_selection(config: ExtractionConfig) -> ModelSelection:

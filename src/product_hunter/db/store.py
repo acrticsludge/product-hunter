@@ -687,6 +687,7 @@ class Store:
             "rejects.jsonl",
             "calls.jsonl",
             "model_executions.jsonl",
+            "model_catalog.json",
         )
         inserted = 0
         for name in names:

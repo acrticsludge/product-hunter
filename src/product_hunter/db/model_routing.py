@@ -2,8 +2,9 @@
 
 The inventory is append-only in spirit. A model that leaves the catalogue
 keeps its row, moves to ``missing`` and gets a ``retired_at``, so a model id
-that ran last month is still resolvable next month. This module takes plain
-objects in and hands plain objects back.
+that ran last month is still resolvable next month. The inventory only moves
+forward: a catalogue older than a row knows nothing about that row. This
+module takes plain objects in and hands plain objects back.
 """
 
 from __future__ import annotations
@@ -11,10 +12,10 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from product_hunter.fetch import utcnow
-from product_hunter.llm.catalog import ModelCatalog
+from product_hunter.llm.catalog import ModelCatalog, ModelEntry
 from product_hunter.llm.routing import ModelExecution, ModelSelection
 
 MAX_ERROR_CHARS = 2000
@@ -74,17 +75,19 @@ class ExecutionRow:
 def record_catalog(
     conn: sqlite3.Connection,
     catalog: ModelCatalog,
-    *,
-    now: datetime | None = None,
 ) -> CatalogRecord:
     """Write a catalogue snapshot and refresh the inventory, in one transaction.
 
-    Every model the catalogue holds is marked alive again and stamped with the
-    time it was seen. Every model the catalogue no longer holds is retired:
-    its row survives, its availability becomes ``missing`` and it gets a
-    ``retired_at``.
+    The inventory only moves forward. Every stamp comes from the catalogue's
+    ``discovered_at``, which says when the model was seen, and not from the
+    import time, which says when the row was written. A model the catalogue
+    holds is alive again; a model it does not hold is retired, but only when
+    the row was last seen before the catalogue was discovered. A catalogue
+    older than a row knows nothing about that row, so it neither retires it
+    nor moves its stamps backwards.
     """
-    now_iso = (now or utcnow()).isoformat()
+    discovered_at = _aware(catalog.discovered_at)
+    discovered_iso = discovered_at.isoformat()
     try:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
@@ -103,50 +106,12 @@ def record_catalog(
                 catalog.source,
                 catalog.server_version,
                 len(catalog.entries),
-                catalog.discovered_at.isoformat(),
+                discovered_iso,
             ),
         )
-        conn.execute(
-            """
-            UPDATE model_inventory
-            SET availability = 'missing', retired_at = ?
-            WHERE retired_at IS NULL
-            """,
-            (now_iso,),
-        )
+        _retire_absent_models(conn, catalog, discovered_at, discovered_iso)
         for entry in catalog.entries:
-            conn.execute(
-                """
-                INSERT INTO model_inventory (
-                    provider_id, model_id, name, family, status, enabled,
-                    availability, source, first_seen_at, last_seen_at,
-                    retired_at, catalog_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
-                ON CONFLICT(provider_id, model_id) DO UPDATE SET
-                    name = excluded.name,
-                    family = excluded.family,
-                    status = excluded.status,
-                    enabled = excluded.enabled,
-                    availability = excluded.availability,
-                    source = excluded.source,
-                    last_seen_at = excluded.last_seen_at,
-                    retired_at = NULL,
-                    catalog_version = excluded.catalog_version
-                """,
-                (
-                    entry.identity.provider_id,
-                    entry.identity.model_id,
-                    entry.name,
-                    entry.family,
-                    entry.status,
-                    None if entry.enabled is None else int(entry.enabled),
-                    entry.availability.value,
-                    entry.source,
-                    now_iso,
-                    now_iso,
-                    catalog.catalog_version,
-                ),
-            )
+            _record_entry(conn, entry, catalog, discovered_at, discovered_iso)
         conn.execute("COMMIT")
     except BaseException:
         _rollback(conn)
@@ -156,7 +121,101 @@ def record_catalog(
         source=catalog.source,
         server_version=catalog.server_version,
         model_count=len(catalog.entries),
-        discovered_at=catalog.discovered_at.isoformat(),
+        discovered_at=discovered_iso,
+    )
+
+
+def _retire_absent_models(
+    conn: sqlite3.Connection,
+    catalog: ModelCatalog,
+    discovered_at: datetime,
+    discovered_iso: str,
+) -> None:
+    """Retire the models the catalogue does not hold, and only the old ones.
+
+    A row is retired when the catalogue does not mention it and the row was
+    last seen before the catalogue was discovered. A row a newer catalogue
+    saw stays alive: the older catalogue knows nothing about it. A row that
+    is already retired keeps its first ``retired_at``.
+    """
+    held = {
+        (entry.identity.provider_id, entry.identity.model_id)
+        for entry in catalog.entries
+    }
+    rows = conn.execute(
+        "SELECT provider_id, model_id, last_seen_at FROM model_inventory "
+        "WHERE retired_at IS NULL"
+    ).fetchall()
+    for row in rows:
+        if (row["provider_id"], row["model_id"]) in held:
+            continue
+        seen = _seen_at(row["last_seen_at"])
+        if seen is None or seen >= discovered_at:
+            # The row is newer than the catalogue, or its stamp cannot be
+            # read: the catalogue knows nothing about it.
+            continue
+        conn.execute(
+            "UPDATE model_inventory SET availability = 'missing', retired_at = ? "
+            "WHERE provider_id = ? AND model_id = ?",
+            (discovered_iso, row["provider_id"], row["model_id"]),
+        )
+
+
+def _record_entry(
+    conn: sqlite3.Connection,
+    entry: ModelEntry,
+    catalog: ModelCatalog,
+    discovered_at: datetime,
+    discovered_iso: str,
+) -> None:
+    """Write one model of the catalogue, without moving the row backwards.
+
+    ``first_seen_at`` keeps its meaning: the insert sets it and no update
+    overwrites it, so a model that leaves the catalogue and comes back keeps
+    the moment it was first seen.
+    """
+    row = conn.execute(
+        "SELECT last_seen_at FROM model_inventory "
+        "WHERE provider_id = ? AND model_id = ?",
+        (entry.identity.provider_id, entry.identity.model_id),
+    ).fetchone()
+    if row is not None:
+        seen = _seen_at(row["last_seen_at"])
+        if seen is None or seen > discovered_at:
+            # A catalogue older than the row knows nothing about it, so the
+            # row keeps what the newer catalogue said.
+            return
+    conn.execute(
+        """
+        INSERT INTO model_inventory (
+            provider_id, model_id, name, family, status, enabled,
+            availability, source, first_seen_at, last_seen_at,
+            retired_at, catalog_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+        ON CONFLICT(provider_id, model_id) DO UPDATE SET
+            name = excluded.name,
+            family = excluded.family,
+            status = excluded.status,
+            enabled = excluded.enabled,
+            availability = excluded.availability,
+            source = excluded.source,
+            last_seen_at = excluded.last_seen_at,
+            retired_at = NULL,
+            catalog_version = excluded.catalog_version
+        """,
+        (
+            entry.identity.provider_id,
+            entry.identity.model_id,
+            entry.name,
+            entry.family,
+            entry.status,
+            None if entry.enabled is None else int(entry.enabled),
+            entry.availability.value,
+            entry.source,
+            discovered_iso,
+            discovered_iso,
+            catalog.catalog_version,
+        ),
     )
 
 
@@ -355,6 +414,26 @@ def _row_to_execution(row: sqlite3.Row) -> ExecutionRow:
 def _bounded_error(error: str | None) -> str | None:
     """The error text, cut to the length the audit row holds."""
     return None if error is None else error[:MAX_ERROR_CHARS]
+
+
+def _aware(moment: datetime) -> datetime:
+    """A moment with a timezone, so it can be compared with another one."""
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=timezone.utc)
+    return moment
+
+
+def _seen_at(stamp: str) -> datetime | None:
+    """The moment a row was last seen, or None when the stamp cannot be read.
+
+    A stamp without a timezone cannot be compared with a catalogue's, so it
+    is treated as unreadable.
+    """
+    try:
+        seen = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return None
+    return seen if seen.tzinfo is not None else None
 
 
 def _rollback(conn: sqlite3.Connection) -> None:

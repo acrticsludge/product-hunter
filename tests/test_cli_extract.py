@@ -18,7 +18,7 @@ from product_hunter.config import (
     load_config,
     load_routing_config,
 )
-from product_hunter.db import Store, connect, list_executions
+from product_hunter.db import Store, connect, list_executions, list_inventory
 from product_hunter.evaluation import COLUMNS
 from product_hunter.fetch import FetchRecord
 from product_hunter.llm.base import (
@@ -700,6 +700,152 @@ def test_importing_a_run_without_model_executions_still_succeeds(
     try:
         # The run imported, and it recorded no model provenance.
         assert list_executions(conn, run_id="test-run") == []
+    finally:
+        conn.close()
+
+
+def test_the_run_records_the_catalogue_and_the_import_fills_the_inventory(
+    tmp_path, capsys, monkeypatch
+):
+    """The run keeps the catalogue it decided against, and the import keeps it."""
+    seed_repo(tmp_path)
+    catalog = fake_catalog("alpha-flash")
+    patch_generators(monkeypatch)
+    code = run_routed_extract(tmp_path, "catalog-run", FakeDiscovery(catalog))
+    assert code == 0
+    capsys.readouterr()
+    out = tmp_path / "data" / "processed" / "catalog-run"
+
+    recorded = out / "model_catalog.json"
+    assert recorded.is_file()
+    payload = json.loads(recorded.read_text(encoding="utf-8"))
+    assert payload["catalog_version"] == catalog.catalog_version
+    assert payload["source"] == "test"
+    assert [entry["identity"]["model_id"] for entry in payload["entries"]] == [
+        "alpha-flash"
+    ]
+
+    db_path = tmp_path / "product_hunter.db"
+    store = Store.open(db_path)
+    store.close()
+
+    code = db_import_run_command("catalog-run", db_path=db_path, repo_root=tmp_path)
+
+    assert code == 0
+    capsys.readouterr()
+    conn = connect(db_path)
+    try:
+        rows = list_inventory(conn)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.provider_id == "opencode-go"
+        assert row.model_id == "alpha-flash"
+        assert row.availability == "available"
+        assert row.retired_at is None
+        # The stamps are the catalogue's own discovery, not the import time.
+        assert row.first_seen_at == catalog.discovered_at.isoformat()
+        assert row.last_seen_at == catalog.discovered_at.isoformat()
+        catalogs = conn.execute(
+            "SELECT * FROM model_catalogs WHERE catalog_version = ?",
+            (catalog.catalog_version,),
+        ).fetchone()
+        assert catalogs is not None
+        assert catalogs["model_count"] == 1
+        assert catalogs["discovered_at"] == catalog.discovered_at.isoformat()
+        # The catalogue is hashed with the other artifacts of the run.
+        artifact = conn.execute(
+            "SELECT * FROM research_artifacts WHERE run_id = ? AND path_or_uri = ?",
+            ("catalog-run", "model_catalog.json"),
+        ).fetchone()
+        assert artifact is not None
+        assert artifact["content_hash"] == hashlib.sha256(
+            recorded.read_bytes()
+        ).hexdigest()
+    finally:
+        conn.close()
+
+
+def test_a_broken_router_records_no_catalogue(tmp_path, capsys, monkeypatch):
+    """A run whose router failed has no catalogue, and none is invented."""
+    seed_repo(tmp_path)
+    patch_generators(monkeypatch)
+
+    code = run_routed_extract(tmp_path, "no-catalog-run", BrokenDiscovery())
+
+    assert code == 0
+    capsys.readouterr()
+    out = tmp_path / "data" / "processed" / "no-catalog-run"
+    assert not (out / "model_catalog.json").exists()
+
+
+def test_importing_a_run_without_a_catalogue_leaves_the_inventory_alone(
+    tmp_path, capsys
+):
+    """A run written before the router recorded a catalogue still imports."""
+    seed_repo(tmp_path)
+    run_extract(tmp_path)
+    capsys.readouterr()
+    out = tmp_path / "data" / "processed" / "test-run"
+    # Such a run has no catalogue file at all.
+    assert not (out / "model_catalog.json").exists()
+
+    db_path = tmp_path / "product_hunter.db"
+    store = Store.open(db_path)
+    store.close()
+
+    code = db_import_run_command("test-run", db_path=db_path, repo_root=tmp_path)
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    conn = connect(db_path)
+    try:
+        # The run imported, and it left the inventory alone.
+        assert list_inventory(conn) == []
+        catalogs = conn.execute("SELECT count(*) FROM model_catalogs").fetchone()
+        assert catalogs is not None
+        assert catalogs[0] == 0
+    finally:
+        conn.close()
+
+
+def test_importing_the_same_run_twice_does_not_duplicate_the_inventory(
+    tmp_path, capsys, monkeypatch
+):
+    """The inventory of a run imported twice holds one row per model."""
+    seed_repo(tmp_path)
+    catalog = fake_catalog("alpha-flash")
+    patch_generators(monkeypatch)
+    code = run_routed_extract(tmp_path, "catalog-twice-run", FakeDiscovery(catalog))
+    assert code == 0
+    capsys.readouterr()
+
+    db_path = tmp_path / "product_hunter.db"
+    store = Store.open(db_path)
+    store.close()
+
+    code = db_import_run_command(
+        "catalog-twice-run", db_path=db_path, repo_root=tmp_path
+    )
+    assert code == 0
+    capsys.readouterr()
+    code = db_import_run_command(
+        "catalog-twice-run", db_path=db_path, repo_root=tmp_path
+    )
+
+    assert code == 0
+    capsys.readouterr()
+    conn = connect(db_path)
+    try:
+        rows = list_inventory(conn)
+        assert len(rows) == 1
+        assert rows[0].model_id == "alpha-flash"
+        assert rows[0].availability == "available"
+        assert rows[0].retired_at is None
+        assert rows[0].first_seen_at == catalog.discovered_at.isoformat()
+        catalogs = conn.execute("SELECT count(*) FROM model_catalogs").fetchone()
+        assert catalogs is not None
+        assert catalogs[0] == 1
     finally:
         conn.close()
 

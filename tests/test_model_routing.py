@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -46,11 +47,18 @@ CONFIG = load_config()
 DEFAULT = ModelIdentity(provider_id=CONFIG.provider_id, model_id=CONFIG.model_id)
 
 
+def stamp(day: int) -> datetime:
+    """A moment in October 2026, so two catalogues can be ordered against
+    each other without depending on the clock."""
+    return datetime(2026, 10, day, tzinfo=timezone.utc)
+
+
 def fixture_catalog(
     *model_ids: str,
     cost: float = 0.0,
     costs: dict[str, float] | None = None,
     include_default: bool = True,
+    discovered_at: datetime | None = None,
 ) -> ModelCatalog:
     """A catalogue holding the given model ids, plus the configured default.
 
@@ -59,7 +67,7 @@ def fixture_catalog(
     """
     ids = list(dict.fromkeys([*model_ids, DEFAULT.model_id] if include_default else model_ids))
     prices = costs or {}
-    return parse_model_catalog(
+    catalog = parse_model_catalog(
         json.dumps(
             {
                 "data": [
@@ -83,6 +91,9 @@ def fixture_catalog(
         ),
         source="test",
     )
+    if discovered_at is not None:
+        catalog = catalog.model_copy(update={"discovered_at": discovered_at})
+    return catalog
 
 
 class FakeCatalogSource:
@@ -630,8 +641,8 @@ def test_the_inventory_keeps_a_vanished_model() -> None:
     conn = connect(":memory:")
     try:
         migrate(conn)
-        first = fixture_catalog("alpha-flash")
-        second = fixture_catalog()
+        first = fixture_catalog("alpha-flash", discovered_at=stamp(1))
+        second = fixture_catalog(discovered_at=stamp(8))
 
         record_catalog(conn, first)
         record_catalog(conn, second)
@@ -641,11 +652,78 @@ def test_the_inventory_keeps_a_vanished_model() -> None:
             row for row in rows if row.model_id == "alpha-flash"
         )
         assert vanished.availability == "missing"
-        assert vanished.retired_at is not None
-        assert vanished.first_seen_at is not None
+        # The stamps are the catalogue's own, not the moment of the import.
+        assert vanished.retired_at == second.discovered_at.isoformat()
+        assert vanished.first_seen_at == first.discovered_at.isoformat()
+        assert vanished.last_seen_at == first.discovered_at.isoformat()
+        # The model that stayed in the catalogue is alive, and it keeps the
+        # day it was first seen.
+        alive = next(row for row in rows if row.model_id == DEFAULT.model_id)
+        assert alive.availability == "available"
+        assert alive.retired_at is None
+        assert alive.first_seen_at == first.discovered_at.isoformat()
+        assert alive.last_seen_at == second.discovered_at.isoformat()
         assert len(rows) == 2
     finally:
         conn.close()
+
+
+def test_an_older_catalogue_does_not_retire_a_newer_model() -> None:
+    """A catalogue imported out of order knows nothing about a newer row."""
+    conn = connect(":memory:")
+    try:
+        migrate(conn)
+        newer = fixture_catalog("alpha-flash", discovered_at=stamp(8))
+        older = fixture_catalog(discovered_at=stamp(1))
+
+        record_catalog(conn, newer)
+        record_catalog(conn, older)
+
+        rows = {row.model_id: row for row in list_inventory(conn)}
+        flash = rows["alpha-flash"]
+        # The model the newer catalogue held is still available.
+        assert flash.availability == "available"
+        assert flash.retired_at is None
+        # And its stamps were not moved backwards by the older catalogue.
+        assert flash.first_seen_at == newer.discovered_at.isoformat()
+        assert flash.last_seen_at == newer.discovered_at.isoformat()
+    finally:
+        conn.close()
+
+
+def test_the_same_catalogue_twice_is_a_no_op() -> None:
+    """The same catalogue imported twice retires nothing twice."""
+    conn = connect(":memory:")
+    try:
+        migrate(conn)
+        first = fixture_catalog("alpha-flash", discovered_at=stamp(1))
+        second = fixture_catalog(discovered_at=stamp(8))
+
+        record_catalog(conn, first)
+        record_catalog(conn, second)
+        record_catalog(conn, second)
+
+        rows = {row.model_id: row for row in list_inventory(conn)}
+        assert len(rows) == 2
+        flash = rows["alpha-flash"]
+        assert flash.availability == "missing"
+        # The model is retired once, and the second import keeps that stamp.
+        assert flash.retired_at == second.discovered_at.isoformat()
+        assert flash.last_seen_at == first.discovered_at.isoformat()
+        catalogs = conn.execute("SELECT count(*) FROM model_catalogs").fetchone()
+        assert catalogs is not None
+        assert catalogs[0] == 2
+    finally:
+        conn.close()
+
+
+def test_the_catalogue_round_trips_through_json() -> None:
+    """The catalogue a run records is the catalogue the import reads back."""
+    catalog = fixture_catalog("alpha-flash")
+
+    text = catalog.model_dump_json()
+
+    assert ModelCatalog.model_validate_json(text) == catalog
 
 
 def test_the_execution_row_carries_the_provenance() -> None:

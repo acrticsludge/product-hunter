@@ -43,6 +43,13 @@ router that cannot answer never stops a run: the model pinned in
 rejection say why. `ph db import-run` writes the calls into
 `model_executions` and the selection into `model_role_bindings`.
 
+The run also records the catalogue the router decided against, in
+`model_catalog.json`. The import reads it back and fills the model inventory
+with it, so a model that leaves the catalogue keeps its row and gets a
+`retired_at`. The inventory only moves forward: a catalogue imported out of
+order cannot retire a model a newer catalogue saw, because the stamps come
+from the catalogue's `discovered_at` and not from the import time.
+
 A generator a caller supplies to `extract_command` is used as it is, and the
 router is not consulted at all, so that run records no routing.
 

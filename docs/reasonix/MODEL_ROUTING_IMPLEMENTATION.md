@@ -122,13 +122,23 @@ no model id appears in it. The cheap roles get `opencode-go/*-flash*` then
 `db/migrations/0002_model_routing.sql`: `model_catalogs`, `model_inventory`,
 `model_role_bindings`, and `model_executions`.
 
-`record_catalog()` upserts `model_catalogs`, marks every `model_inventory` row
-that was not retired as `missing` with a `retired_at`, and upserts each entry
-back to life. A model that leaves the catalogue keeps its row; retired rows are
-never deleted. `record_selection()` upserts `model_role_bindings` on
-`(role, position)`. `record_execution()` upserts one `model_executions` row
-per call, on the execution id, so importing the same run twice leaves one row
-per call and repairs a row the first import left behind. The row carries
+`record_catalog()` upserts `model_catalogs` and refreshes the inventory. A
+model the catalogue holds is alive again, stamped with the catalogue's own
+time. A model it does not hold is retired: its row survives, its availability
+becomes `missing` and it gets a `retired_at`, and a retired row is never
+deleted. The inventory only moves forward. A row is retired only when it was
+last seen before the catalogue was discovered, and every stamp comes from the
+catalogue's `discovered_at` and not from the import time, so a catalogue
+imported out of order cannot retire a model a newer catalogue saw.
+`first_seen_at` keeps its meaning: the insert sets it and no update overwrites
+it. The catalogue a run decided against is written to the run directory as
+`model_catalog.json`, and `ph db import-run` reads it back and calls
+`record_catalog()`, so importing a run fills the inventory. A run without the
+file leaves the inventory alone. `record_selection()` upserts
+`model_role_bindings` on `(role, position)`. `record_execution()` upserts one
+`model_executions` row per call, on the execution id, so importing the same
+run twice leaves one row per call and repairs a row the first import left
+behind. The row carries
 `provider_id`, `model_id`, `role`, `selection_source`, `fallback_index`,
 `is_fallback`, `catalog_version`, `prompt_version`, `config_version`,
 `latency_ms`, `status`, and `error`. `list_inventory()` and
