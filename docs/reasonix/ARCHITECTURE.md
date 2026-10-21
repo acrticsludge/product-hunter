@@ -424,14 +424,17 @@ will hit them.
 runtime package is invisible to `git status`, and a plain `git add` would not
 commit it. The package exists on disk but is not in the committed tree.
 
-**The research-gate migration number was taken, and is now reserved.**
+**Four branches claim the migration number `0003`, and one of them is main.**
 `research/persistence.py` names a planned migration
-`db/migrations/0003_research_gate.sql`. The name was `0002` until
-`0002_model_routing.sql` took that number, and the docstring and the wave spec
-now say `0003`. `0003` is now taken by `0003_collection.sql`, the collection
-migration, and the file `0003_research_gate.sql` does not exist. The wave that
-persists tool calls has to use `0004` or a later free number, and the number
-inside `research/persistence.py` has to change with it.
+`db/migrations/0003_research_gate.sql`, and main now holds that file. The
+wave-2 branches `wave2/clustering`, `wave2/evidence-pipeline`,
+`wave2/independence` and `wave2/collection-engine` each carry their own
+`0003_*.sql`, because every one of them was cut from `3d7bc68`, where `0003`
+was still free. `db/migrations.py` refuses a duplicate number and a gap, so
+the integrator has to renumber the four into one contiguous sequence and
+re-apply the `user_version` assertions in `tests/test_db_migrations.py` after
+each rename. No statement inside any of the four files depends on the number,
+and each branch is self-consistent on its own.
 
 ## What is not implemented
 

@@ -197,12 +197,17 @@ must be declared in `config/sources.yaml`. Before this wave the same jobs died
 with "no handler for stage 'COLLECT'", so this is not a regression, but it is
 the top item for the wave that owns target production.
 
-**The migration number `0003` is taken.** `research/persistence.py` names a
-planned `db/migrations/0003_research_gate.sql` and its docstring says `0003`.
-That file does not exist, and this wave took the number for
-`0003_collection.sql`. The wave that persists tool calls has to use `0004`, and
-the number inside `research/persistence.py` has to change with it. The
-architecture document records this.
+**The migration number `0003` is contested, and this branch is one of the
+claimants.** This branch was cut from `3d7bc68`, where `0003` was free, and
+took it with `0003_collection.sql`. Main has since moved and now holds
+`0003_research_gate.sql`, and `wave2/clustering`, `wave2/evidence-pipeline`
+and `wave2/independence` each carry their own `0003_*.sql` for the same
+reason. `db/migrations.py` refuses a duplicate number and a gap, so the
+integrator has to renumber the four into one contiguous sequence and re-apply
+the `user_version` assertions in `tests/test_db_migrations.py` after each
+rename. No statement inside any of the four files depends on the number, and
+each branch is self-consistent on its own. The architecture document records
+the same thing.
 
 ## The shortcut ledger
 
