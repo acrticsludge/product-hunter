@@ -415,7 +415,11 @@ commit it. The package exists on disk but is not in the committed tree.
 `0003_evidence_pipeline.sql`, because the migration runner refuses a gap and
 `0003` was the next free number. The wave that persists tool calls has to use
 `0004`, or renumber. Two branches that both take `0003` will not merge: the
-runner raises `MigrationError` on a duplicate number.
+runner raises `MigrationError` on a duplicate number. The research-gate wave
+has an uncommitted `db/migrations/0003_research_gate.sql` in the main working
+tree, checked on 2026-10-21, so the collision is live rather than
+hypothetical. It cannot be the evidence wave that renumbers, because a branch
+carrying 0001, 0002 and 0004 cannot migrate at all.
 
 **The migration runner had to change to apply a trigger.** It used to split
 SQL on `;`, which cuts a SQLite trigger body in half. It now ends a statement

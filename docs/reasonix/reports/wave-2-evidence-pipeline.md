@@ -410,11 +410,25 @@ capture. A capture that says the content is gone sets the document to
 
 ## 9. Integration requirements
 
-**The migration number.** This wave took `0003_evidence_pipeline.sql`,
-because the runner refuses a gap and `0003` was the next free number. The
-wave that persists tool calls has to take `0004`, or renumber. Two branches
-that both take `0003` will not merge: the runner raises `MigrationError` on
-a duplicate number. `docs/reasonix/ARCHITECTURE.md` records this.
+**The migration number, and a collision that is already visible.** This wave
+took `0003_evidence_pipeline.sql`, because the runner refuses a gap and
+`0003` was the next free number.
+
+The research-gate wave has an uncommitted
+`db/migrations/0003_research_gate.sql` in the main working tree, checked on
+2026-10-21. The merged tree cannot hold two migration 0003 files, and the
+runner raises `MigrationError: duplicate migration number 3` when it tries.
+
+It cannot be this wave that renumbers. The runner refuses a gap, so a branch
+carrying 0001, 0002 and 0004 cannot migrate at all, and this branch has to
+stand on its own. The research-gate wave must take `0004`.
+
+The two waves also changed the same lines of `tests/test_db_migrations.py`,
+the `migrate(conn) == 2` assertions, so that file will conflict textually.
+Whoever renumbers to `0004` also moves those assertions to `== 4` and adds
+the other wave's table names to `EXPECTED_TABLES`.
+
+`docs/reasonix/ARCHITECTURE.md` records this.
 
 **The migration runner changed.** It used to split SQL on `;`, which cuts a
 SQLite trigger body in half, so migration 0003 could not be applied at all.
@@ -469,7 +483,8 @@ same complaint does not inflate it.
   from the tests rather than from production data.
 - The migration was not applied under a SQLite older than 3.50.
 - The `Obsidian` projection and the research wave's migration number were
-  not checked against a live branch.
+  not checked against a live branch. The research wave's migration was
+  checked in the main working tree, and it collides; see section 9.
 - The pre-wave backfill was not tested against a real version 2 database,
   because none exists in the tree.
 - The other 980 tests were not read one by one. They were run, and they pass.
