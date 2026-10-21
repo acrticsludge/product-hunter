@@ -1,0 +1,223 @@
+# The shipped baseline research contract.
+#
+# The threshold values come from the spec's baseline_gate_thresholds block and
+# the stage requirements from the spec's example contract. The two boolean
+# blocks of the spec live in the flags that own them: the extraction booleans
+# in hard_requirements, the promotion booleans in promotion.
+#
+# The budget limits are starting values, not measured ones.
+
+contract_version: phase4-v1
+
+required_stages:
+  - discovery
+  - evidence_collection
+  - normalization
+  - clustering
+  - validation
+  - counter_evidence
+  - scoring
+  - investigation
+
+stages:
+  discovery:
+    required_tools:
+      - search
+      - fetch
+    required_outputs:
+      - source_records
+      - provenance
+      - document
+    quality_checks:
+      - non_empty_queries
+      - source_diversity
+    gate_key: discovery
+
+  evidence_collection:
+    required_tools:
+      - search
+      - fetch
+    required_outputs:
+      - source_records
+      - provenance
+    quality_checks:
+      - non_empty_queries
+    gate_key: evidence_collection
+
+  normalization:
+    required_tools:
+      - duckdb
+    required_outputs:
+      - normalized_records
+    quality_checks: []
+    gate_key: normalization
+
+  clustering:
+    required_tools:
+      - qdrant
+    required_outputs:
+      - cluster_assignments
+      - similarity_checks
+      - cluster_neighbors_checked
+      - neighbor_check
+      - duplicate_review
+    quality_checks:
+      - nearest_neighbor_checked
+      - duplicate_candidates_reviewed
+    gate_key: clustering
+
+  validation:
+    required_tools:
+      - search
+      - qdrant
+      - duckdb
+    required_outputs:
+      - independent_source_count
+      - independent_person_count
+      - community_count
+      - frequency_analysis
+      - trend_analysis
+      - evidence_summary
+      - author
+      - community
+      - evidence_span
+    quality_checks: []
+    gate_key: validation
+
+  counter_evidence:
+    required_tools:
+      - search
+    required_outputs:
+      - counter_evidence
+    quality_checks:
+      - counter_evidence_present_or_explicit_zero
+    gate_key: counter_evidence
+
+  scoring:
+    required_tools:
+      - duckdb
+    required_outputs:
+      - opportunity_score
+      - confidence
+    quality_checks: []
+    gate_key: scoring
+
+  investigation:
+    required_tools:
+      - search
+      - qdrant
+      - duckdb
+    required_outputs:
+      - competitors
+      - alternatives
+      - counter_evidence
+      - opportunity_score
+      - confidence
+      - candidate_url
+    quality_checks: []
+    gate_key: competitor_search
+
+hard_requirements:
+  require_provenance: true
+  require_counter_evidence: true
+  require_competitor_search: true
+  require_qdrant_check: true
+  require_duckdb_analysis: true
+  require_claim_evidence_links: true
+  # The extraction booleans (quote_verbatim_required, source_span_required)
+  # arrive with the extraction stage, the wave that can enforce them.
+
+evidence_thresholds:
+  discovery:
+    min_distinct_queries: 8
+    min_source_domains: 3
+    min_new_documents: 20
+  competitor_search:
+    min_distinct_queries: 6
+    min_query_families: 3
+    min_candidate_urls: 10
+  validation:
+    min_independent_authors: 10
+    min_independent_communities: 3
+    min_query_families: 4
+    min_evidence_spans: 20
+  counter_evidence:
+    min_distinct_queries: 6
+    min_query_families: 3
+    min_counter_evidence_items_or_explicit_zero: 1
+  clustering:
+    min_neighbors_checked_per_cluster: 5
+
+budgets:
+  version: phase4-v1
+  per_run:
+    wall_time_seconds: 3600
+    tool_calls_total: 500
+    search_queries: 160
+    fetch_requests: 200
+    browser_minutes: 30
+    crawl_items: 500
+    llm_input_tokens: 500000
+    llm_output_tokens: 100000
+    model_calls: 50
+    subq_calls: 20
+    embedding_items: 5000
+    usd_cost: 25.0
+  per_stage:
+    discovery:
+      search_queries: 40
+      fetch_requests: 60
+    evidence_collection:
+      search_queries: 40
+      fetch_requests: 80
+    normalization:
+      llm_input_tokens: 100000
+      llm_output_tokens: 20000
+      model_calls: 20
+    clustering:
+      embedding_items: 2000
+    validation:
+      search_queries: 20
+      llm_input_tokens: 80000
+      llm_output_tokens: 10000
+    counter_evidence:
+      search_queries: 20
+    scoring:
+      llm_input_tokens: 40000
+      llm_output_tokens: 8000
+    investigation:
+      search_queries: 30
+      llm_input_tokens: 120000
+      llm_output_tokens: 20000
+  per_source:
+    hn_algolia: 200
+    github_issues: 100
+  soft_thresholds:
+    wall_time_seconds: 0.8
+    tool_calls_total: 0.8
+    search_queries: 0.8
+    fetch_requests: 0.8
+    model_calls: 0.8
+    usd_cost: 0.8
+
+stopping:
+  min_independent_authors: 10
+  min_independent_communities: 3
+  min_validation_query_families: 4
+  max_consecutive_low_yield_batches: 3
+  saturation_threshold: 0
+
+retry:
+  max_retries: 2
+  backoff_seconds: 5.0
+  retry_on:
+    - transient
+    - timeout
+  give_up_after_seconds: null
+
+promotion:
+  require_all_stages_passed: true
+  require_competitor_gate: true
+  require_counter_evidence_gate: true
+  require_claim_evidence_links: true
+  require_quality_predicates: true
