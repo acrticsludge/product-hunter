@@ -48,7 +48,7 @@ The first hardening pass returned four findings. Three are closed, one is a docu
 
 ## What to check
 
-1. Confirm F1, F2 and F3 are genuinely closed. Read `docs/TOOLING.md` and the plan at `docs/resonix/plans/wave-0-tooling-plan.md` rather than trusting this brief. For F3, confirm the two pinned package versions are the ones on PyPI and that the pinned command forms still resolve, using the `uvx` command-line tool, for example `uvx mcp-server-duckdb@1.1.0 --help` and `uvx --python 3.13 mcp-server-qdrant@0.8.1 --help`.
+1. Confirm F1, F2 and F3 are genuinely closed. Read `docs/TOOLING.md` and the plan at `docs/reasonix/plans/wave-0-tooling-plan.md` rather than trusting this brief. For F3, confirm the two pinned package versions are the ones on PyPI and that the pinned command forms still resolve, using the `uvx` command-line tool, for example `uvx mcp-server-duckdb@1.1.0 --help` and `uvx --python 3.13 mcp-server-qdrant@0.8.1 --help`.
 2. Give a verdict on the new `apify` entry, because it is about to be committed to a repository:
    - The Apify server can run Actors on a paid platform. Can an agent in this repository reach it, and what does that cost? The project needs no Apify in Phase 2 or Phase 3, and the specification gates it in Phase 7.
    - The OAuth token is not in the repository. Confirm where OpenCode stores it and that nothing in the committed file carries a credential.
@@ -61,7 +61,7 @@ The first hardening pass returned four findings. Three are closed, one is a docu
 ## Constraints
 
 - You report, you do not edit and you do not fix.
-- A parallel session is still writing application code into this repository under `src/`, `tests/`, `config/`, `db/migrations/`, and `docs/resonix/`. Ignore it. It is not part of this wave.
+- A parallel session is still writing application code into this repository under `src/`, `tests/`, `config/`, `db/migrations/`, and `docs/reasonix/`. Ignore it. It is not part of this wave.
 - Do not stage, commit, stash, clean, or revert anything.
 - You may run `uvx` commands and read files. Anything you write goes under `C:\Users\anubh\AppData\Local\Temp\opencode\`, never in the repository.
 

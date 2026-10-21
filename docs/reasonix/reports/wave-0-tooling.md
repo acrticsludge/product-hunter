@@ -40,17 +40,17 @@ NEXT: ready to commit
 | `.opencode/skills/problem-clustering/SKILL.md` | new | 50 |
 | `.opencode/skills/frequency-analysis/SKILL.md` | new | 44 |
 | `docs/TOOLING.md` | new, the audit record | 187 |
-| `docs/resonix/specs/wave-0-tooling-spec.md` | new, the definition | 79 |
-| `docs/resonix/plans/wave-0-tooling-plan.md` | new, the plan and the MCP matrix | 142 |
-| `docs/resonix/prompts/04-implement.md` | new, the implement dispatch | 177 |
-| `docs/resonix/prompts/04b-implement-pins.md` | new, the pin and Apify dispatch | 44 |
-| `docs/resonix/prompts/04c-implement-review-fixes.md` | new, the skill grounding dispatch | 102 |
-| `docs/resonix/prompts/05-verify.md` | new, the verify dispatch | 84 |
-| `docs/resonix/prompts/06-harden.md` | new, the first hardening dispatch | 90 |
-| `docs/resonix/prompts/06b-harden.md` | new, the second hardening dispatch | 70 |
-| `docs/resonix/prompts/07-review.md` | new, the review dispatch | 99 |
-| `docs/resonix/reports/wave-0-tooling-handoff.md` | new, the handoff | 115 |
-| `docs/resonix/reports/wave-0-tooling.md` | new, this report | 127 |
+| `docs/reasonix/specs/wave-0-tooling-spec.md` | new, the definition | 79 |
+| `docs/reasonix/plans/wave-0-tooling-plan.md` | new, the plan and the MCP matrix | 142 |
+| `docs/reasonix/prompts/04-implement.md` | new, the implement dispatch | 177 |
+| `docs/reasonix/prompts/04b-implement-pins.md` | new, the pin and Apify dispatch | 44 |
+| `docs/reasonix/prompts/04c-implement-review-fixes.md` | new, the skill grounding dispatch | 102 |
+| `docs/reasonix/prompts/05-verify.md` | new, the verify dispatch | 84 |
+| `docs/reasonix/prompts/06-harden.md` | new, the first hardening dispatch | 90 |
+| `docs/reasonix/prompts/06b-harden.md` | new, the second hardening dispatch | 70 |
+| `docs/reasonix/prompts/07-review.md` | new, the review dispatch | 99 |
+| `docs/reasonix/reports/wave-0-tooling-handoff.md` | new, the handoff | 115 |
+| `docs/reasonix/reports/wave-0-tooling.md` | new, this report | 127 |
 
 ## 2. MCPs verified
 

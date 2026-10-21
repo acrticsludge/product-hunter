@@ -5,7 +5,7 @@ Base commit: `205a4ba` (Phase 2 step 1, authoritative SQLite evidence core)
 Branch: `main`
 Risk: medium (backend runtime, no schema/auth/payment/secret/infra path)
 Blast radius: `src/product_hunter/runtime/**`, `tests/test_runtime_*.py`,
-`README.md`, `docs/resonix/**` for this track.
+`README.md`, `docs/reasonix/**` for this track.
 
 ## Repo map
 
@@ -19,7 +19,7 @@ Blast radius: `src/product_hunter/runtime/**`, `tests/test_runtime_*.py`,
 - `db/migrations/0001_initial.sql` — the only schema. Read-only for this track.
 - `tests/` — pytest, one file per module, no classes, no fixtures beyond
   plain helpers.
-- `docs/resonix/` — `specs/`, `plans/`, `reports/`.
+- `docs/reasonix/` — `specs/`, `plans/`, `reports/`.
 - `.loop/adapter.json` — the gate is `uv run pytest`. Python 3.14.
 
 ## What exists that the runtime reuses

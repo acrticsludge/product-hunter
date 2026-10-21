@@ -2,7 +2,7 @@
 
 **Status:** approved for implementation.
 **Date:** 2026-10-21
-**Source of truth:** `docs/resonix/specs/Product-Hunter-Full-Spec.md` §3 (Model Strategy), §38A Phase 6 (model routing), §34 (Observability).
+**Source of truth:** `docs/reasonix/specs/Product-Hunter-Full-Spec.md` §3 (Model Strategy), §38A Phase 6 (model routing), §34 (Observability).
 **Lane:** backend / research infrastructure. No UI, so no `DESIGN.md` is required.
 **Builds on:** Phase 1 extraction seam (`src/product_hunter/llm/`), Phase 2 evidence core (`db/migrations/0001_initial.sql`).
 

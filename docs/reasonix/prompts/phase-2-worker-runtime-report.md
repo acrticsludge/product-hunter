@@ -2,7 +2,7 @@
 
 Node: `loop-free-scribe`
 Stage: 10 REPORT
-Write one file: `docs/reports/phase-2-worker-runtime.md`
+Write one file: `docs/reasonix/reports/phase-2-worker-runtime.md`
 
 Do not touch any other file. Do not commit. Do not run the test suite.
 

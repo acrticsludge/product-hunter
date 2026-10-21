@@ -2,7 +2,7 @@
 
 **Status:** awaiting approval. No product code written, no dependencies installed.
 **Date:** 2026-10-20
-**Source of truth:** `docs/resonix/specs/Product-Hunter-Full-Spec.md` (3,240 lines)
+**Source of truth:** `docs/reasonix/specs/Product-Hunter-Full-Spec.md` (3,240 lines)
 **Phase under plan:** §38A Phase 1, "Hand-prove extraction and normalization"
 **Lane:** backend / research infrastructure. No UI, so no `DESIGN.md` is required.
 
@@ -27,7 +27,7 @@ Acceptance, from §38A:
 
 | # | Criterion | How this plan proves it |
 |---|---|---|
-| A1 | at least 100 manually inspected evidence spans processed | review sheet with 100 rows and verdicts in `docs/resonix/reports/phase-1-acceptance.md` |
+| A1 | at least 100 manually inspected evidence spans processed | review sheet with 100 rows and verdicts in `docs/reasonix/reports/phase-1-acceptance.md` |
 | A2 | quote-verbatim check passes for >=99% of accepted evidence | report splits exact, canonical, rejected, and repaired counts |
 | A3 | invalid or missing source spans fail closed | rejection tests plus `rejects.jsonl`; no accepted record without a span |
 | A4 | duplicate document/content hashes are deterministic | replay test produces identical IDs from identical bytes |
@@ -216,7 +216,7 @@ product-hunter/
     test_injection.py
   data/                gitignored: raw + processed artifacts
   runtime/             gitignored: run manifests, events, rejects
-  docs/resonix/
+  docs/reasonix/
     plans/phase-1-implementation-plan.md
     reports/phase-1-acceptance.md
 ```
@@ -435,7 +435,7 @@ Acceptance run, after the code gate is green:
    candidate documents.
 2. Extract all of them with the configured model.
 3. Validate and write artifacts.
-4. Produce `docs/resonix/reports/phase-1-acceptance.md` with: totals, exact vs
+4. Produce `docs/reasonix/reports/phase-1-acceptance.md` with: totals, exact vs
    canonical match counts, rejection histogram, repair rate, duplicate-hash replay
    result, and a 100-row manual inspection table.
 5. Manual inspection is the real A1 gate; a generated pass rate alone does not

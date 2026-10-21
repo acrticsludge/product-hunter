@@ -5,9 +5,9 @@ You are implementing one node of a loop run on the `product-hunter` repo at
 
 Read these first, in this order:
 
-1. `docs/resonix/specs/phase2-crash-recovery.md` — the spec: interruption
+1. `docs/reasonix/specs/phase2-crash-recovery.md` — the spec: interruption
    model, invariants V1 to V12, defects D1 to D3, fixes F1 to F3.
-2. `docs/resonix/plans/phase2-crash-recovery.md` — the plan: exact test
+2. `docs/reasonix/plans/phase2-crash-recovery.md` — the plan: exact test
    names, exact fix shapes, the order of work.
 3. `src/product_hunter/db/` — `store.py`, `checkpoints.py`, `jobs.py`,
    `outbox.py`, `worker.py`, `connection.py`.

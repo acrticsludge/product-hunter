@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-21
 **Lane:** backend tooling. No UI file is touched, so no `DESIGN.md` is required.
-**Source of truth:** `docs/resonix/specs/Product-Hunter-Full-Spec.md` (§5 skills, §6 MCP layer, §6A tool enforcement, §38A phases)
+**Source of truth:** `docs/reasonix/specs/Product-Hunter-Full-Spec.md` (§5 skills, §6 MCP layer, §6A tool enforcement, §38A phases)
 **Phase under setup:** between §38A Phase 2 (evidence core, in progress) and §38A Phase 3 (semantics and independence, next)
 
 ---

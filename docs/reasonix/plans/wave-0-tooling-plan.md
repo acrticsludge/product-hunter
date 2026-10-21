@@ -1,8 +1,8 @@
 # Wave 0 Tooling Setup — Plan
 
 **Date:** 2026-10-21
-**Definition:** `docs/resonix/specs/wave-0-tooling-spec.md`
-**Source of truth:** `docs/resonix/specs/Product-Hunter-Full-Spec.md`
+**Definition:** `docs/reasonix/specs/wave-0-tooling-spec.md`
+**Source of truth:** `docs/reasonix/specs/Product-Hunter-Full-Spec.md`
 
 ---
 
@@ -122,11 +122,11 @@ The five skills created in this wave are written for this repository, in the sam
 | `.opencode/skills/problem-clustering/SKILL.md` | new |
 | `.opencode/skills/frequency-analysis/SKILL.md` | new |
 | `docs/TOOLING.md` | new, the audit record |
-| `docs/resonix/specs/wave-0-tooling-spec.md` | new |
-| `docs/resonix/plans/wave-0-tooling-plan.md` | new |
-| `docs/resonix/prompts/` | new, one file per dispatch |
-| `docs/resonix/reports/wave-0-tooling.md` | new, the run report |
-| `docs/resonix/reports/wave-0-tooling-handoff.md` | new |
+| `docs/reasonix/specs/wave-0-tooling-spec.md` | new |
+| `docs/reasonix/plans/wave-0-tooling-plan.md` | new |
+| `docs/reasonix/prompts/` | new, one file per dispatch |
+| `docs/reasonix/reports/wave-0-tooling.md` | new, the run report |
+| `docs/reasonix/reports/wave-0-tooling-handoff.md` | new |
 
 ## 5. Verification
 

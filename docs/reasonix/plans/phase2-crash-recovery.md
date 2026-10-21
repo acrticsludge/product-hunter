@@ -1,6 +1,6 @@
 # Phase 2 crash-recovery implementation plan
 
-Spec: `docs/resonix/specs/phase2-crash-recovery.md`
+Spec: `docs/reasonix/specs/phase2-crash-recovery.md`
 Gate: `uv run pytest`
 Baseline before the change: 361 passed.
 
@@ -212,7 +212,7 @@ Then run the new file alone with `-v` so the report can quote the names.
 
 ## Step 6 — report
 
-`docs/resonix/reports/phase2-crash-recovery.md` records, per invariant, the
+`docs/reasonix/reports/phase2-crash-recovery.md` records, per invariant, the
 test name and the result, plus the three fixes and the residual risk.
 
 ## Order of work

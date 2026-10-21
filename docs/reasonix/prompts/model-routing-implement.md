@@ -8,8 +8,8 @@
 
 ## Read first
 
-- `docs/resonix/specs/model-routing.md` — the specification.
-- `docs/resonix/plans/model-routing-implementation-plan.md` — the plan. Follow it.
+- `docs/reasonix/specs/model-routing.md` — the specification.
+- `docs/reasonix/plans/model-routing-implementation-plan.md` — the plan. Follow it.
 - `src/product_hunter/llm/base.py`, `src/product_hunter/llm/opencode.py` — the existing seam.
 - `src/product_hunter/config.py`, `src/product_hunter/db/jobs.py`, `db/migrations/0001_initial.sql` — the house style.
 

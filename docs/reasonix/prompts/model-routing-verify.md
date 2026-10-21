@@ -28,7 +28,7 @@
   moved from 1 to 2. `tests/test_db_migrations.py` was updated for that one fact:
   two version assertions changed from 1 to 2, and four table names were added to
   `EXPECTED_TABLES`. That is the only test change, and it was approved in
-  `docs/resonix/plans/model-routing-implementation-plan.md` §1.2.
+  `docs/reasonix/plans/model-routing-implementation-plan.md` §1.2.
 
 ## Important: this working tree is shared
 

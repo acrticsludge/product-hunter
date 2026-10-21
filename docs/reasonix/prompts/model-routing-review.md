@@ -8,8 +8,8 @@
 
 ## What to review
 
-The dynamic model router, against the spec `docs/resonix/specs/model-routing.md` and
-the plan `docs/resonix/plans/model-routing-implementation-plan.md`.
+The dynamic model router, against the spec `docs/reasonix/specs/model-routing.md` and
+the plan `docs/reasonix/plans/model-routing-implementation-plan.md`.
 
 Files in the change:
 

@@ -4,7 +4,7 @@
 **Repository:** `C:\Anubhav\Web Dev Projects\product-hunter`
 **Branch:** `main`
 **Baseline commit:** `205a4ba` (Phase 2 step 1: authoritative SQLite evidence core)
-**Declared radius:** `opencode.json`, `docs/TOOLING.md`, `docs/resonix/specs/wave-0-tooling-spec.md`, `docs/resonix/plans/wave-0-tooling-plan.md`, `docs/resonix/prompts/`, `docs/resonix/reports/wave-0-tooling.md`, `docs/resonix/reports/wave-0-tooling-handoff.md`, the five new files under `.opencode/skills/`, `.env.example`, `.gitignore`
+**Declared radius:** `opencode.json`, `docs/TOOLING.md`, `docs/reasonix/specs/wave-0-tooling-spec.md`, `docs/reasonix/plans/wave-0-tooling-plan.md`, `docs/reasonix/prompts/`, `docs/reasonix/reports/wave-0-tooling.md`, `docs/reasonix/reports/wave-0-tooling-handoff.md`, the five new files under `.opencode/skills/`, `.env.example`, `.gitignore`
 
 ---
 
@@ -23,16 +23,16 @@ Tooling only. No application code, no schema, no migration, no pipeline behaviou
 | `.opencode/skills/problem-clustering/SKILL.md` | new |
 | `.opencode/skills/frequency-analysis/SKILL.md` | new |
 | `docs/TOOLING.md` | new, the audit record |
-| `docs/resonix/specs/wave-0-tooling-spec.md` | new, the definition |
-| `docs/resonix/plans/wave-0-tooling-plan.md` | new, the plan and the MCP matrix |
-| `docs/resonix/prompts/04-implement.md` | new, the implement dispatch |
-| `docs/resonix/prompts/04b-implement-pins.md` | new, the dispatch that restored the pins and the operator's Apify entry |
-| `docs/resonix/prompts/04c-implement-review-fixes.md` | new, the dispatch that added the grounding line to each skill and the Apify timeout |
-| `docs/resonix/prompts/05-verify.md` | new, the verify dispatch |
-| `docs/resonix/prompts/06-harden.md` | new, the first hardening dispatch |
-| `docs/resonix/prompts/06b-harden.md` | new, the second hardening dispatch |
-| `docs/resonix/prompts/07-review.md` | new, the review dispatch |
-| `docs/resonix/reports/wave-0-tooling.md` | new, the run report |
+| `docs/reasonix/specs/wave-0-tooling-spec.md` | new, the definition |
+| `docs/reasonix/plans/wave-0-tooling-plan.md` | new, the plan and the MCP matrix |
+| `docs/reasonix/prompts/04-implement.md` | new, the implement dispatch |
+| `docs/reasonix/prompts/04b-implement-pins.md` | new, the dispatch that restored the pins and the operator's Apify entry |
+| `docs/reasonix/prompts/04c-implement-review-fixes.md` | new, the dispatch that added the grounding line to each skill and the Apify timeout |
+| `docs/reasonix/prompts/05-verify.md` | new, the verify dispatch |
+| `docs/reasonix/prompts/06-harden.md` | new, the first hardening dispatch |
+| `docs/reasonix/prompts/06b-harden.md` | new, the second hardening dispatch |
+| `docs/reasonix/prompts/07-review.md` | new, the review dispatch |
+| `docs/reasonix/reports/wave-0-tooling.md` | new, the run report |
 
 ## 2. Repository map for this run
 
@@ -44,7 +44,7 @@ Tooling only. No application code, no schema, no migration, no pipeline behaviou
 - Normalization: `src/product_hunter/normalization.py`, key `domain:slug(action):slug(object)` under `norm-v1`.
 - Tests: `tests/`, gate command `uv run pytest`.
 - Project skills: `.opencode/skills/`, five from Phase 1 and five from this wave.
-- Spec: `docs/resonix/specs/Product-Hunter-Full-Spec.md`. Phase table in §38A.
+- Spec: `docs/reasonix/specs/Product-Hunter-Full-Spec.md`. Phase table in §38A.
 
 ## 3. MCP state, observed not assumed
 
@@ -101,7 +101,7 @@ Credentials still needed, none of them requested: `SUBQ_API_KEY` for the optiona
 ## 7. Known conditions a later session must know
 
 - A parallel session is writing Phase 2, Phase 3, and Phase 4 code into this repository at the same time. The test count moved from 627 to 641 during verification. The working tree carries that work as modified and untracked files under `src/`, `tests/`, `config/`, `db/migrations/`, and `docs/`.
-- That session also moved the documentation tree. It renamed `docs/resonix/` to `docs/reasonix/`, split the reports into `docs/reports/`, and added `decisions/` and `handoffs/` under the new name. The six tracked files under the old name, including `docs/resonix/specs/Product-Hunter-Full-Spec.md`, show as deleted in the working tree, and that deletion is uncommitted. This wave's files were moved back to the old canonical paths so that this commit stands on its own, and this commit stages no deletion and no file belonging to that session. The rename is theirs to commit or to undo.
+- That session also moved the documentation tree. It renamed `docs/reasonix/` to `docs/reasonix/`, split the reports into `docs/reasonix/reports/`, and added `decisions/` and `handoffs/` under the new name. The six tracked files under the old name, including `docs/reasonix/specs/Product-Hunter-Full-Spec.md`, show as deleted in the working tree, and that deletion is uncommitted. This wave's files were moved back to the old canonical paths so that this commit stands on its own, and this commit stages no deletion and no file belonging to that session. The rename is theirs to commit or to undo.
 - The `.gitignore` in the working tree also carries a change that is not this wave's, from `runtime/` to `/runtime/`. That narrows the ignore rule and exposes `src/product_hunter/runtime/` to a future `git add -A`, against the rule in `.loop/adapter.json` that forbids committing `runtime/`. This wave staged only its own `*.duckdb` line and left the other hunk for the session that wrote it. That hunk deserves a second look.
 - The DuckDB MCP runs read-write. A read-only server refuses to start when the file is missing, and a server that fails to start breaks the OpenCode startup. Phase 3 switches it to read-only once the worker owns the file.
 - The Qdrant MCP needs an instance at `http://localhost:6333` with a collection named `product_hunter_evidence`. Neither exists yet.

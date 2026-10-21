@@ -4,17 +4,17 @@ Node: `loop-free-implement-1`
 Stage: 4 IMPLEMENT
 Risk: medium
 Blast radius: `src/product_hunter/runtime/**`, `tests/test_runtime_worker.py`,
-`tests/test_runtime_lock.py`. `README.md` and `docs/resonix/**` are edited by
+`tests/test_runtime_lock.py`. `README.md` and `docs/reasonix/**` are edited by
 the orchestrator, not by you.
 
 ## Read first
 
-1. `docs/resonix/specs/phase-2-worker-runtime.md` — the contracts. This is
+1. `docs/reasonix/specs/phase-2-worker-runtime.md` — the contracts. This is
    the contract. Follow it exactly; where it names a signature, use that
    signature.
-2. `docs/resonix/plans/phase-2-worker-runtime.md` — the task order and the
+2. `docs/reasonix/plans/phase-2-worker-runtime.md` — the task order and the
    determinism rules for the tests.
-3. `docs/resonix/handoff/phase-2-worker-runtime-handoff.md` — the database
+3. `docs/reasonix/handoff/phase-2-worker-runtime-handoff.md` — the database
    API you build on, the schema facts, the house style, and what already
    exists that you must reuse instead of rewriting.
 4. `src/product_hunter/db/jobs.py`, `src/product_hunter/db/connection.py`,

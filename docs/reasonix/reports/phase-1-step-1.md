@@ -12,7 +12,7 @@
 - `src/product_hunter/llm/__init__.py`, `src/product_hunter/llm/base.py`,
   `src/product_hunter/llm/opencode.py`
 - `tests/test_smoke.py`, `tests/test_llm_contract.py`
-- `README.md`, `docs/resonix/reports/phase-1-step-1.md`
+- `README.md`, `docs/reasonix/reports/phase-1-step-1.md`
 
 ## Follow-up changes
 
@@ -22,7 +22,7 @@
   `json.dumps(body, ensure_ascii=False)`, so non-ASCII excerpts stay readable
   instead of ballooning into `\uXXXX` escapes on the command line.
 - `README.md`: project README, with the route named as OpenCode V2.
-- `docs/resonix/reports/phase-1-step-1.md`: this report.
+- `docs/reasonix/reports/phase-1-step-1.md`: this report.
 
 ## Review fixes
 

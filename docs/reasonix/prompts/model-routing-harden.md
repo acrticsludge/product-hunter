@@ -21,8 +21,8 @@ The dynamic model router. The files in scope:
 - `db/migrations/0002_model_routing.sql`
 - `config/model_routing.yaml`
 
-Read `docs/resonix/specs/model-routing.md` for what the change is supposed to do, and
-`docs/resonix/plans/model-routing-implementation-plan.md` for what it promised.
+Read `docs/reasonix/specs/model-routing.md` for what the change is supposed to do, and
+`docs/reasonix/plans/model-routing-implementation-plan.md` for what it promised.
 
 ## The binding rules from `.loop/adapter.json`
 

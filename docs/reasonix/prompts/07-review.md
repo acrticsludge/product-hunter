@@ -20,18 +20,18 @@ A tooling wave. The baseline is commit `205a4ba`, and the wave's own paths are a
 | `.opencode/skills/problem-clustering/SKILL.md` | new |
 | `.opencode/skills/frequency-analysis/SKILL.md` | new |
 | `docs/TOOLING.md` | new |
-| `docs/resonix/specs/wave-0-tooling-spec.md` | new |
-| `docs/resonix/plans/wave-0-tooling-plan.md` | new |
-| `docs/resonix/prompts/04-implement.md`, `04b-implement-pins.md`, `05-verify.md`, `06-harden.md`, `06b-harden.md` | new |
-| `docs/resonix/reports/wave-0-tooling-handoff.md` | new |
+| `docs/reasonix/specs/wave-0-tooling-spec.md` | new |
+| `docs/reasonix/plans/wave-0-tooling-plan.md` | new |
+| `docs/reasonix/prompts/04-implement.md`, `04b-implement-pins.md`, `05-verify.md`, `06-harden.md`, `06b-harden.md` | new |
+| `docs/reasonix/reports/wave-0-tooling-handoff.md` | new |
 
-The definition is `docs/resonix/specs/wave-0-tooling-spec.md` and its acceptance criteria are in section 4. The plan is `docs/resonix/plans/wave-0-tooling-plan.md`. The audit record is `docs/TOOLING.md`.
+The definition is `docs/reasonix/specs/wave-0-tooling-spec.md` and its acceptance criteria are in section 4. The plan is `docs/reasonix/plans/wave-0-tooling-plan.md`. The audit record is `docs/TOOLING.md`.
 
 The code gate passed: `uv run pytest`, exit 0, 641 passed, 1 skipped. The wave touched no Python.
 
 ## How to read the working tree
 
-**A parallel session is writing application code into this repository right now.** The working tree carries that work as modified and untracked files under `src/`, `tests/`, `config/`, `db/migrations/`, and `docs/resonix/`. That work is not part of this wave and is not a finding against it.
+**A parallel session is writing application code into this repository right now.** The working tree carries that work as modified and untracked files under `src/`, `tests/`, `config/`, `db/migrations/`, and `docs/reasonix/`. That work is not part of this wave and is not a finding against it.
 
 Review the wave's paths only. To see the wave's own changes, use the explicit path list above. Do not treat the parallel session's files as part of the diff, and do not read them as a defect of the wave. Note that `git diff` shows nothing for the new files, because they are untracked until the commit.
 
@@ -49,7 +49,7 @@ Review the wave's paths only. To see the wave's own changes, use the explicit pa
 Read the wave's paths, then try to prove the wave wrong. Specifically:
 
 1. Does the work match its own acceptance criteria in the spec, A1 through A8? For each, say met, partially met, or not met, with the evidence.
-2. Is the "install only what the next phase needs" claim true, or did the wave install something the phase table does not require? Check the two local servers and the remote one against §38A of `docs/resonix/specs/Product-Hunter-Full-Spec.md`.
+2. Is the "install only what the next phase needs" claim true, or did the wave install something the phase table does not require? Check the two local servers and the remote one against §38A of `docs/reasonix/specs/Product-Hunter-Full-Spec.md`.
 3. Are the deferrals honest? Check every deferred MCP and every deferred skill against the specification, and say whether any deferral is a real gap dressed as a deferral.
 4. Is `docs/TOOLING.md` accurate? Compare every claim in it against what the wave actually observed. A server called working without a real call, a version that is wrong, a file path that does not exist, or a claim that the wave cannot support is a finding.
 5. Do the five new skills overstate what the code does today? They describe Phase 2 and Phase 3 behaviour, and Phase 3 code does not exist yet. Check whether a skill states a rule as if it were implemented when the implementation is a later phase, and whether a skill could make an agent claim a number it has not earned. Compare the five against the five Phase 1 skills for the same problem.

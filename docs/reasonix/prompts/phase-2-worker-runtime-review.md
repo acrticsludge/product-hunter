@@ -19,8 +19,8 @@ the base commit `205a4ba`:
 - `tests/test_runtime_lock.py`
 
 Read the spec the change was built against,
-`docs/resonix/specs/phase-2-worker-runtime.md`, and the handoff
-`docs/resonix/handoff/phase-2-worker-runtime-handoff.md`.
+`docs/reasonix/specs/phase-2-worker-runtime.md`, and the handoff
+`docs/reasonix/handoff/phase-2-worker-runtime-handoff.md`.
 
 The change is not committed yet. Read the files in the working tree.
 

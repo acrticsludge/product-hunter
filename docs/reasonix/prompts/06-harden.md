@@ -20,11 +20,11 @@ A tooling wave. It touched no application code, no schema, no migration, and no 
 | `.opencode/skills/problem-clustering/SKILL.md` | new |
 | `.opencode/skills/frequency-analysis/SKILL.md` | new |
 | `docs/TOOLING.md` | new |
-| `docs/resonix/specs/wave-0-tooling-spec.md` | new |
-| `docs/resonix/plans/wave-0-tooling-plan.md` | new |
-| `docs/resonix/prompts/04-implement.md` | new |
-| `docs/resonix/prompts/05-verify.md` | new |
-| `docs/resonix/reports/wave-0-tooling-handoff.md` | new |
+| `docs/reasonix/specs/wave-0-tooling-spec.md` | new |
+| `docs/reasonix/plans/wave-0-tooling-plan.md` | new |
+| `docs/reasonix/prompts/04-implement.md` | new |
+| `docs/reasonix/prompts/05-verify.md` | new |
+| `docs/reasonix/reports/wave-0-tooling-handoff.md` | new |
 
 The gate passed: `uv run pytest`, exit 0, 641 passed, 1 skipped.
 
@@ -82,7 +82,7 @@ Five new files under `.opencode/skills/` are loaded as instructions. Treat their
 ## Constraints
 
 - You report findings. You do not edit, and you do not fix. The wave's radius is fixed.
-- A parallel session is writing application code into this repository right now, under `src/`, `tests/`, `config/`, `db/migrations/`, and `docs/resonix/`. Ignore that work. It is not part of this wave and is not a finding against it.
+- A parallel session is writing application code into this repository right now, under `src/`, `tests/`, `config/`, `db/migrations/`, and `docs/reasonix/`. Ignore that work. It is not part of this wave and is not a finding against it.
 - Do not stage, commit, stash, clean, or revert anything.
 
 ## What to report back

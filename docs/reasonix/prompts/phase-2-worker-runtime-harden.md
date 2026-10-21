@@ -21,7 +21,7 @@ The files to read, in this order:
 3. `src/product_hunter/runtime/events.py` — the event records.
 4. `src/product_hunter/runtime/identity.py` — the worker identity.
 5. `src/product_hunter/runtime/__main__.py` — the process entry point.
-6. `docs/resonix/specs/phase-2-worker-runtime.md` — what it promises.
+6. `docs/reasonix/specs/phase-2-worker-runtime.md` — what it promises.
 
 The code it calls, which you must read but not change:
 `src/product_hunter/db/jobs.py`, `src/product_hunter/db/connection.py`.

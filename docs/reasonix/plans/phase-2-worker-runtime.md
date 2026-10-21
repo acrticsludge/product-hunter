@@ -1,6 +1,6 @@
 # Phase 2 worker runtime — implementation plan
 
-Spec: `docs/resonix/specs/phase-2-worker-runtime.md`
+Spec: `docs/reasonix/specs/phase-2-worker-runtime.md`
 Base commit: `205a4ba`
 Branch: `main`
 

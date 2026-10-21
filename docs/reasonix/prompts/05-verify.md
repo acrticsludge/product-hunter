@@ -20,7 +20,7 @@ opencode.json                                            (new)
 .opencode/skills/frequency-analysis/SKILL.md             (new)
 ```
 
-**A second agent is writing application code into this repository at the same time.** Files under `src/`, `tests/`, `config/`, `db/migrations/`, and `docs/resonix/` are being created and modified right now by a parallel session working on later phases of the spec. That work is not part of this wave and is not in this wave's radius. It was already present when the tooling wave started its last step.
+**A second agent is writing application code into this repository at the same time.** Files under `src/`, `tests/`, `config/`, `db/migrations/`, and `docs/reasonix/` are being created and modified right now by a parallel session working on later phases of the spec. That work is not part of this wave and is not in this wave's radius. It was already present when the tooling wave started its last step.
 
 That matters for how you read the gate result, so handle it as described below. Do not modify, revert, stash, clean, or commit anything.
 

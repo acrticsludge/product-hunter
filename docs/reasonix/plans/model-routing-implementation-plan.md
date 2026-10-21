@@ -1,6 +1,6 @@
 # Dynamic Model Routing — Implementation Plan
 
-**Status:** approved. The spec is `docs/resonix/specs/model-routing.md`.
+**Status:** approved. The spec is `docs/reasonix/specs/model-routing.md`.
 **Date:** 2026-10-21
 **Risk:** high. `db/migrations/**` is a high-risk path in `.loop/adapter.json`, so stages 2, 6 and 7 are not skippable.
 **Gate:** `uv run pytest`.
