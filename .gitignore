@@ -8,6 +8,7 @@ data/
 logs/
 *.db
 *.sqlite
+*.duckdb
 .coverage
 htmlcov/
 Thumbs.db

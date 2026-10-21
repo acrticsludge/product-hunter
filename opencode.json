@@ -1,0 +1,28 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "qdrant": {
+        "type": "local",
+        "command": ["uvx", "--python", "3.13", "mcp-server-qdrant@0.8.1"],
+        "environment": {
+          "QDRANT_URL": "http://localhost:6333",
+          "COLLECTION_NAME": "product_hunter_evidence",
+          "EMBEDDING_MODEL": "sentence-transformers/all-MiniLM-L6-v2"
+        },
+        "timeout": 120000
+      },
+      "duckdb": {
+        "type": "local",
+        "command": ["uvx", "--python", "3.13", "--with", "mcp<2", "mcp-server-duckdb@1.1.0", "--db-path", "db/product_hunter.duckdb"],
+        "timeout": 120000
+      },
+      "apify": {
+        "type": "remote",
+        "url": "https://mcp.apify.com/",
+        "enabled": true,
+        "timeout": 120000
+      }
+    }
+  }
+}
