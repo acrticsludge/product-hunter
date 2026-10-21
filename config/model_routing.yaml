@@ -1,0 +1,40 @@
+version: 1
+catalog:
+  refresh_interval_seconds: 900
+  discovery_timeout_seconds: 30
+roles:
+  extraction:
+    - pattern: "opencode-go/*-flash*"
+    - pattern: "opencode-go/*"
+  classification:
+    - pattern: "opencode-go/*-flash*"
+    - pattern: "opencode-go/*"
+  normalization:
+    - pattern: "opencode-go/*-flash*"
+    - pattern: "opencode-go/*"
+  deduplication:
+    - pattern: "opencode-go/*-flash*"
+    - pattern: "opencode-go/*"
+  entity_resolution:
+    - pattern: "opencode-go/*"
+  clustering:
+    - pattern: "opencode-go/*"
+  validation:
+    - pattern: "opencode-go/*"
+  investigation:
+    - pattern: "opencode-go/deepseek*"
+    - pattern: "opencode-go/*"
+  competitor_research:
+    - pattern: "opencode-go/deepseek*"
+    - pattern: "opencode-go/*"
+  counter_evidence:
+    - pattern: "opencode-go/deepseek*"
+    - pattern: "opencode-go/*"
+  scoring:
+    - pattern: "opencode-go/deepseek*"
+    - pattern: "opencode-go/*"
+  reporting:
+    - pattern: "opencode-go/*"
+  synthesis:
+    - pattern: "opencode-go/deepseek*"
+    - pattern: "opencode-go/*"

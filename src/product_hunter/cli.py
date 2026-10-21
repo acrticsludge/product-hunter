@@ -15,8 +15,10 @@ from pydantic import BaseModel, ValidationError
 from product_hunter import __version__
 from product_hunter.config import (
     ExtractionConfig,
+    RoutingConfig,
     database_path,
     load_config,
+    load_routing_config,
     repo_root,
 )
 from product_hunter.db import (
@@ -53,8 +55,11 @@ from product_hunter.fetch import (
     JsonlLog,
     utcnow,
 )
-from product_hunter.llm import build_generator
+from product_hunter.llm import build_generator, build_router
 from product_hunter.llm.base import ProviderError, TextGenerator
+from product_hunter.llm.catalog import CatalogError, ModelEntry
+from product_hunter.llm.discovery import ModelDiscovery
+from product_hunter.llm.routing import ModelRole, ModelSelection
 from product_hunter.raw_store import RawStore
 from product_hunter.reporting import (
     ReportError,
@@ -128,6 +133,15 @@ def build_parser() -> argparse.ArgumentParser:
     db_outbox.add_argument("--path", dest="db_path", default=None)
     db_check = db_commands.add_parser("check", help="run SQLite integrity checks")
     db_check.add_argument("--path", dest="db_path", default=None)
+    models_parser = commands.add_parser(
+        "models", help="list the model catalog as JSON"
+    )
+    models_parser.add_argument(
+        "--refresh", action="store_true", help="re-discover the catalog first"
+    )
+    models_parser.add_argument(
+        "--role", default=None, help="print the resolved chain of one role"
+    )
     return parser
 
 
@@ -165,6 +179,105 @@ def sources_command(registry=None) -> int:
     ]
     print(json.dumps(payload))
     return 0
+
+
+def models_command(
+    *,
+    refresh: bool = False,
+    role: str | None = None,
+    config: ExtractionConfig | None = None,
+    routing_config: RoutingConfig | None = None,
+    discovery: ModelDiscovery | None = None,
+) -> int:
+    """Print the model catalog, or the resolved chain of one role, as JSON.
+
+    Returns 0 when the catalog was printed, or when the role resolved to a
+    model. Returns 1 when the catalog could not be discovered or the role has
+    no available model.
+    """
+    try:
+        config = config if config is not None else load_config()
+        routing_config = (
+            routing_config if routing_config is not None else load_routing_config()
+        )
+    except (OSError, ValueError) as exc:
+        print(json.dumps({"ok": False, "error": f"config: {exc}"}))
+        return 1
+    try:
+        router = build_router(routing_config, config, discovery=discovery)
+        catalog = router.catalog_source.catalog(force=refresh)
+    except (CatalogError, ProviderError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 1
+    if role is None:
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "catalog_version": catalog.catalog_version,
+                    "source": catalog.source,
+                    "server_version": catalog.server_version,
+                    "discovered_at": catalog.discovered_at.isoformat(),
+                    "model_count": len(catalog.entries),
+                    "models": [_model_payload(entry) for entry in catalog.entries],
+                }
+            )
+        )
+        return 0
+    try:
+        resolved = ModelRole(role)
+    except ValueError:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": f"unknown role {role!r}",
+                    "roles": [known.value for known in ModelRole],
+                }
+            )
+        )
+        return 1
+    chain = router.chain(resolved)
+    payload = {
+        "ok": bool(chain),
+        "role": resolved.value,
+        "catalog_version": catalog.catalog_version,
+        "chain": [_selection_payload(selection) for selection in chain],
+        "selected": _selection_payload(chain[0]) if chain else None,
+    }
+    if not chain:
+        payload["error"] = f"no available model for role {resolved.value!r}"
+    print(json.dumps(payload))
+    return 0 if chain else 1
+
+
+def _model_payload(entry: ModelEntry) -> dict[str, object]:
+    """One model of the catalog, with its availability."""
+    return {
+        "provider_id": entry.identity.provider_id,
+        "model_id": entry.identity.model_id,
+        "name": entry.name,
+        "family": entry.family,
+        "status": entry.status,
+        "enabled": entry.enabled,
+        "availability": entry.availability.value,
+        "context_limit": entry.context_limit,
+        "output_limit": entry.output_limit,
+        "cost_input": entry.cost_input,
+        "cost_output": entry.cost_output,
+        "released_at": entry.released_at.isoformat() if entry.released_at else None,
+    }
+
+
+def _selection_payload(selection: ModelSelection) -> dict[str, object]:
+    """One resolved candidate of a role chain."""
+    return {
+        "provider_id": selection.identity.provider_id,
+        "model_id": selection.identity.model_id,
+        "selection_source": selection.selection_source.value,
+        "fallback_index": selection.fallback_index,
+        "is_fallback": selection.is_fallback,
+    }
 
 
 def fetch_command(
@@ -887,6 +1000,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "report":
         return report_command(args.run_id, Path(args.out) if args.out else None)
+    if args.command == "models":
+        return models_command(refresh=args.refresh, role=args.role)
     if args.command == "db":
         return _run_db_command(args)
     parser.print_help()

@@ -20,6 +20,9 @@ small scale. Clustering, scoring, and market validity wait for later phases.
 - `ph eval --labels PATH [--out PATH] [--quote-failures N]` scores a filled
   review sheet and prints the report as JSON.
 - `ph report --run RUN_ID [--out PATH]` reports one run from its own artifacts.
+- `ph models [--refresh] [--role ROLE]` lists the model catalogue OpenCode
+  offers as JSON. `--refresh` re-discovers it first, and `--role` prints the
+  resolved chain for one pipeline role instead of the whole catalogue.
 
 ## Fetch safety
 

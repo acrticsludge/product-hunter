@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -7,7 +8,10 @@ import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, model_validator
 
+from product_hunter.llm.routing import ModelRole, RouteCandidate
+
 CONFIG_NAME = Path("config") / "extraction.yaml"
+ROUTING_CONFIG_NAME = Path("config") / "model_routing.yaml"
 ENV_FILE = ".env"
 DEFAULT_DB_NAME = Path("db") / "product_hunter.db"
 
@@ -62,6 +66,42 @@ class ExtractionConfig(BaseModel):
     limits: Limits
 
 
+class CatalogSettings(BaseModel):
+    """How the catalogue is discovered and how long it stays fresh."""
+
+    refresh_interval_seconds: int = Field(gt=0)
+    discovery_timeout_seconds: int = Field(gt=0)
+
+
+class RoutingConfig(BaseModel):
+    """The role bindings, written as patterns so a new model needs no edit."""
+
+    version: int = Field(gt=0)
+    catalog: CatalogSettings
+    roles: dict[ModelRole, list[RouteCandidate]]
+
+    @property
+    def refresh_interval_seconds(self) -> int:
+        """How long a catalogue stays fresh."""
+        return self.catalog.refresh_interval_seconds
+
+    @property
+    def discovery_timeout_seconds(self) -> int:
+        """How long a discovery call may take."""
+        return self.catalog.discovery_timeout_seconds
+
+    @property
+    def config_version(self) -> str:
+        """The routing version plus a digest of the bindings, so a change shows."""
+        lines = sorted(
+            f"{role.value}|{candidate.kind}|{candidate.value}"
+            for role, candidates in self.roles.items()
+            for candidate in candidates
+        )
+        digest = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:12]
+        return f"routing-v{self.version}-{digest}"
+
+
 def repo_root() -> Path:
     """Return the repository root by walking up from this file to pyproject.toml."""
     for parent in Path(__file__).resolve().parents:
@@ -104,3 +144,15 @@ def _apply_env(raw: dict) -> dict:
     if limits:
         data["limits"] = limits
     return data
+
+
+def load_routing_config(path: Path | None = None) -> RoutingConfig:
+    """Load config/model_routing.yaml.
+
+    The file names no model: every candidate is a pattern, so a model that
+    appears later is picked up with no edit. A file that names an unknown role
+    or an unusable candidate is refused.
+    """
+    config_path = path if path is not None else repo_root() / ROUTING_CONFIG_NAME
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    return RoutingConfig.model_validate(raw)

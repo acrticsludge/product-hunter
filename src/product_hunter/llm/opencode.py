@@ -7,11 +7,10 @@ import subprocess
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
-from product_hunter.config import ExtractionConfig
 from product_hunter.llm.base import (
     GenerationRequest,
     GenerationResponse,
@@ -19,6 +18,9 @@ from product_hunter.llm.base import (
     ProviderError,
     ProviderUnavailable,
 )
+
+if TYPE_CHECKING:
+    from product_hunter.config import ExtractionConfig
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -116,6 +118,40 @@ def _resolve_cli() -> str:
     raise ProviderUnavailable("opencode CLI not found on PATH")
 
 
+def run_opencode_cli(
+    argv: list[str],
+    *,
+    timeout_seconds: int,
+    runner: Runner = subprocess.run,
+    label: str = "opencode api",
+) -> str:
+    """Run the OpenCode CLI and return its stdout.
+
+    The command is always an argv list, never a command string, and the shell
+    is never used. A timeout, a missing binary, and a non-zero exit are each
+    refused by name.
+    """
+    try:
+        proc = runner(
+            argv,
+            capture_output=True,
+            text=True,
+            shell=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ProviderError(
+            f"{label} timed out after {timeout_seconds}s"
+        ) from exc
+    except OSError as exc:
+        raise ProviderUnavailable(f"could not run opencode CLI: {exc}") from exc
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        message = detail[-1] if detail else f"exit code {proc.returncode}"
+        raise ProviderError(f"{label} failed: {message}")
+    return proc.stdout
+
+
 class OpenCodeGenerateProvider:
     """Phase 1 text generator over the OpenCode V2 one-shot route."""
 
@@ -132,29 +168,12 @@ class OpenCodeGenerateProvider:
             self._cli = _resolve_cli()
         return self._cli
 
-    def _run(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
-        return self._runner(
-            argv,
-            capture_output=True,
-            text=True,
-            shell=False,
-            timeout=self._config.limits.timeout_seconds,
-        )
-
     def _call(self, argv: list[str]) -> str:
-        try:
-            proc = self._run(argv)
-        except subprocess.TimeoutExpired as exc:
-            raise ProviderError(
-                f"opencode api timed out after {self._config.limits.timeout_seconds}s"
-            ) from exc
-        except OSError as exc:
-            raise ProviderUnavailable(f"could not run opencode CLI: {exc}") from exc
-        if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout or "").strip().splitlines()
-            message = detail[-1] if detail else f"exit code {proc.returncode}"
-            raise ProviderError(f"opencode api failed: {message}")
-        return proc.stdout
+        return run_opencode_cli(
+            argv,
+            timeout_seconds=self._config.limits.timeout_seconds,
+            runner=self._runner,
+        )
 
     @staticmethod
     def _parse(raw: str, validator: Callable[[str], Any]) -> Any:
