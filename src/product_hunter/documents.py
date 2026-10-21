@@ -57,6 +57,7 @@ class Document(BaseModel):
     raw_path: str
     raw_sha256: str
     content_type: str = ""
+    live_status: str = "live"
 
 
 class DocumentChunk(BaseModel):
@@ -79,6 +80,7 @@ class _Parsed:
     author: str | None
     published_at: str | None
     text: str
+    live_status: str = "live"
 
 
 def parse_documents(
@@ -213,6 +215,8 @@ def _parse_github(raw: bytes) -> list[_Parsed]:
             continue
         user = entry.get("user")
         author = user.get("login") if isinstance(user, dict) else None
+        # A closed issue is gone from the source; the document says so.
+        state = str(entry.get("state") or "").strip().lower()
         parsed.append(
             _Parsed(
                 identity=str(ident) if ident is not None else str(html_url),
@@ -221,6 +225,7 @@ def _parse_github(raw: bytes) -> list[_Parsed]:
                 author=author or None,
                 published_at=entry.get("created_at") or None,
                 text=text,
+                live_status="deleted" if state == "closed" else "live",
             )
         )
     return parsed
@@ -280,6 +285,7 @@ def _build(
         raw_sha256=fetch.raw_sha256,
         parser_version=PARSER_VERSION,
         content_type=fetch.content_type,
+        live_status=parsed.live_status,
     )
 
 

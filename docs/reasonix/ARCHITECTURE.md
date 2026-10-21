@@ -1,11 +1,10 @@
 # Product Hunter architecture
 
-**Baseline.** This document describes the working tree, not the last commit. At
-the fourth stage-8 pass of phase 4, on 2026-10-21, HEAD was `80a98a4`. The
+**Baseline.** This document describes the working tree, not the last commit. The
+Wave 2 evidence pipeline wave, on 2026-10-21, started from `3d7bc68`. The
 model router, the research contract and gate engine, the scheduler, the worker
-runtime, and the evaluation benchmark package are in the tree and were still
-uncommitted when this was written. They are `IMPLEMENTED` like any other code.
-The full specification is
+runtime, the evaluation benchmark package, and the evidence pipeline are in the
+tree. They are `IMPLEMENTED` like any other code. The full specification is
 [Product-Hunter-Full-Spec.md](specs/Product-Hunter-Full-Spec.md).
 
 ## Claim labels
@@ -69,19 +68,25 @@ migration-history table and no checksum, so drift is not detected. Files in
 `db/migrations/` must be named `NNNN_name.sql`, must start at 1, and must be
 contiguous; a gap or a duplicate number raises `MigrationError`. Each migration
 runs inside `BEGIN IMMEDIATE` and `COMMIT`, then sets `PRAGMA user_version`.
-`migrate()` is idempotent and returns 2 on a current database. The runner splits
-SQL on `;`, so a semicolon inside a string literal is not supported.
+`migrate()` is idempotent and returns 3 on a current database. The runner ends
+a statement where `sqlite3.complete_statement()` says one is complete, so a
+SQLite trigger body keeps the semicolon it needs and a semicolon inside a
+string literal does not end a statement. The earlier runner split on `;`
+alone, which cut a trigger body in half and could not apply migration 0003.
 
-## The twenty-three tables
+## The twenty-six tables
 
 `IMPLEMENTED` (`db/migrations/0001_initial.sql`,
-`db/migrations/0002_model_routing.sql`). The schema holds twenty-three tables:
-nineteen from the base migration and four from the model routing migration.
+`db/migrations/0002_model_routing.sql`,
+`db/migrations/0003_evidence_pipeline.sql`). The schema holds twenty-six
+tables: nineteen from the base migration, four from the model routing
+migration, and three from the evidence pipeline migration.
 
 | Group | Tables |
 |---|---|
 | Collection and provenance | `sources`, `fetches`, `communities`, `documents`, `authors`, `author_links` |
 | Analysis | `evidence`, `pain_points`, `evidence_pain_links` |
+| Evidence history | `document_versions`, `evidence_observations`, `evidence_lineage` |
 | Research registry | `research_runs`, `research_artifacts`, `research_events`, `research_checkpoints` |
 | Execution | `jobs`, `stage_attempts`, `projection_tasks` |
 | Model routing | `model_catalogs`, `model_inventory`, `model_role_bindings`, `model_executions` |
@@ -325,6 +330,51 @@ extraction side uses a different vocabulary, described in
 machine from spec §41.2 is not implemented, and neither is `continue` from spec
 §41.6 or cross-chat continuity from spec §41.8.
 
+## The evidence pipeline
+
+`IMPLEMENTED` (`src/product_hunter/evidence.py`, `src/product_hunter/db/evidence.py`,
+`db/migrations/0003_evidence_pipeline.sql`). Wave 2 adds a library that turns a
+parsed document and an extracted candidate into a durable, traceable evidence
+span, and it adds the state that makes a span auditable.
+
+The chain gains three things the Wave 1 chain did not have.
+
+- A document carries a **content version**. A re-capture of a document whose
+  text changed is a new version of the same document, not a conflict. The
+  Wave 1 import path raises `StoreConflict` for exactly that case, and keeps
+  doing so.
+- A span carries an **observation history**. The same span seen again in a
+  later version of its document is another observation of one span, and the
+  row count of `evidence_observations` says how many times it was seen.
+- A span carries a **lineage**. Every lifecycle event, from the document
+  being ingested to a span going stale, is a row in `evidence_lineage` with
+  the state it records in its detail.
+
+Two derived facts sit on every evidence row, and both carry the rule version
+that produced them in `derivation_version`.
+
+- `reliability` reads the `sources` row: `reviewed` (1.0), `permitted` (0.7),
+  `unverified` (0.3), or `blocked` (0.0).
+- `strength` reads the candidate and the store: `corroborated` (1.0) when the
+  same normalized key is in two or more documents, `direct` (0.8) for an
+  accepted genuine candidate, `single` (0.4), or `indirect` (0.1).
+
+The traceability rule is a property of the database, not a convention in
+application code. Three triggers refuse a pain point whose span is missing,
+empty, or has impossible offsets, and refuse an evidence link that points at
+a pain point backed by another span, on the insert path and on the update
+path. A pain point cannot exist without a verified evidence span.
+
+`EvidencePipeline` is a library and nothing calls it yet. There is no CLI
+command, no worker handler, no scheduler entry, and no projection handler.
+The Wave 1 import path still exists beside it, and now writes the same derived
+facts, so a row written either way looks the same.
+
+The full contract is in
+[wave-2-evidence-pipeline.md](../specs/wave-2-evidence-pipeline.md), and the
+run report is in
+[wave-2-evidence-pipeline.md](reports/wave-2-evidence-pipeline.md).
+
 ## Roles that are not code
 
 **OpenCode.** It is the interaction surface. The operator runs `ph` through it,
@@ -351,8 +401,7 @@ rather than an approval gate.
 
 ## Hazards
 
-One is live and one is closed. Both are worth recording because an operator
-will hit them.
+One is live, one is closed, and one is new.
 
 **`.gitignore` hides the worker runtime package.** `.gitignore` contains
 `runtime/`, which also matches `src/product_hunter/runtime/`. The worker
@@ -362,9 +411,16 @@ commit it. The package exists on disk but is not in the committed tree.
 **The research-gate migration number was taken, and is now reserved.**
 `research/persistence.py` names a planned migration
 `db/migrations/0003_research_gate.sql`. The name was `0002` until
-`0002_model_routing.sql` took that number, and the docstring and the wave spec
-now say `0003`. The file does not exist and `0003` is not taken. The wave that
-persists tool calls has to use `0003` or a later free number.
+`0002_model_routing.sql` took that number. The evidence pipeline wave took
+`0003_evidence_pipeline.sql`, because the migration runner refuses a gap and
+`0003` was the next free number. The wave that persists tool calls has to use
+`0004`, or renumber. Two branches that both take `0003` will not merge: the
+runner raises `MigrationError` on a duplicate number.
+
+**The migration runner had to change to apply a trigger.** It used to split
+SQL on `;`, which cuts a SQLite trigger body in half. It now ends a statement
+where `sqlite3.complete_statement()` says one is complete. A semicolon inside
+a string literal is now safe, which the old runner could not do.
 
 ## What is not implemented
 
@@ -375,7 +431,7 @@ named there and have no code in this branch.
 |---|---|---|
 | Research run lifecycle and transitions | §41.2 | `PLANNED`, full spec only, no wave spec |
 | `continue` and cross-chat continuity | §41.6, §41.8 | `PLANNED`, full spec only, no wave spec |
-| Tool-call and gate-result persistence in SQLite | §6A, §34 | `PLANNED`; `research/persistence.py` holds protocols only and names `0003_research_gate.sql` |
+| Tool-call and gate-result persistence in SQLite | §6A, §34 | `PLANNED`; `research/persistence.py` holds protocols only, and its migration number has to be `0004` |
 | `spend_ledger` writes and global spend caps | §22 | `PLANNED`; the table exists and stays empty |
 | Opportunity states and scoring | §20, §23 | `PLANNED`, full spec only, no wave spec |
 | Qdrant, DuckDB, and Obsidian projections | §14, §16, §27 | `PLANNED`, full spec only, no wave spec |

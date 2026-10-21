@@ -93,14 +93,20 @@ def _rollback(conn: sqlite3.Connection) -> None:
 
 
 def _split_statements(sql: str) -> list[str]:
-    # shortcut: statements are split on ';' and full-line '--' comments dropped,
-    # so a semicolon inside a string literal is not supported.
+    # shortcut: statements are split where sqlite3 says one is complete, so a
+    # trigger body keeps the semicolon it needs and a semicolon inside a
+    # string literal does not end a statement.
     body = _strip_comment_lines(sql)
     statements: list[str] = []
-    for chunk in body.split(";"):
-        statement = _strip_comment_lines(chunk).strip()
-        if statement:
-            statements.append(statement)
+    buffer = ""
+    for character in body:
+        buffer += character
+        if character == ";" and sqlite3.complete_statement(buffer):
+            statements.append(buffer.strip())
+            buffer = ""
+    tail = buffer.strip()
+    if tail:
+        statements.append(tail)
     return statements
 
 

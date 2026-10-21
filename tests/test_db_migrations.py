@@ -37,6 +37,9 @@ EXPECTED_TABLES = {
     "model_inventory",
     "model_role_bindings",
     "model_executions",
+    "document_versions",
+    "evidence_observations",
+    "evidence_lineage",
 }
 
 
@@ -56,8 +59,8 @@ def _write_migration(directory: Path, name: str, body: str) -> None:
 def test_initial_migration_creates_the_authoritative_schema() -> None:
     conn = connect(":memory:")
     try:
-        assert migrate(conn) == 2
-        assert current_version(conn) == 2
+        assert migrate(conn) == 3
+        assert current_version(conn) == 3
         assert EXPECTED_TABLES <= _tables(conn)
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -68,9 +71,9 @@ def test_initial_migration_creates_the_authoritative_schema() -> None:
 def test_second_migrate_is_a_noop() -> None:
     conn = connect(":memory:")
     try:
-        assert migrate(conn) == 2
-        assert migrate(conn) == 2
-        assert current_version(conn) == 2
+        assert migrate(conn) == 3
+        assert migrate(conn) == 3
+        assert current_version(conn) == 3
     finally:
         conn.close()
 
