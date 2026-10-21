@@ -17,8 +17,8 @@ RISK: declared=medium floor=medium (tooling configuration, agent-readable skill 
 ADAPTER: Product Hunter [repo] 8 forbidden rules in force
 STAGES: 11/11 complete, skipped: none. Stage 5b visual was not required, the adapter sets visualRequired to never and no UI file changed.
 GATES: uv run pytest -> 747 passed in 9.45s, exit 0
-CHANGES: 17 files, 2 modified and 15 new. See the file table below.
-HARDEN: two passes. First pass returned F1 to F4, all closed by the second pass. The second pass raised one new commit blocker, the operator's apify entry, and the review ruled to commit it as the operator wrote it.
+CHANGES: 20 files, 2 modified and 18 new. See the file table below.
+HARDEN: two passes. First pass returned F1 to F4. The second pass closed F1, F2 and F3, and left F4 unchanged and failing closed. It raised one new commit blocker, the operator's apify entry, and the review ruled to commit it as the operator wrote it.
 REVIEW: Verdict: ship. Two commit-time items, both handled. Lean: -42 lines possible, 28 of them taken.
 WAIVERS: none
 STOPPED BECAUSE: all pass and review ship
@@ -39,18 +39,18 @@ NEXT: ready to commit
 | `.opencode/skills/entity-resolution/SKILL.md` | new | 43 |
 | `.opencode/skills/problem-clustering/SKILL.md` | new | 50 |
 | `.opencode/skills/frequency-analysis/SKILL.md` | new | 44 |
-| `docs/TOOLING.md` | new, the audit record | 175 |
-| `docs/resonix/specs/wave-0-tooling-spec.md` | new, the definition | 87 |
-| `docs/resonix/plans/wave-0-tooling-plan.md` | new, the plan and the MCP matrix | 145 |
-| `docs/resonix/prompts/04-implement.md` | new, the implement dispatch | 190 |
-| `docs/resonix/prompts/04b-implement-pins.md` | new, the pin and Apify dispatch | 47 |
-| `docs/resonix/prompts/04c-implement-review-fixes.md` | new, the skill grounding dispatch | 100 |
-| `docs/resonix/prompts/05-verify.md` | new, the verify dispatch | 111 |
-| `docs/resonix/prompts/06-harden.md` | new, the first hardening dispatch | 92 |
-| `docs/resonix/prompts/06b-harden.md` | new, the second hardening dispatch | 77 |
-| `docs/resonix/prompts/07-review.md` | new, the review dispatch | 118 |
-| `docs/resonix/reports/wave-0-tooling-handoff.md` | new, the handoff | 116 |
-| `docs/resonix/reports/wave-0-tooling.md` | new, this report | 116 |
+| `docs/TOOLING.md` | new, the audit record | 187 |
+| `docs/resonix/specs/wave-0-tooling-spec.md` | new, the definition | 79 |
+| `docs/resonix/plans/wave-0-tooling-plan.md` | new, the plan and the MCP matrix | 142 |
+| `docs/resonix/prompts/04-implement.md` | new, the implement dispatch | 177 |
+| `docs/resonix/prompts/04b-implement-pins.md` | new, the pin and Apify dispatch | 44 |
+| `docs/resonix/prompts/04c-implement-review-fixes.md` | new, the skill grounding dispatch | 102 |
+| `docs/resonix/prompts/05-verify.md` | new, the verify dispatch | 84 |
+| `docs/resonix/prompts/06-harden.md` | new, the first hardening dispatch | 90 |
+| `docs/resonix/prompts/06b-harden.md` | new, the second hardening dispatch | 70 |
+| `docs/resonix/prompts/07-review.md` | new, the review dispatch | 99 |
+| `docs/resonix/reports/wave-0-tooling-handoff.md` | new, the handoff | 115 |
+| `docs/resonix/reports/wave-0-tooling.md` | new, this report | 127 |
 
 ## 2. MCPs verified
 

@@ -91,7 +91,7 @@ Credentials still needed, none of them requested: `SUBQ_API_KEY` for the optiona
 
 ## 6. Gates observed
 
-- Code gate: `uv run pytest`, exit 0, `641 passed, 1 skipped in 5.32s`.
+- Code gate: `uv run pytest`, exit 0. The count moved from 627 to 641 to 747 across the run, because a parallel session kept adding tests. The last full run before the commit was `747 passed in 9.45s`.
 - `opencode.json` parses as JSON, holds the three servers with the fields the plan names, and both local servers answer a real MCP call.
 - No secret value in any wave file. The only credential reference is the empty name `SUBQ_API_KEY=`.
 - All five new skills parse, and the five pre-existing ones are byte-identical to `HEAD`.
