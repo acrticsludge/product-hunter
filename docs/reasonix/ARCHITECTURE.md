@@ -325,6 +325,54 @@ extraction side uses a different vocabulary, described in
 machine from spec §41.2 is not implemented, and neither is `continue` from spec
 §41.6 or cross-chat continuity from spec §41.8.
 
+## Opportunity scoring and validation
+
+`IMPLEMENTED` (`src/product_hunter/opportunity/`, `config/scoring_policy.yaml`).
+A deterministic library that scores one opportunity on two separate scales.
+Potential answers whether solving it is attractive; Confidence answers whether
+the collected evidence supports the thesis. They are never collapsed into one
+number.
+
+The separation is structural rather than conventional.
+`PotentialInputs` and `ConfidenceInputs` are two models with no field in
+common, `score_potential()` takes one and `score_confidence()` takes the
+other, and no scorer can read what it was not handed. Trend is a third thing:
+`TrendSignal` is reported beside both numbers and is an input to neither.
+
+| Module | What it holds |
+|---|---|
+| `signals.py` | the input types, the independence computation, the trend signal |
+| `policy.py` | `ScoringPolicy` and the loader for `config/scoring_policy.yaml` |
+| `scoring.py` | `score_potential()`, `score_confidence()`, `score_opportunity()` |
+| `lifecycle.py` | `OpportunityState`, the transition table, the requirement checks |
+| `snapshot.py` | `ScoreSnapshot`, the content-addressed id, the provenance rows |
+| `experiments.py` | `ValidationExperiment`, the threshold, the computed conclusion |
+
+The engine calls no model, reads no clock, and touches no database. Every
+timestamp arrives as an argument, so the same inputs under the same policy
+produce the same numbers and the same snapshot id. The policy carries the
+weights, the factor tables, the thresholds, and the lifecycle requirements;
+the loader refuses weights that do not sum to one, a factor table that names
+an unknown enum member, a negative threshold, and a counter-evidence floor of
+zero.
+
+Three rules are enforced by the types rather than by convention. A mention
+count is never an independent population: the population counts distinct
+resolved authors, and the uncertain ones are reported beside it and never
+folded in. The absence of competitors is never proof: a zero-competitor
+assessment is capped and an assessment with no competitor search is forced to
+the neutral factor. And an experiment conclusion is computed from the observed
+result, never asserted, so a result under the policy's minimum sample size is
+inconclusive whatever its value says.
+
+The opportunity states and their transition table come from spec §23. The
+transition table, the requirement on each edge, and the reason codes are in
+`lifecycle.py`; the promotion gate reads the engine's own confidence score
+rather than numbers the caller asserts.
+
+The design, the formulas, and the prohibitions this wave had to honour are in
+[specs/wave-2-scoring-validation.md](specs/wave-2-scoring-validation.md).
+
 ## Roles that are not code
 
 **OpenCode.** It is the interaction surface. The operator runs `ph` through it,
@@ -377,7 +425,8 @@ named there and have no code in this branch.
 | `continue` and cross-chat continuity | §41.6, §41.8 | `PLANNED`, full spec only, no wave spec |
 | Tool-call and gate-result persistence in SQLite | §6A, §34 | `PLANNED`; `research/persistence.py` holds protocols only and names `0003_research_gate.sql` |
 | `spend_ledger` writes and global spend caps | §22 | `PLANNED`; the table exists and stays empty |
-| Opportunity states and scoring | §20, §23 | `PLANNED`, full spec only, no wave spec |
+| Opportunity states and scoring | §20, §23, §26 | `IMPLEMENTED` in `src/product_hunter/opportunity/`; the snapshot has no table yet, and the market estimate and the competitive assessment have no producer |
+| Opportunity snapshot persistence | §24 | `PLANNED`; the engine writes a content-addressed record, but no table holds it and no wave owns the entity |
 | Qdrant, DuckDB, and Obsidian projections | §14, §16, §27 | `PLANNED`, full spec only, no wave spec |
 | Independent-author and propagation analysis | §12 | `PLANNED`; the `propagation_edges` table exists and stays empty |
 | Backup, restore, retention, drift canaries | §38B | `PLANNED`, full spec only, no wave spec |
