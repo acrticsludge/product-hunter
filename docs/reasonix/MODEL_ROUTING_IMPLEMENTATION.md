@@ -60,6 +60,15 @@ is two different models, so `opencode-go/deepseek-v4.1-flash` and
 is not an identity. The catalogue, the inventory, and the execution log all key
 on the pair.
 
+One wrinkle is worth knowing. OpenCode offers some models in service tiers that
+share one model id: `openai/gpt-6.1-sol` appears four times, as "GPT-6.1 Sol",
+"Sol Fast", "Sol Pro" and "Sol Ultrafast", with different prices. The
+catalogue keeps every tier, so a catalogue of 624 entries holds 585 distinct
+identities. The inventory keeps one row per identity, and a pattern that
+matches a tiered model takes the cheapest one. The free tier this project
+runs on has no tiers — its 29 models are 29 identities — so nothing is
+affected today.
+
 ## The catalogue
 
 `src/product_hunter/llm/discovery.py` holds the two discovery surfaces.
