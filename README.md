@@ -20,22 +20,15 @@ small scale. Clustering, scoring, and market validity wait for later phases.
 - `ph eval --labels PATH [--out PATH] [--quote-failures N]` scores a filled
   review sheet and prints the report as JSON.
 - `ph report --run RUN_ID [--out PATH]` reports one run from its own artifacts.
-
 - `ph db init|status|import-run|recover|jobs|outbox|check` operates the
   authoritative SQLite store. `init` creates and migrates it, `status` shows
   the schema version and the row counts, `import-run` loads one processed
   extraction run, `recover` requeues expired job and projection leases, `jobs`
   and `outbox` list the queue and the projection tasks as JSON, and `check`
   runs the SQLite integrity and foreign-key checks.
-- `ph research <action> [ID] [--objective TEXT] [--chat-id ID] [--limit N]`
-  controls the research runs. The actions are `create`, `list`, `status`,
-  `continue`, `resume`, `pause`, `retry`, `cancel`, and `log`. It prints one
-  JSON object and exits 1 on a refusal. `PH_DB_PATH` moves the database.
-
 - `ph models [--refresh] [--role ROLE]` lists the model catalogue OpenCode
   offers as JSON. `--refresh` re-discovers it first, and `--role` prints the
   resolved chain for one pipeline role instead of the whole catalogue.
-
 - `ph bench run --cases PATH --spec PATH --out PATH [--thresholds PATH]` scores
   one model's answers against a labelled dataset.
 - `ph bench compare --baseline PATH --candidate PATH --out PATH` compares two
@@ -44,6 +37,10 @@ small scale. Clustering, scoring, and market validity wait for later phases.
   benchmark report of one run.
 - `ph bench labels --cases PATH [--out PATH]` prints how much of a dataset a
   human has labelled.
+- `ph research <action> [ID] [--objective TEXT] [--chat-id ID] [--limit N]`
+  controls the research runs. The actions are `create`, `list`, `status`,
+  `continue`, `resume`, `pause`, `retry`, `cancel`, and `log`. It prints one
+  JSON object and exits 1 on a refusal. `PH_DB_PATH` moves the database.
 
 ## Fetch safety
 
@@ -117,30 +114,6 @@ a pain point the model never proposed is not a miss. The sheet also carries
 `human_normalized_key`, so the report shows a normalization rate and a key
 agreement rate. No quality number is claimed without those labels.
 
-## Worker runtime
-
-`src/product_hunter/runtime/` is the supervised worker that consumes the SQLite
-job queue. It claims a job, holds a fenced lease while the handler runs,
-renews that lease on a background thread, records the outcome, retries a
-failure until the attempt ceiling, recovers leases that expired, and stops on a
-signal without abandoning the job it is running.
-
-SQLite is the only queue and the only authority. Every write carries the
-worker id and the lease epoch, so a worker that lost its lease cannot mark a
-job done, and that job is recovered as work instead. The worker writes one
-JSON object per line to stderr, so a run can be reconstructed from the event
-stream together with the `stage_attempts` rows.
-
-`python -m product_hunter.runtime` starts one worker. It takes the single
-instance lock first, so a second scheduler invocation cannot start an
-overlapping worker. `PH_WORKER_HANDLERS` names the handler factory as
-`module:attribute`, `PH_WORKER_LOCK` names the lock file, and `PH_DB_PATH`
-names the database. Without a handler factory the worker starts idle and
-claims nothing.
-
-No handler for the real stages is registered yet, so a worker started today
-recovers expired leases and reports that it has no handlers.
-
 ## OpenCode control surface
 
 `.opencode/plugins/product-hunter.ts` registers one OpenCode tool named
@@ -174,7 +147,6 @@ owns the execution. A run with no live worker lease says `worker: not running`,
 so the surface never implies that work is in flight when the database does not
 say so.
 
-
 ## Benchmark
 
 The manual harness scores one sheet against one model. The benchmark scores a
@@ -200,6 +172,30 @@ same answers produce byte-identical JSON and a result file can be committed
 and diffed. `eval/thresholds.yaml` holds the starting thresholds. They are
 starting values, not measured facts, and the report says the numbers behind
 most of them are blocked.
+
+## Worker runtime
+
+`src/product_hunter/runtime/` is the supervised worker that consumes the SQLite
+job queue. It claims a job, holds a fenced lease while the handler runs,
+renews that lease on a background thread, records the outcome, retries a
+failure until the attempt ceiling, recovers leases that expired, and stops on a
+signal without abandoning the job it is running.
+
+SQLite is the only queue and the only authority. Every write carries the
+worker id and the lease epoch, so a worker that lost its lease cannot mark a
+job done, and that job is recovered as work instead. The worker writes one
+JSON object per line to stderr, so a run can be reconstructed from the event
+stream together with the `stage_attempts` rows.
+
+`python -m product_hunter.runtime` starts one worker. It takes the single
+instance lock first, so a second scheduler invocation cannot start an
+overlapping worker. `PH_WORKER_HANDLERS` names the handler factory as
+`module:attribute`, `PH_WORKER_LOCK` names the lock file, and `PH_DB_PATH`
+names the database. Without a handler factory the worker starts idle and
+claims nothing.
+
+No handler for the real stages is registered yet, so a worker started today
+recovers expired leases and reports that it has no handlers.
 
 ## Scheduler
 
