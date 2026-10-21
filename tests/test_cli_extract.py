@@ -5,7 +5,12 @@ import hashlib
 import json
 from pathlib import Path
 
-from product_hunter.cli import eval_command, extract_command, review_sheet_command
+from product_hunter.cli import (
+    eval_command,
+    extract_command,
+    report_command,
+    review_sheet_command,
+)
 from product_hunter.config import load_config
 from product_hunter.evaluation import COLUMNS
 from product_hunter.fetch import FetchRecord
@@ -39,6 +44,11 @@ ANSWER = json.dumps(
                 "frequency": "weekly",
                 "confidence": 0.8,
                 "rationale": "the text says the PDF is unreadable and every number is retyped by hand",
+                "domain": "finance",
+                "actor": "the bookkeeper",
+                "action": "retype ledger numbers by hand",
+                "object": "ledger numbers",
+                "consequence": "a row that can be missed in the ledger",
             },
             {
                 "quote": NOT_PAIN_QUOTE,
@@ -70,7 +80,7 @@ class FakeGenerator:
             text=self._answer,
             provider="fake-provider",
             model="fake-model",
-            extractor_version="phase1-0.2",
+            extractor_version="phase1-0.3",
             input_chars=len(request.prompt),
             latency_ms=3,
         )
@@ -203,6 +213,7 @@ def test_extract_command_writes_the_run(tmp_path, capsys):
     assert manifest["model"] == config.model_id
     assert manifest["extractor_version"] == config.extractor_version
     assert manifest["prompt_version"] == config.prompt_version
+    assert manifest["normalization_version"] == config.normalization_version
     assert manifest["limits"]["max_candidates_per_chunk"] == config.limits.max_candidates_per_chunk
     assert manifest["started_at"] <= manifest["completed_at"]
 
@@ -233,6 +244,54 @@ def test_extract_command_writes_the_run(tmp_path, capsys):
     assert len(calls) == 1
     assert calls[0]["status"] == "ok"
     assert calls[0]["accepted_count"] == 1
+
+
+def test_report_command_reports_the_run(tmp_path, capsys):
+    seed_repo(tmp_path)
+    run_extract(tmp_path)
+    capsys.readouterr()
+
+    out = tmp_path / "report.md"
+    code = report_command("test-run", out, repo_root=tmp_path)
+
+    assert code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["run_id"] == "test-run"
+    assert report["normalization_version"] == load_config().normalization_version
+    assert report["documents"] == 1
+    assert report["chunks"] == 1
+    assert report["calls"] == 1
+    assert report["candidates"] == 2
+    assert report["accepted"] == 1
+    assert report["rejected"] == 0
+    assert report["failures"] == 0
+    assert report["quote_exact"] + report["quote_canonical"] == 2
+    assert report["normalization_keys"] == 1
+    assert report["duplicate_text_hashes"] == 0
+    assert report["source_counts"] == {
+        "hn_algolia": {"documents": 1, "candidates": 2, "accepted": 1}
+    }
+    assert out.is_file()
+    written = out.read_text(encoding="utf-8")
+    assert "# Run report" in written
+    assert "## Limitations" in written
+
+
+def test_report_command_without_a_run_exits_one(tmp_path, capsys):
+    code = report_command("no-such-run", repo_root=tmp_path)
+
+    assert code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+
+
+def test_report_command_refuses_an_unsafe_run_id(tmp_path, capsys):
+    code = report_command("../escape", repo_root=tmp_path)
+
+    assert code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert "invalid run id" in payload["error"]
 
 
 def test_review_sheet_command_writes_a_blank_sheet(tmp_path, capsys):
@@ -368,8 +427,8 @@ def test_extract_command_rejects_a_hash_mismatch(tmp_path, capsys):
     assert rejects[0]["doc_id"] is None
     assert rejects[0]["fetch_id"] == "fetch_test"
     assert rejects[0]["source_id"] == "hn_algolia"
-    assert rejects[0]["extractor_version"] == "phase1-0.2"
-    assert rejects[0]["prompt_version"] == "extract-v2"
+    assert rejects[0]["extractor_version"] == "phase1-0.3"
+    assert rejects[0]["prompt_version"] == "extract-v3"
 
 
 def test_extract_command_refuses_an_unsafe_run_id(tmp_path, capsys):
@@ -428,8 +487,8 @@ def test_extract_command_fails_closed_when_the_provider_check_fails(tmp_path, ca
     assert "opencode CLI not found on PATH" in rejects[0]["detail"]
     assert rejects[0]["provider"] == load_config().provider_id
     assert rejects[0]["model"] == load_config().model_id
-    assert rejects[0]["extractor_version"] == "phase1-0.2"
-    assert rejects[0]["prompt_version"] == "extract-v2"
+    assert rejects[0]["extractor_version"] == "phase1-0.3"
+    assert rejects[0]["prompt_version"] == "extract-v3"
     assert rejects[0]["created_at"]
 
 
@@ -462,5 +521,5 @@ def test_extract_command_rejects_a_source_without_analysis_use(tmp_path, capsys)
     assert rejects[0]["doc_id"] is None
     assert rejects[0]["fetch_id"] == "fetch_blog"
     assert rejects[0]["source_id"] == "blog_http"
-    assert rejects[0]["extractor_version"] == "phase1-0.2"
-    assert rejects[0]["prompt_version"] == "extract-v2"
+    assert rejects[0]["extractor_version"] == "phase1-0.3"
+    assert rejects[0]["prompt_version"] == "extract-v3"

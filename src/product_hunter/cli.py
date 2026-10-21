@@ -41,6 +41,11 @@ from product_hunter.fetch import (
 from product_hunter.llm import build_generator
 from product_hunter.llm.base import ProviderError, TextGenerator
 from product_hunter.raw_store import RawStore
+from product_hunter.reporting import (
+    ReportError,
+    build_run_report,
+    write_report as write_run_report,
+)
 from product_hunter.safety import UrlBlocked
 from product_hunter.sources import AllowedUse, SourceBlocked, load_registry
 
@@ -81,6 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
     eval_parser.add_argument("--labels", dest="labels", required=True)
     eval_parser.add_argument("--out", dest="out", default=None)
     eval_parser.add_argument("--quote-failures", dest="quote_failures", type=int, default=0)
+    report_parser = commands.add_parser("report", help="report the metrics of one run")
+    report_parser.add_argument("--run", dest="run_id", required=True)
+    report_parser.add_argument("--out", dest="out", default=None)
     return parser
 
 
@@ -274,6 +282,7 @@ def extract_command(
         "model": config.model_id,
         "extractor_version": config.extractor_version,
         "prompt_version": config.prompt_version,
+        "normalization_version": config.normalization_version,
         "limits": config.limits.model_dump(),
         "documents": len(documents),
         "chunks": len(chunks),
@@ -361,6 +370,31 @@ def eval_command(
     if out is not None:
         try:
             write_report(report, _resolve_path(out, root))
+        except OSError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+            return 1
+    print(json.dumps(report.model_dump()))
+    return 0
+
+
+def report_command(
+    run_id: str,
+    out: Path | None = None,
+    repo_root: Path | None = None,
+) -> int:
+    """Report the metrics of one run. Returns 0, or 1 on a broken run."""
+    if not _valid_run_id(run_id):
+        print(json.dumps({"ok": False, "error": f"invalid run id {run_id!r}"}))
+        return 1
+    root = _root(repo_root)
+    try:
+        report = build_run_report(root / PROCESSED_DIR / run_id)
+    except (ReportError, OSError, ValueError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 1
+    if out is not None:
+        try:
+            write_run_report(report, _resolve_path(out, root))
         except OSError as exc:
             print(json.dumps({"ok": False, "error": str(exc)}))
             return 1
@@ -534,5 +568,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.out) if args.out else None,
             quote_failures=args.quote_failures,
         )
+    if args.command == "report":
+        return report_command(args.run_id, Path(args.out) if args.out else None)
     parser.print_help()
     return 0

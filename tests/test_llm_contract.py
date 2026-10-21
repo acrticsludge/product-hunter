@@ -67,7 +67,7 @@ def test_generate_parses_envelope_and_records_metadata(config):
     assert response.text == "pong"
     assert response.provider == "opencode-go"
     assert response.model == "deepseek-v4.1-flash"
-    assert response.extractor_version == "phase1-0.2"
+    assert response.extractor_version == "phase1-0.3"
     assert response.input_chars == len("hi")
     assert response.latency_ms >= 0
 

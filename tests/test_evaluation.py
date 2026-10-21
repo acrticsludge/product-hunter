@@ -33,10 +33,27 @@ HEADER = [
     "model_severity",
     "model_frequency",
     "model_confidence",
+    "model_domain",
+    "model_normalized_key",
     "human_valid_pain",
     "human_severity",
     "human_frequency",
+    "human_normalization_ok",
+    "human_normalized_key",
     "notes",
+]
+
+# The header of a sheet filled before the normalization columns existed.
+OLD_HEADER = [
+    name
+    for name in HEADER
+    if name
+    not in (
+        "model_domain",
+        "model_normalized_key",
+        "human_normalization_ok",
+        "human_normalized_key",
+    )
 ]
 
 
@@ -76,6 +93,15 @@ def make_candidate(
         frequency=frequency,
         confidence=confidence,
         rationale="the text says the totals are pasted by hand",
+        domain="finance" if accepted else None,
+        actor="the bookkeeping team" if accepted else None,
+        action="paste invoice totals by hand" if accepted else None,
+        object="invoice totals" if accepted else None,
+        consequence="a Saturday of manual work every month" if accepted else None,
+        normalized_key=(
+            "finance:paste-invoice-totals-by-hand:invoice-totals" if accepted else None
+        ),
+        normalization_version="norm-v1",
         accepted=accepted,
         provider="fake",
         model="fake-model",
@@ -167,9 +193,13 @@ def filled_row(**changes: object) -> dict[str, object]:
         "model_severity": "3",
         "model_frequency": "monthly",
         "model_confidence": "0.9",
+        "model_domain": "finance",
+        "model_normalized_key": "finance:paste-invoice-totals-by-hand:invoice-totals",
         "human_valid_pain": "",
         "human_severity": "",
         "human_frequency": "",
+        "human_normalization_ok": "",
+        "human_normalized_key": "",
         "notes": "",
     }
     values.update(changes)
@@ -276,6 +306,8 @@ def test_sheet_leaves_the_human_columns_blank(tmp_path):
         assert row["human_valid_pain"] == ""
         assert row["human_severity"] == ""
         assert row["human_frequency"] == ""
+        assert row["human_normalization_ok"] == ""
+        assert row["human_normalized_key"] == ""
         assert row["notes"] == ""
 
 
@@ -324,6 +356,14 @@ def test_sheet_carries_the_model_verdict(tmp_path):
     assert rows["cand_a1"].verbatim_ok is True
     assert rows["cand_a1"].pain_id == "pp_cand_a1"
     assert rows["cand_n1"].pain_id is None
+    # The model key travels with the row.
+    assert rows["cand_a1"].model_domain == "finance"
+    assert (
+        rows["cand_a1"].model_normalized_key
+        == "finance:paste-invoice-totals-by-hand:invoice-totals"
+    )
+    assert rows["cand_n1"].model_domain is None
+    assert rows["cand_n1"].model_normalized_key is None
 
 
 # --- reading a filled sheet ------------------------------------------------
@@ -391,6 +431,8 @@ def test_blank_human_labels_read_as_none(tmp_path):
         ("human_severity", "7"),
         ("human_severity", "abc"),
         ("human_frequency", "yearly"),
+        ("human_normalization_ok", "maybe"),
+        ("human_normalization_ok", "true"),
         ("model_validity", "bogus"),
         ("model_reason", "bogus"),
         ("model_frequency", "yearly"),
@@ -420,6 +462,181 @@ def test_a_missing_column_is_refused(tmp_path):
         read_review_sheet(path)
 
     assert "notes" in str(excinfo.value)
+
+
+# --- the normalization columns ---------------------------------------------
+
+
+def test_read_review_sheet_parses_the_normalization_columns(tmp_path):
+    path = write_csv(
+        tmp_path / "normalized.csv",
+        [
+            filled_row(
+                candidate_id="cand_1",
+                human_normalization_ok="yes",
+                human_normalized_key="finance:paste:totals",
+            ),
+            filled_row(
+                candidate_id="cand_2",
+                human_normalization_ok="no",
+                human_normalized_key="  finance:copy:totals  ",
+            ),
+        ],
+    )
+
+    rows = read_review_sheet(path)
+
+    assert rows[0].human_normalization_ok == "yes"
+    assert rows[0].human_normalized_key == "finance:paste:totals"
+    assert rows[1].human_normalization_ok == "no"
+    # The key is stripped, so a stray space cannot make two keys differ.
+    assert rows[1].human_normalized_key == "finance:copy:totals"
+
+
+def test_a_sheet_without_the_normalization_columns_still_reads(tmp_path):
+    """A sheet filled before the normalization columns existed still reads."""
+    path = tmp_path / "old.csv"
+    row = {
+        key: value
+        for key, value in filled_row(human_valid_pain="yes").items()
+        if key in OLD_HEADER
+    }
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=OLD_HEADER)
+        writer.writeheader()
+        writer.writerow(row)
+
+    rows = read_review_sheet(path)
+
+    assert len(rows) == 1
+    assert rows[0].human_valid_pain == "yes"
+    assert rows[0].model_domain is None
+    assert rows[0].model_normalized_key is None
+    assert rows[0].human_normalization_ok is None
+    assert rows[0].human_normalized_key is None
+
+
+def test_a_malformed_normalization_label_is_refused(tmp_path):
+    path = write_csv(
+        tmp_path / "bad.csv", [filled_row(human_normalization_ok="maybe")]
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        read_review_sheet(path)
+
+    assert "human_normalization_ok" in str(excinfo.value)
+    assert "yes, no" in str(excinfo.value)
+    assert "row 1" in str(excinfo.value)
+
+
+def normalization_rows() -> list[ReviewRow]:
+    """Rows with known normalization labels and keys."""
+    return [
+        make_row(
+            candidate_id="cand_1",
+            model_validity="genuine",
+            human_valid_pain="yes",
+            model_normalized_key="finance:paste:totals",
+            human_normalization_ok="yes",
+            human_normalized_key="finance:paste:totals",
+        ),
+        make_row(
+            candidate_id="cand_2",
+            model_validity="genuine",
+            human_valid_pain="yes",
+            model_normalized_key="finance:copy:totals",
+            human_normalization_ok="no",
+            human_normalized_key="finance:copy:totals",
+        ),
+        make_row(
+            candidate_id="cand_3",
+            model_validity="genuine",
+            human_valid_pain="yes",
+            model_normalized_key="finance:paste:totals",
+            human_normalization_ok="no",
+            human_normalized_key="finance:paste-invoice-totals",
+        ),
+        make_row(
+            candidate_id="cand_4",
+            model_validity="genuine",
+            human_valid_pain="yes",
+            model_normalized_key="hr:rekey:staff",
+            human_normalization_ok="",
+            human_normalized_key="hr:rekey:staff",
+        ),
+        make_row(
+            candidate_id="cand_5",
+            model_validity="genuine",
+            human_valid_pain="no",
+            human_normalization_ok="yes",
+        ),
+        make_row(
+            candidate_id="cand_6",
+            model_validity="not_pain",
+            model_reason="informational",
+            model_severity=0,
+            human_valid_pain="yes",
+            human_normalization_ok="yes",
+        ),
+    ]
+
+
+def test_evaluate_counts_the_normalization_labels():
+    report = evaluate(normalization_rows())
+
+    # Only the genuine pain points the human confirmed carry a label.
+    assert report.normalization_n == 3
+    assert report.normalization_ok == 1
+    assert report.normalization_rate == pytest.approx(1 / 3)
+
+
+def test_evaluate_counts_the_key_agreement():
+    report = evaluate(normalization_rows())
+
+    assert report.normalized_key_n == 4
+    assert report.normalized_key_exact == 3
+    assert report.normalized_key_agreement == pytest.approx(3 / 4)
+
+
+def test_blank_normalization_labels_leave_the_rates_at_none():
+    report = evaluate([make_row(candidate_id="cand_1", human_valid_pain="yes")])
+
+    assert report.normalization_n == 0
+    assert report.normalization_ok == 0
+    assert report.normalization_rate is None
+    assert report.normalized_key_n == 0
+    assert report.normalized_key_exact == 0
+    assert report.normalized_key_agreement is None
+
+
+def test_a_row_without_a_model_key_is_left_out_of_the_key_count():
+    """A weak or not_pain row has no model key, so it cannot disagree."""
+    rows = [
+        make_row(
+            candidate_id="cand_1",
+            model_validity="genuine",
+            human_valid_pain="yes",
+            model_normalized_key="finance:paste:totals",
+            human_normalized_key="finance:paste:totals",
+        ),
+        make_row(
+            candidate_id="cand_2",
+            model_validity="weak",
+            model_reason="incidental",
+            model_severity=1,
+            human_valid_pain="no",
+            model_normalized_key=None,
+            human_normalized_key="finance:paste:totals",
+        ),
+    ]
+
+    report = evaluate(rows)
+
+    # The weak row carries a human key but no model key, so it is not
+    # counted and it is not a disagreement.
+    assert report.normalized_key_n == 1
+    assert report.normalized_key_exact == 1
+    assert report.normalized_key_agreement == pytest.approx(1.0)
 
 
 # --- the report ------------------------------------------------------------
@@ -602,6 +819,10 @@ def test_evaluate_with_no_labels_divides_by_nothing():
     assert report.recall is None
     assert report.severity_n == 0
     assert report.false_positive_reasons == {}
+    assert report.normalization_n == 0
+    assert report.normalization_rate is None
+    assert report.normalized_key_n == 0
+    assert report.normalized_key_agreement is None
 
 
 def test_evaluate_with_no_rows_at_all():
@@ -635,6 +856,7 @@ def test_render_markdown_carries_the_metrics_and_the_limitation():
     assert "The sheet holds 10 candidates" in text
     assert "## Metrics" in text
     assert "## Severity" in text
+    assert "## Normalization" in text
     assert "## False-positive reasons" in text
     assert "## Per source" in text
     assert "## Limitations" in text
@@ -668,6 +890,24 @@ def test_render_markdown_handles_an_empty_report():
     assert "| Recall | n/a |" in text
     assert "No false positives were recorded." in text
     assert "No source was reviewed." in text
+    # An unlabelled sheet gets no made-up normalization rate.
+    assert "not labelled" in text
+    assert "| Normalization rate | n/a |" in text
+    assert "| Key agreement | n/a |" in text
+
+
+def test_render_markdown_shows_the_normalization_metrics():
+    report = evaluate(normalization_rows())
+
+    text = render_markdown(report)
+
+    assert "| Rows compared | 3 |" in text
+    assert "| Normalized correctly | 1 |" in text
+    assert "| Normalization rate | 33.3% |" in text
+    assert "| Keys compared | 4 |" in text
+    assert "| Keys identical | 3 |" in text
+    assert "| Key agreement | 75.0% |" in text
+    assert "not labelled" not in text
 
 
 def test_write_report_creates_the_parent_and_writes_the_markdown(tmp_path):
@@ -720,6 +960,12 @@ def test_the_report_model_takes_the_numbers_as_given():
         severity_n=0,
         severity_exact=0,
         severity_within_one=0,
+        normalization_n=2,
+        normalization_ok=1,
+        normalization_rate=0.5,
+        normalized_key_n=2,
+        normalized_key_exact=1,
+        normalized_key_agreement=0.5,
         false_positive_reasons={},
         per_source={},
         notes="a note",
@@ -727,3 +973,5 @@ def test_the_report_model_takes_the_numbers_as_given():
 
     assert report.total == 1
     assert report.false_positive_reasons == {}
+    assert report.normalization_rate == 0.5
+    assert report.normalized_key_agreement == 0.5

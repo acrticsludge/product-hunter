@@ -17,6 +17,7 @@ from product_hunter.documents import (
 )
 from product_hunter.extraction import (
     Candidate,
+    ExtractedCandidate,
     ExtractionParseError,
     Frequency,
     PainReason,
@@ -109,6 +110,7 @@ def make_config(**limits: object) -> ExtractionConfig:
         model_id="cfg-model",
         extractor_version="phase1-0.2",
         prompt_version="extract-v2",
+        normalization_version="norm-v1",
         limits=base.model_copy(update=limits),
     )
 
@@ -128,6 +130,17 @@ def make_document(text: str = DOC_TEXT, *, doc_id: str = "doc_test") -> Document
     )
 
 
+# The five fields a genuine candidate carries. The wording is the model's
+# own; the code slugs it into the normalized key.
+NORMALIZED_FIELDS = {
+    "domain": "finance",
+    "actor": "the bookkeeping team",
+    "action": "paste invoice totals by hand",
+    "object": "invoice totals",
+    "consequence": "a Saturday of manual work every month",
+}
+
+
 def candidate(
     quote: str,
     validity: str,
@@ -137,8 +150,17 @@ def candidate(
     frequency: str,
     confidence: float,
     rationale: str,
+    *,
+    with_normalized: bool = True,
+    **overrides,
 ) -> dict:
-    return {
+    """One candidate as the model would answer it.
+
+    A genuine candidate carries the five normalized fields unless the test
+    asks for them to be left out. Keyword overrides replace a field, so
+    ``domain=None`` is a candidate with no domain.
+    """
+    data = {
         "quote": quote,
         "pain_validity": validity,
         "reason": reason,
@@ -148,6 +170,10 @@ def candidate(
         "confidence": confidence,
         "rationale": rationale,
     }
+    if with_normalized and validity == "genuine":
+        data.update(NORMALIZED_FIELDS)
+    data.update(overrides)
+    return data
 
 
 def valid_payload() -> str:
@@ -452,6 +478,340 @@ def test_weak_candidate_is_stored_but_not_accepted():
     assert batch.candidates[0].accepted is False
     assert batch.candidates[0].pain_id is None
     assert batch.candidates[0].pain_validity is PainValidity.weak
+
+
+# --- the normalized fields -------------------------------------------------
+
+
+def test_a_genuine_candidate_without_the_normalized_fields_is_rejected():
+    payload = json.dumps(
+        {
+            "candidates": [
+                candidate(
+                    GENUINE,
+                    "genuine",
+                    "time_cost",
+                    "the team spends a Saturday pasting invoice totals by hand",
+                    3,
+                    "monthly",
+                    0.9,
+                    "the text says the totals are pasted by hand every month",
+                    with_normalized=False,
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(ExtractionParseError) as excinfo:
+        parse_output(payload, max_candidates=8)
+
+    assert excinfo.value.reason_code == "schema_invalid"
+
+
+@pytest.mark.parametrize(
+    "field", ["domain", "actor", "action", "object", "consequence"]
+)
+def test_a_genuine_candidate_missing_one_normalized_field_is_rejected(field):
+    payload = json.dumps(
+        {
+            "candidates": [
+                candidate(
+                    GENUINE,
+                    "genuine",
+                    "time_cost",
+                    "a statement",
+                    3,
+                    "monthly",
+                    0.9,
+                    "a rationale",
+                    **{field: None},
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(ExtractionParseError) as excinfo:
+        parse_output(payload, max_candidates=8)
+
+    assert excinfo.value.reason_code == "schema_invalid"
+
+
+@pytest.mark.parametrize("field", ["actor", "action", "object", "consequence"])
+def test_a_genuine_candidate_with_a_blank_field_is_rejected(field):
+    payload = json.dumps(
+        {
+            "candidates": [
+                candidate(
+                    GENUINE,
+                    "genuine",
+                    "time_cost",
+                    "a statement",
+                    3,
+                    "monthly",
+                    0.9,
+                    "a rationale",
+                    **{field: "   "},
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(ExtractionParseError) as excinfo:
+        parse_output(payload, max_candidates=8)
+
+    assert excinfo.value.reason_code == "schema_invalid"
+
+
+def test_a_genuine_candidate_with_an_unknown_domain_is_rejected():
+    payload = json.dumps(
+        {
+            "candidates": [
+                candidate(
+                    GENUINE,
+                    "genuine",
+                    "time_cost",
+                    "a statement",
+                    3,
+                    "monthly",
+                    0.9,
+                    "a rationale",
+                    domain="widgets",
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(ExtractionParseError) as excinfo:
+        parse_output(payload, max_candidates=8)
+
+    assert excinfo.value.reason_code == "schema_invalid"
+
+
+def test_an_accepted_candidate_stores_the_normalized_fields():
+    batch = extract_documents(
+        [make_document()], FakeGenerator(valid_payload()), make_config()
+    )
+
+    stored = batch.candidates[0]
+    assert stored.accepted is True
+    assert stored.domain == "finance"
+    assert stored.actor == "the bookkeeping team"
+    assert stored.action == "paste invoice totals by hand"
+    assert stored.object == "invoice totals"
+    assert stored.consequence == "a Saturday of manual work every month"
+    assert stored.normalized_key == (
+        "finance:paste-invoice-totals-by-hand:invoice-totals"
+    )
+    assert stored.normalization_version == "norm-v1"
+
+
+def test_the_same_problem_with_other_wording_gets_the_same_key():
+    def payload(action: str, object_: str) -> str:
+        return json.dumps(
+            {
+                "candidates": [
+                    candidate(
+                        GENUINE,
+                        "genuine",
+                        "time_cost",
+                        "a statement",
+                        3,
+                        "monthly",
+                        0.9,
+                        "a rationale",
+                        action=action,
+                        object=object_,
+                    )
+                ]
+            }
+        )
+
+    first = extract_documents(
+        [make_document()],
+        FakeGenerator(payload("Paste invoice totals by hand", "Invoice totals")),
+        make_config(),
+    )
+    second = extract_documents(
+        [make_document()],
+        FakeGenerator(payload("paste  invoice, totals by hand", "invoice totals")),
+        make_config(),
+    )
+
+    assert first.candidates[0].normalized_key == second.candidates[0].normalized_key
+    assert first.candidates[0].normalized_key == (
+        "finance:paste-invoice-totals-by-hand:invoice-totals"
+    )
+
+
+def test_a_genuine_candidate_that_cannot_be_keyed_is_rejected():
+    payload = json.dumps(
+        {
+            "candidates": [
+                candidate(
+                    GENUINE,
+                    "genuine",
+                    "time_cost",
+                    "a statement",
+                    3,
+                    "monthly",
+                    0.9,
+                    "a rationale",
+                    action="---",
+                )
+            ]
+        }
+    )
+
+    batch = extract_documents([make_document()], FakeGenerator(payload), make_config())
+
+    assert batch.candidates == []
+    assert [r.reason_code for r in batch.rejects] == ["normalization_invalid"]
+    assert batch.rejects[0].model_quote == GENUINE
+    assert batch.rejects[0].doc_id == "doc_test"
+    assert batch.rejects[0].provider == "gen-provider"
+    assert batch.rejects[0].model == "gen-model"
+    assert batch.rejects[0].extractor_version == "phase1-0.2"
+    assert batch.calls[0].status == "ok"
+    assert batch.calls[0].candidate_count == 1
+    assert batch.calls[0].accepted_count == 0
+    assert batch.calls[0].rejected_count == 1
+
+
+def test_a_weak_candidate_keeps_the_model_fields_but_gets_no_key():
+    payload = json.dumps(
+        {
+            "candidates": [
+                candidate(
+                    INCIDENTAL,
+                    "weak",
+                    "incidental",
+                    "the cafe is closed for renovation",
+                    1,
+                    "one_off",
+                    0.5,
+                    "the sentence names no workflow and no cost",
+                    domain="other",
+                    actor="the staff",
+                    action="work around the closure",
+                    object="the cafe",
+                    consequence="a day of disruption",
+                )
+            ]
+        }
+    )
+
+    batch = extract_documents([make_document()], FakeGenerator(payload), make_config())
+
+    stored = batch.candidates[0]
+    assert stored.accepted is False
+    assert stored.pain_id is None
+    assert stored.normalized_key is None
+    assert stored.domain == "other"
+    assert stored.actor == "the staff"
+    assert stored.action == "work around the closure"
+    assert stored.object == "the cafe"
+    assert stored.consequence == "a day of disruption"
+    assert stored.normalization_version == "norm-v1"
+
+
+# --- the stored key --------------------------------------------------------
+
+
+def stored_candidate(**overrides) -> ExtractedCandidate:
+    """A stored candidate, the way the extractor writes it."""
+    values: dict[str, object] = {
+        "candidate_id": "cand_1",
+        "pain_id": "pp_cand_1",
+        "doc_id": "doc_test",
+        "fetch_id": "fetch_test",
+        "source_id": "hn_algolia",
+        "url": "https://news.ycombinator.com/item?id=1",
+        "span_id": "ev_cand_1",
+        "quote": GENUINE,
+        "char_start": 0,
+        "char_end": len(GENUINE),
+        "match_mode": "exact",
+        "model_quote": GENUINE,
+        "occurrence": 1,
+        "pain_validity": "genuine",
+        "reason": "time_cost",
+        "pain_statement": "the team spends a Saturday pasting invoice totals by hand",
+        "severity": 3,
+        "frequency": "monthly",
+        "confidence": 0.9,
+        "rationale": "the text says the totals are pasted by hand every month",
+        "domain": "finance",
+        "actor": "the bookkeeping team",
+        "action": "paste invoice totals by hand",
+        "object": "invoice totals",
+        "consequence": "a Saturday of manual work every month",
+        "normalized_key": "finance:paste-invoice-totals-by-hand:invoice-totals",
+        "normalization_version": "norm-v1",
+        "accepted": True,
+        "provider": "fake",
+        "model": "fake-model",
+        "extractor_version": "phase1-0.3",
+        "prompt_version": "extract-v3",
+        "raw_path": "data/raw/hn_algolia/abc123.json",
+        "raw_sha256": "b" * 64,
+        "text_sha256": "c" * 64,
+        "created_at": "2026-10-20T12:00:00+00:00",
+    }
+    values.update(overrides)
+    return ExtractedCandidate(**values)
+
+
+def test_an_accepted_candidate_with_its_own_key_is_stored():
+    stored = stored_candidate()
+
+    assert stored.accepted is True
+    assert stored.normalized_key == "finance:paste-invoice-totals-by-hand:invoice-totals"
+
+
+def test_an_accepted_candidate_with_a_tampered_key_is_refused():
+    with pytest.raises(ValueError) as excinfo:
+        stored_candidate(normalized_key="finance:paste-invoice-totals-by-hand:other")
+
+    assert "paste-invoice-totals-by-hand" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "field", ["domain", "actor", "action", "object", "consequence"]
+)
+def test_an_accepted_candidate_missing_a_normalized_field_is_refused(field):
+    """An accepted record with a hole in its field set has no key to check."""
+    with pytest.raises(ValidationError) as excinfo:
+        stored_candidate(**{field: None})
+
+    assert "needs every normalized field" in str(excinfo.value)
+    assert field in str(excinfo.value)
+
+
+def test_an_accepted_candidate_whose_fields_cannot_be_re_keyed_is_refused():
+    with pytest.raises(ValueError) as excinfo:
+        stored_candidate(action="---")
+
+    assert "re-keyed" in str(excinfo.value)
+
+
+def test_an_accepted_candidate_with_an_unknown_domain_is_refused():
+    with pytest.raises(ValueError) as excinfo:
+        stored_candidate(domain="widgets")
+
+    assert "re-keyed" in str(excinfo.value)
+
+
+def test_the_stored_normalization_version_is_stripped():
+    """The record carries the version the key was built with."""
+    config = make_config().model_copy(update={"normalization_version": " norm-v1 "})
+
+    batch = extract_documents(
+        [make_document()], FakeGenerator(valid_payload()), config
+    )
+
+    stored = batch.candidates[0]
+    assert stored.normalization_version == "norm-v1"
+    assert stored.normalized_key == "finance:paste-invoice-totals-by-hand:invoice-totals"
 
 
 # --- invalid model output -------------------------------------------------
@@ -884,6 +1244,40 @@ def test_prompt_carries_the_rubric_and_the_untrusted_fence():
         "severity",
     ):
         assert term in prompt
+
+
+def test_prompt_carries_the_normalized_field_vocabulary():
+    document = make_document()
+    chunk = DocumentChunk(
+        doc_id=document.doc_id,
+        chunk_index=0,
+        char_start=0,
+        char_end=len(document.text),
+        text=document.text,
+    )
+
+    prompt = build_prompt(chunk, max_candidates=3)
+
+    for term in ("domain", "actor", "action", "object", "consequence", "normalized"):
+        assert term in prompt
+    for domain in (
+        "software",
+        "data",
+        "operations",
+        "finance",
+        "sales",
+        "marketing",
+        "support",
+        "hr",
+        "legal",
+        "security",
+        "research",
+        "education",
+        "healthcare",
+        "ecommerce",
+        "other",
+    ):
+        assert domain in prompt
 
 
 def test_prompt_refuses_to_exceed_the_limit():

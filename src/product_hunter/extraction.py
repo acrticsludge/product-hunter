@@ -25,6 +25,12 @@ from product_hunter.llm.base import (
     ProviderError,
     TextGenerator,
 )
+from product_hunter.normalization import (
+    Domain,
+    NormalizationError,
+    NormalizedProblem,
+    normalize_fields,
+)
 from product_hunter.quote import MatchMode, QuoteError, SpanMatch, locate_quote
 
 # The schema ceiling on the candidate list. The configured limit is
@@ -129,6 +135,7 @@ class ExtractionParseError(ExtractionError):
 ValidityField = Annotated[PainValidity, Field(strict=False)]
 ReasonField = Annotated[PainReason, Field(strict=False)]
 FrequencyField = Annotated[Frequency, Field(strict=False)]
+DomainField = Annotated[Domain, Field(strict=False)]
 
 
 class Candidate(BaseModel):
@@ -144,6 +151,11 @@ class Candidate(BaseModel):
     frequency: FrequencyField
     confidence: float = Field(ge=0, le=1)
     rationale: str = Field(min_length=1, max_length=500)
+    domain: DomainField | None = None
+    actor: str | None = Field(default=None, max_length=120)
+    action: str | None = Field(default=None, max_length=120)
+    object: str | None = Field(default=None, max_length=120)
+    consequence: str | None = Field(default=None, max_length=200)
 
     @model_validator(mode="after")
     def _check_classification(self) -> Candidate:
@@ -168,6 +180,24 @@ class Candidate(BaseModel):
                 raise ValueError(
                     f"a not_pain candidate cannot have reason {self.reason.value!r}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _check_normalized_fields(self) -> Candidate:
+        """A genuine pain point must carry the fields the key is built from."""
+        if self.pain_validity is not PainValidity.genuine:
+            return self
+        for name, value in (
+            ("domain", self.domain),
+            ("actor", self.actor),
+            ("action", self.action),
+            ("object", self.object),
+            ("consequence", self.consequence),
+        ):
+            if value is None:
+                raise ValueError(f"a genuine pain point needs {name}")
+            if isinstance(value, str) and not value.strip():
+                raise ValueError(f"a genuine pain point needs a non-empty {name}")
         return self
 
 
@@ -202,6 +232,13 @@ class ExtractedCandidate(BaseModel):
     frequency: FrequencyField
     confidence: float
     rationale: str
+    domain: str | None = None
+    actor: str | None = None
+    action: str | None = None
+    object: str | None = None
+    consequence: str | None = None
+    normalized_key: str | None = None
+    normalization_version: str
     accepted: bool
     provider: str
     model: str
@@ -211,6 +248,54 @@ class ExtractedCandidate(BaseModel):
     raw_sha256: str
     text_sha256: str
     created_at: str
+
+    @model_validator(mode="after")
+    def _check_accepted_fields(self) -> ExtractedCandidate:
+        """An accepted pain point is only accepted with its own key.
+
+        The key is re-derived from the record's own fields, so a stored key
+        that does not match them is a tampered record and is refused. An
+        accepted record that is missing a field has no key to re-derive, so
+        it is refused as well.
+        """
+        if not self.accepted:
+            return self
+        if not self.pain_id:
+            raise ValueError("an accepted candidate needs a pain_id")
+        if not self.normalized_key:
+            raise ValueError("an accepted candidate needs a normalized_key")
+        fields = {
+            "domain": self.domain,
+            "actor": self.actor,
+            "action": self.action,
+            "object": self.object,
+            "consequence": self.consequence,
+        }
+        missing = [name for name, value in fields.items() if value is None]
+        if missing:
+            raise ValueError(
+                "an accepted candidate needs every normalized field, but "
+                f"{', '.join(missing)} is missing"
+            )
+        try:
+            derived = normalize_fields(
+                domain=Domain(self.domain),
+                actor=self.actor,
+                action=self.action,
+                object_=self.object,
+                consequence=self.consequence,
+                normalization_version=self.normalization_version,
+            )
+        except (NormalizationError, ValueError) as exc:
+            raise ValueError(
+                f"an accepted candidate cannot be re-keyed: {exc}"
+            ) from exc
+        if derived.normalized_key != self.normalized_key:
+            raise ValueError(
+                f"an accepted candidate carries the key {self.normalized_key!r}, "
+                f"but its own fields make {derived.normalized_key!r}"
+            )
+        return self
 
 
 class ExtractionReject(BaseModel):
@@ -290,6 +375,15 @@ reason: recurring_manual_work, time_cost, money_cost, error_or_delay, compliance
 - weak needs severity 1 or 2 and one of: recurring_manual_work, time_cost, money_cost, error_or_delay, compliance_or_risk, incidental.
 - not_pain needs severity 0 and one of: negative_opinion, question, feature_request, informational, incidental, other.
 
+NORMALIZED FIELDS
+domain: one of software, data, operations, finance, sales, marketing, support, hr, legal, security, research, education, healthcare, ecommerce, other.
+actor: the person or team that does the work.
+action: a short verb phrase for what they do.
+object: a short noun phrase for what they work on.
+consequence: the concrete cost they pay.
+- a genuine pain point needs all five. a weak pain point may leave them out. a not_pain candidate sets them to null.
+- Use short phrases, not sentences. Use the same wording for the same problem: the code slugs these into a versioned normalized key.
+
 SEVERITY ANCHORS
 0 none. 1 minor or incidental. 2 occasional real cost. 3 recurring manual work with a meaningful time cost. 4 several hours a week, an expensive workaround, or a repeated operational failure. 5 daily hours, revenue loss, compliance or legal risk, or safety risk.
 
@@ -304,7 +398,7 @@ pain_statement is a short neutral statement of the problem, in your own words. r
 Return at most {max_candidates} candidates. If the text has no pain point, return {{"candidates": []}}.
 
 Return one json object shaped like this:
-{{"candidates": [{{"quote": "the exact sentence from the source", "pain_validity": "genuine", "reason": "time_cost", "pain_statement": "the team spends a Saturday pasting invoice totals by hand", "severity": 3, "frequency": "monthly", "confidence": 0.8, "rationale": "the text says the totals are pasted by hand and it takes a Saturday"}}]}}
+{{"candidates": [{{"quote": "the exact sentence from the source", "pain_validity": "genuine", "reason": "time_cost", "pain_statement": "the team spends a Saturday pasting invoice totals by hand", "severity": 3, "frequency": "monthly", "confidence": 0.8, "rationale": "the text says the totals are pasted by hand and it takes a Saturday", "domain": "finance", "actor": "the bookkeeping team", "action": "paste invoice totals by hand", "object": "invoice totals", "consequence": "a Saturday of manual work every month"}}]}}
 """
 
 
@@ -573,15 +667,47 @@ def extract_documents(
                 )
                 continue
 
+            normalized: NormalizedProblem | None = None
+            if candidate.pain_validity is PainValidity.genuine:
+                try:
+                    normalized = normalize_fields(
+                        domain=candidate.domain,
+                        actor=candidate.actor,
+                        action=candidate.action,
+                        object_=candidate.object,
+                        consequence=candidate.consequence,
+                        normalization_version=config.normalization_version,
+                    )
+                except NormalizationError as exc:
+                    # A genuine pain point that cannot be keyed is not stored.
+                    rejected_count += 1
+                    rejects.append(
+                        _reject(
+                            config,
+                            document=document,
+                            reason_code=exc.reason_code,
+                            detail=exc.detail,
+                            model_quote=candidate.quote,
+                            provider=response.provider,
+                            model=response.model,
+                            extractor_version=response.extractor_version,
+                            sequence=len(rejects),
+                            now=now,
+                        )
+                    )
+                    continue
+
             candidates.append(
                 _candidate(
                     document=document,
                     candidate=candidate,
                     span=span,
+                    normalized=normalized,
                     provider=response.provider,
                     model=response.model,
                     extractor_version=response.extractor_version,
                     prompt_version=config.prompt_version,
+                    normalization_version=config.normalization_version,
                     now=now,
                 )
             )
@@ -621,10 +747,12 @@ def _candidate(
     document: Document,
     candidate: Candidate,
     span: SpanMatch,
+    normalized: NormalizedProblem | None,
     provider: str,
     model: str,
     extractor_version: str,
     prompt_version: str,
+    normalization_version: str,
     now,
 ) -> ExtractedCandidate:
     """Build the stored record for one located candidate."""
@@ -634,6 +762,22 @@ def _candidate(
     candidate_id = _hash_id("cand_", f"{position}|{extractor_version}")
     accepted = candidate.pain_validity is PainValidity.genuine
     pain_id = _hash_id("pp_", f"{span_id}|{extractor_version}") if accepted else None
+    if normalized is not None:
+        domain = normalized.domain.value
+        actor = normalized.actor
+        action = normalized.action
+        object_ = normalized.object
+        consequence = normalized.consequence
+        normalized_key = normalized.normalized_key
+    else:
+        # A weak or not_pain candidate keeps what the model said, but it is
+        # not a pain point yet, so it has no key.
+        domain = candidate.domain.value if candidate.domain is not None else None
+        actor = candidate.actor
+        action = candidate.action
+        object_ = candidate.object
+        consequence = candidate.consequence
+        normalized_key = None
     return ExtractedCandidate(
         candidate_id=candidate_id,
         pain_id=pain_id,
@@ -655,6 +799,14 @@ def _candidate(
         frequency=candidate.frequency,
         confidence=candidate.confidence,
         rationale=candidate.rationale,
+        domain=domain,
+        actor=actor,
+        action=action,
+        object=object_,
+        consequence=consequence,
+        normalized_key=normalized_key,
+        # The version is stored stripped, the way the key was built with it.
+        normalization_version=normalization_version.strip(),
         accepted=accepted,
         provider=provider,
         model=model,

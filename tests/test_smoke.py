@@ -29,8 +29,9 @@ def test_config_loads_defaults():
     assert config.provider == "opencode_generate"
     assert config.provider_id == "opencode-go"
     assert config.model_id == "deepseek-v4.1-flash"
-    assert config.extractor_version == "phase1-0.2"
-    assert config.prompt_version == "extract-v2"
+    assert config.extractor_version == "phase1-0.3"
+    assert config.prompt_version == "extract-v3"
+    assert config.normalization_version == "norm-v1"
     assert config.limits.max_documents == 150
     assert config.limits.max_calls == 300
     assert config.limits.max_input_chars == 12000
@@ -51,8 +52,9 @@ def test_config_rejects_non_positive_limit(tmp_path):
                 "provider: opencode_generate",
                 "provider_id: opencode-go",
                 "model_id: deepseek-v4.1-flash",
-                "extractor_version: phase1-0.2",
-                "prompt_version: extract-v2",
+                "extractor_version: phase1-0.3",
+                "prompt_version: extract-v3",
+                "normalization_version: norm-v1",
                 "limits:",
                 "  max_documents: 150",
                 "  max_calls: 300",
@@ -81,8 +83,9 @@ def test_config_rejects_quote_bounds_that_cross(tmp_path):
                 "provider: opencode_generate",
                 "provider_id: opencode-go",
                 "model_id: deepseek-v4.1-flash",
-                "extractor_version: phase1-0.2",
-                "prompt_version: extract-v2",
+                "extractor_version: phase1-0.3",
+                "prompt_version: extract-v3",
+                "normalization_version: norm-v1",
                 "limits:",
                 "  max_documents: 150",
                 "  max_calls: 300",
@@ -111,8 +114,9 @@ def test_config_rejects_overlap_that_is_not_smaller_than_the_chunk(tmp_path):
                 "provider: opencode_generate",
                 "provider_id: opencode-go",
                 "model_id: deepseek-v4.1-flash",
-                "extractor_version: phase1-0.2",
-                "prompt_version: extract-v2",
+                "extractor_version: phase1-0.3",
+                "prompt_version: extract-v3",
+                "normalization_version: norm-v1",
                 "limits:",
                 "  max_documents: 150",
                 "  max_calls: 300",
@@ -141,8 +145,9 @@ def test_config_rejects_out_of_range_candidate_cap(tmp_path):
                 "provider: opencode_generate",
                 "provider_id: opencode-go",
                 "model_id: deepseek-v4.1-flash",
-                "extractor_version: phase1-0.2",
-                "prompt_version: extract-v2",
+                "extractor_version: phase1-0.3",
+                "prompt_version: extract-v3",
+                "normalization_version: norm-v1",
                 "limits:",
                 "  max_documents: 150",
                 "  max_calls: 300",

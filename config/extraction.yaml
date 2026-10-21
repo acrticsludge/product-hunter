@@ -2,8 +2,9 @@ version: 1
 provider: opencode_generate
 provider_id: opencode-go
 model_id: deepseek-v4.1-flash
-extractor_version: phase1-0.2
-prompt_version: extract-v2
+extractor_version: phase1-0.3
+prompt_version: extract-v3
+normalization_version: norm-v1
 limits:
   max_documents: 150
   max_calls: 300

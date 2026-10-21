@@ -2,7 +2,7 @@
 
 The model proposes candidates and a human labels them. This module turns that
 sheet into numbers: quote fidelity, precision and recall, severity agreement,
-and the reasons behind false positives.
+normalization agreement, and the reasons behind false positives.
 
 Recall here is relative to the candidates the model returned. A pain point the
 model never proposed cannot be counted as a miss, so the report says so.
@@ -44,10 +44,26 @@ COLUMNS = (
     "model_severity",
     "model_frequency",
     "model_confidence",
+    "model_domain",
+    "model_normalized_key",
     "human_valid_pain",
     "human_severity",
     "human_frequency",
+    "human_normalization_ok",
+    "human_normalized_key",
     "notes",
+)
+
+# The columns a sheet may leave out. A sheet filled before the normalization
+# columns existed still reads: the missing cells count as blank.
+OPTIONAL_COLUMNS = (
+    "model_domain",
+    "model_normalized_key",
+    "human_normalization_ok",
+    "human_normalized_key",
+)
+REQUIRED_COLUMNS = tuple(
+    name for name in COLUMNS if name not in OPTIONAL_COLUMNS
 )
 
 # What a human may write in the verdict column.
@@ -60,6 +76,8 @@ REASONS = tuple(value.value for value in PainReason)
 VALIDITIES = tuple(value.value for value in PainValidity)
 # The quote match modes a row may carry.
 MATCH_MODES = ("exact", "canonical")
+# The answers a human may give to "did the model normalize this correctly?".
+NORMALIZATION_LABELS = ("yes", "no")
 
 RECALL_LIMITATION = (
     "Recall is relative to the candidates the model returned, not to the whole "
@@ -86,9 +104,13 @@ class ReviewRow(BaseModel):
     model_severity: int = Field(ge=0, le=5)
     model_frequency: FrequencyField
     model_confidence: float = Field(ge=0, le=1)
+    model_domain: str | None = None
+    model_normalized_key: str | None = None
     human_valid_pain: str | None = None
     human_severity: int | None = Field(default=None, ge=0, le=5)
     human_frequency: str | None = None
+    human_normalization_ok: str | None = None
+    human_normalized_key: str | None = None
     notes: str = ""
 
 
@@ -112,6 +134,12 @@ class EvalReport(BaseModel):
     severity_n: int
     severity_exact: int
     severity_within_one: int
+    normalization_n: int = 0
+    normalization_ok: int = 0
+    normalization_rate: float | None = None
+    normalized_key_n: int = 0
+    normalized_key_exact: int = 0
+    normalized_key_agreement: float | None = None
     false_positive_reasons: dict[str, int] = Field(default_factory=dict)
     per_source: dict[str, dict[str, int | float | None]] = Field(default_factory=dict)
     notes: str = ""
@@ -148,7 +176,7 @@ def read_review_sheet(path: Path) -> list[ReviewRow]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         header = reader.fieldnames or []
-        missing = [name for name in COLUMNS if name not in header]
+        missing = [name for name in REQUIRED_COLUMNS if name not in header]
         if missing:
             raise ValueError(
                 f"{path}: the sheet is missing the column(s) {', '.join(missing)}"
@@ -210,6 +238,8 @@ def _row(candidate: ExtractedCandidate) -> ReviewRow:
         model_severity=candidate.severity,
         model_frequency=candidate.frequency,
         model_confidence=candidate.confidence,
+        model_domain=candidate.domain,
+        model_normalized_key=candidate.normalized_key,
     )
 
 
@@ -230,9 +260,13 @@ def _values(row: ReviewRow) -> dict[str, object]:
         "model_severity": row.model_severity,
         "model_frequency": row.model_frequency.value,
         "model_confidence": row.model_confidence,
+        "model_domain": row.model_domain or "",
+        "model_normalized_key": row.model_normalized_key or "",
         "human_valid_pain": row.human_valid_pain or "",
         "human_severity": "" if row.human_severity is None else row.human_severity,
         "human_frequency": row.human_frequency or "",
+        "human_normalization_ok": row.human_normalization_ok or "",
+        "human_normalized_key": row.human_normalized_key or "",
         "notes": row.notes,
     }
 
@@ -307,6 +341,19 @@ def _row_from_raw(raw: dict[str, str | None], number: int, path: Path) -> Review
             f"expected one of {', '.join(FREQUENCIES)}"
         )
 
+    # The normalization columns are optional: a sheet filled before they
+    # existed still reads, and the missing cells count as blank.
+    model_domain = (raw.get("model_domain") or "").strip()
+    model_normalized_key = (raw.get("model_normalized_key") or "").strip()
+    human_normalization_ok = (raw.get("human_normalization_ok") or "").strip().lower()
+    if human_normalization_ok and human_normalization_ok not in NORMALIZATION_LABELS:
+        raise ValueError(
+            f"{path}: row {number} has "
+            f"human_normalization_ok={human_normalization_ok!r}, "
+            f"expected one of {', '.join(NORMALIZATION_LABELS)}"
+        )
+    human_normalized_key = (raw.get("human_normalized_key") or "").strip()
+
     values = {
         "candidate_id": required("candidate_id"),
         "pain_id": cell("pain_id").strip() or None,
@@ -322,9 +369,13 @@ def _row_from_raw(raw: dict[str, str | None], number: int, path: Path) -> Review
         "model_severity": integer("model_severity"),
         "model_frequency": choice("model_frequency", FREQUENCIES),
         "model_confidence": decimal("model_confidence"),
+        "model_domain": model_domain or None,
+        "model_normalized_key": model_normalized_key or None,
         "human_valid_pain": human_validity or None,
         "human_severity": human_severity,
         "human_frequency": human_frequency or None,
+        "human_normalization_ok": human_normalization_ok or None,
+        "human_normalized_key": human_normalized_key or None,
         "notes": cell("notes"),
     }
     try:
@@ -345,6 +396,16 @@ def _boolean(text: str, number: int, path: Path) -> bool:
     raise ValueError(
         f"{path}: row {number} has verbatim_ok={text!r}, expected true or false"
     )
+
+
+def _filled(value: str | None) -> bool:
+    """A label counts as filled in when it carries something but whitespace."""
+    return bool(value and value.strip())
+
+
+def _answer(value: str | None) -> str:
+    """A human answer, folded to its comparable form."""
+    return (value or "").strip().lower()
 
 
 # --- the report ------------------------------------------------------------
@@ -409,6 +470,42 @@ def evaluate(rows: list[ReviewRow], *, quote_failures: int = 0) -> EvalReport:
         if row.human_valid_pain in ("no", "weak")
     )
 
+    # A normalization label only counts on a pain point the model called
+    # genuine and the human confirmed: on anything else there was no
+    # normalized key to judge.
+    normalization_rows = [
+        row
+        for row in labeled_rows
+        if row.model_validity is PainValidity.genuine
+        and row.human_valid_pain == "yes"
+        and _filled(row.human_normalization_ok)
+    ]
+    normalization_n = len(normalization_rows)
+    normalization_ok = sum(
+        1
+        for row in normalization_rows
+        if _answer(row.human_normalization_ok) == "yes"
+    )
+    normalization_rate = normalization_ok / normalization_n if normalization_n else None
+
+    # A key is compared only where both sides carry one. A row the model
+    # called weak or not_pain has no model key, so there is nothing for the
+    # human key to agree or disagree with.
+    key_rows = [
+        row
+        for row in rows
+        if _filled(row.model_normalized_key) and _filled(row.human_normalized_key)
+    ]
+    normalized_key_n = len(key_rows)
+    normalized_key_exact = sum(
+        1
+        for row in key_rows
+        if (row.model_normalized_key or "").strip() == row.human_normalized_key.strip()
+    )
+    normalized_key_agreement = (
+        normalized_key_exact / normalized_key_n if normalized_key_n else None
+    )
+
     return EvalReport(
         total=total,
         labeled=labeled,
@@ -427,6 +524,12 @@ def evaluate(rows: list[ReviewRow], *, quote_failures: int = 0) -> EvalReport:
         severity_n=len(severity_rows),
         severity_exact=severity_exact,
         severity_within_one=severity_within_one,
+        normalization_n=normalization_n,
+        normalization_ok=normalization_ok,
+        normalization_rate=normalization_rate,
+        normalized_key_n=normalized_key_n,
+        normalized_key_exact=normalized_key_exact,
+        normalized_key_agreement=normalized_key_agreement,
         false_positive_reasons=dict(reasons),
         per_source=_per_source(rows),
         notes=(
@@ -509,6 +612,22 @@ def render_markdown(report: EvalReport) -> str:
     lines.append(f"| Compared | {report.severity_n} |")
     lines.append(f"| Exact match | {report.severity_exact} |")
     lines.append(f"| Within one point | {report.severity_within_one} |")
+    lines.append("")
+    lines.append("## Normalization")
+    lines.append("")
+    if report.normalization_n == 0:
+        lines.append(
+            "The rows are not labelled for normalization, so no rate is shown."
+        )
+        lines.append("")
+    lines.append("| Metric | Value |")
+    lines.append("| --- | --- |")
+    lines.append(f"| Rows compared | {report.normalization_n} |")
+    lines.append(f"| Normalized correctly | {report.normalization_ok} |")
+    lines.append(f"| Normalization rate | {_percent(report.normalization_rate)} |")
+    lines.append(f"| Keys compared | {report.normalized_key_n} |")
+    lines.append(f"| Keys identical | {report.normalized_key_exact} |")
+    lines.append(f"| Key agreement | {_percent(report.normalized_key_agreement)} |")
     lines.append("")
     lines.append("## False-positive reasons")
     lines.append("")

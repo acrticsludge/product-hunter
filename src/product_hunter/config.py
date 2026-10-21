@@ -17,6 +17,7 @@ _ENV_OVERRIDES = {
     "model_id": "PH_MODEL_ID",
     "extractor_version": "PH_EXTRACTOR_VERSION",
     "prompt_version": "PH_PROMPT_VERSION",
+    "normalization_version": "PH_NORMALIZATION_VERSION",
     "max_input_chars": "PH_MAX_INPUT_CHARS",
     "timeout_seconds": "PH_TIMEOUT_SECONDS",
 }
@@ -56,6 +57,7 @@ class ExtractionConfig(BaseModel):
     model_id: str = Field(min_length=1)
     extractor_version: str = Field(min_length=1)
     prompt_version: str = Field(min_length=1)
+    normalization_version: str = Field(min_length=1)
     limits: Limits
 
 
