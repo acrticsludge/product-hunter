@@ -1,10 +1,12 @@
 # Product Hunter architecture
 
-**Baseline.** This document describes the working tree, not the last commit. At
-the fourth stage-8 pass of phase 4, on 2026-10-21, HEAD was `80a98a4`. The
-model router, the research contract and gate engine, the scheduler, the worker
-runtime, and the evaluation benchmark package are in the tree and were still
-uncommitted when this was written. They are `IMPLEMENTED` like any other code.
+**Baseline.** This document describes the working tree, not the last commit. The
+fourth stage-8 pass of phase 4 was written on 2026-10-21, when HEAD was
+`80a98a4` and the model router, the research contract and gate engine, the
+scheduler, the worker runtime, and the evaluation benchmark package were in the
+tree and still uncommitted. HEAD is now `3d7bc68`, and the discovery package in
+`src/product_hunter/discovery/` has been added on top of it. That package is in
+the tree and still uncommitted, and it is `IMPLEMENTED` like any other code.
 The full specification is
 [Product-Hunter-Full-Spec.md](specs/Product-Hunter-Full-Spec.md).
 
@@ -85,13 +87,18 @@ nineteen from the base migration and four from the model routing migration.
 | Research registry | `research_runs`, `research_artifacts`, `research_events`, `research_checkpoints` |
 | Execution | `jobs`, `stage_attempts`, `projection_tasks` |
 | Model routing | `model_catalogs`, `model_inventory`, `model_role_bindings`, `model_executions` |
-| Reserved, no writer | `propagation_edges`, `spend_ledger`, `human_decisions` |
+| Spend | `spend_ledger` |
+| Reserved, no writer | `propagation_edges`, `human_decisions` |
 
-Three tables have no writer anywhere in `src/`: `propagation_edges`,
-`spend_ledger`, and `human_decisions`. They exist so a later phase can use them,
-and today they stay empty. The independent-author and propagation analysis from
-spec §12, the budget writes from spec §22, and the approval records from spec
-§37 are the work that would fill them.
+Two tables have no writer anywhere in `src/`: `propagation_edges` and
+`human_decisions`. They exist so a later phase can use them, and today they
+stay empty. The independent-author and propagation analysis from spec §12 and
+the approval records from spec §37 are the work that would fill them.
+
+`spend_ledger` has a writer now. `discovery/store.py` writes one row per
+discovery record, with the query count in `units`, the unit type
+`search_queries`, and the cost of the search in `cost_micros`. Those rows hold
+the spend of a discovery run, and no other stage writes the table.
 
 ## Runtime artifacts
 
@@ -197,9 +204,12 @@ cannot be parsed, and `list_checkpoints()` takes a `skip_invalid` flag.
 
 A checkpoint stores an arbitrary state dictionary. It does not interpret pending
 items, source cursors, budget state, or a lease epoch. Spec §41.5 lists those
-fields as design intent; the code implements the container, not the contents.
-Nothing in the codebase calls `load_checkpoint()` to resume work, so the resume
-orchestration does not exist.
+fields as design intent, and the code in `db/checkpoints.py` still implements
+the container and not the contents. The discovery package writes part of that
+intent into a state of its own: its pending queries, its family cursors and
+its budget counters, and it reads them back through the same container.
+Nothing resumes a research run from a checkpoint, so the resume orchestration
+does not exist.
 
 ### The transactional outbox
 
@@ -272,6 +282,45 @@ call it is anything: nothing outside the package imports it, no CLI command
 calls it, and there is no worker handler, so the gate is complete and reachable
 as a library and gates nothing yet. What the code enforces about research
 quality is in [RESEARCH_CONTRACT.md](RESEARCH_CONTRACT.md).
+
+**The discovery engine.** `IMPLEMENTED` (`src/product_hunter/discovery/`). The
+package decides what to search. It is separate from collection, which decides
+how a source is fetched, and it never calls a search endpoint: there is no HTTP
+client, no CLI command and no worker handler. `families.py` holds the eight
+query families, their templates and the marker table, and the strategy is
+worker-side code, so those are module constants rather than values read at
+runtime: the wording of a query comes from a template and never from a
+paraphrase, and the same seed produces the same query text in every run.
+`queries.py` holds the `Query` type, the identifiers, the normalization, the
+duplicate check and the two generation paths, `records.py` holds the
+`DiscoveryRecord` and its seven-value status vocabulary, `budget.py` holds the
+`DiscoveryBudget` with its limits and its counters, and `frontier.py` holds
+the `QueryFrontier`, the `SaturationPolicy` and the `SaturationVerdict`, where
+the saturation thresholds are the policy's own defaults rather than values
+read at runtime. A query's family is assigned by the template that generated
+it, or by the marker table for a query of unknown origin, and nothing that runs
+at request time gets to pick one. The two derived families, `competitor` and
+`counter_evidence`, need a normalized problem, so they cannot be reached from
+a raw objective. The record's statuses are `success`, `empty`, `failure`,
+`timeout`, `partial`, `duplicate` and `over_budget`, and a search that ran and
+found nothing is `empty` while a search whose tool broke is `failure`. The
+frontier stops for one of five reasons, `family_coverage`, `source_coverage`,
+`budget_exhausted`, `diminishing_novelty` and `repeated_results`, and a broken
+search tool is never saturation. The budget consults the research contract's
+tracker when one is supplied, so the contract's limits still bind. `store.py`
+persists a query execution into `research_events`, the cost of the search into
+`spend_ledger` and the frontier state into `research_checkpoints`, so the
+package adds no migration and changes no table. The identifiers are derived in
+the house pattern: `q_` for a query, `dq_` for a record, `evt_` for the event,
+`spn_` for the spend row, each followed by sixteen hex characters of a
+SHA-256. A discovery record converts into a
+`research.evidence.ToolCallProvenance`, so the research gate can read a
+discovery run without knowing this package exists. What does not call it is
+anything: nothing outside the package imports it, so the engine is complete and
+reachable as a library and gates nothing yet. The limit worth naming is the
+source rule. A source the registry admits is the only source a run may search,
+and a source the discovery finds is a proposal until a human reviews it. The
+reasoning is in [wave-2-discovery.md](specs/wave-2-discovery.md).
 
 **The scheduler.** `IMPLEMENTED` (`src/product_hunter/db/scheduler.py`).
 `Scheduler.tick()` enqueues through `enqueue_job()` with an idempotency key of
@@ -376,7 +425,7 @@ named there and have no code in this branch.
 | Research run lifecycle and transitions | §41.2 | `PLANNED`, full spec only, no wave spec |
 | `continue` and cross-chat continuity | §41.6, §41.8 | `PLANNED`, full spec only, no wave spec |
 | Tool-call and gate-result persistence in SQLite | §6A, §34 | `PLANNED`; `research/persistence.py` holds protocols only and names `0003_research_gate.sql` |
-| `spend_ledger` writes and global spend caps | §22 | `PLANNED`; the table exists and stays empty |
+| Global spend caps | §22 | `PLANNED`; every budget in the code is bounded inside one run, and no cap spans a day or a rolling window |
 | Opportunity states and scoring | §20, §23 | `PLANNED`, full spec only, no wave spec |
 | Qdrant, DuckDB, and Obsidian projections | §14, §16, §27 | `PLANNED`, full spec only, no wave spec |
 | Independent-author and propagation analysis | §12 | `PLANNED`; the `propagation_edges` table exists and stays empty |
