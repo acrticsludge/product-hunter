@@ -20,12 +20,28 @@ from pydantic import BaseModel
 
 from product_hunter.db.connection import connect
 from product_hunter.db.migrations import migrate
+from product_hunter.db.outbox import enqueue_projection
 from product_hunter.documents import Document
 from product_hunter.extraction import ExtractedCandidate, ExtractionCall, ExtractionReject
 from product_hunter.fetch import FetchRecord, utcnow
 from product_hunter.sources import SourceConfig, SourceRegistry
 
 T = TypeVar("T", bound=BaseModel)
+
+# The manifest count that describes each run artifact, and the file that count
+# is read from. `accepted` is a count derived from `candidates.jsonl`, so two
+# manifest keys are checked against one file.
+_MANIFEST_ARTIFACTS = {
+    "documents": "documents.jsonl",
+    "candidates": "candidates.jsonl",
+    "calls": "calls.jsonl",
+    "accepted": "candidates.jsonl",
+    "rejected": "rejects.jsonl",
+}
+
+# shortcut: `pain_points.jsonl` is not completeness-checked at import time
+# because the import never reads it; a divergent sidecar is caught later by
+# the artifact hash comparison on replay.
 
 
 class StoreError(Exception):
@@ -493,6 +509,16 @@ class Store:
             fetch.fetch_id: fetch
             for fetch in _read_jsonl(Path(fetch_log), FetchRecord)
         }
+        _check_manifest_counts(
+            manifest,
+            {
+                "documents": len(documents),
+                "candidates": len(candidates),
+                "calls": len(calls),
+                "accepted": sum(1 for candidate in candidates if candidate.accepted),
+                "rejected": len(rejects),
+            },
+        )
 
         counts = {
             "run_id": run_id,
@@ -733,34 +759,14 @@ class Store:
         ).fetchone()
         if existing is not None:
             return False
-        now = utcnow().isoformat()
-        task_id = _hash_id("proj_", key)
-        self.conn.execute(
-            """
-            INSERT INTO projection_tasks (
-                task_id, target, entity_type, entity_id, entity_version,
-                idempotency_key, status, attempts, max_attempts, last_error,
-                created_at, available_at, completed_at, lease_expires_at,
-                payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                task_id,
-                "obsidian",
-                "run",
-                run_id,
-                run_id,
-                key,
-                "pending",
-                0,
-                5,
-                None,
-                now,
-                now,
-                None,
-                None,
-                json.dumps({"run_id": run_id}, sort_keys=True),
-            ),
+        enqueue_projection(
+            self.conn,
+            target="obsidian",
+            entity_type="run",
+            entity_id=run_id,
+            entity_version=run_id,
+            idempotency_key=key,
+            payload={"run_id": run_id},
         )
         return True
 
@@ -798,6 +804,29 @@ def _read_jsonl(path: Path, model: type[T]) -> list[T]:
         except Exception as exc:
             raise StoreError(f"{path}: line {number}: {exc}") from exc
     return out
+
+
+def _check_manifest_counts(
+    manifest: dict[str, object], observed: dict[str, int]
+) -> None:
+    """Refuse a run whose artifacts hold a different number of records than the manifest says.
+
+    A truncated file parses cleanly and hashes cleanly, so the declared count
+    is the only thing that can tell a complete run from a partial one. A
+    manifest that declares no count, or a count that is not an integer, is
+    skipped: the check only refuses a disagreement it can prove.
+    """
+    for key, name in _MANIFEST_ARTIFACTS.items():
+        declared = manifest.get(key)
+        if not isinstance(declared, int) or isinstance(declared, bool):
+            continue
+        count = observed[key]
+        if count == declared:
+            continue
+        raise StoreError(
+            f"the manifest declares {key}={declared} but the run has {count} {key}; "
+            f"checked against {name!r}"
+        )
 
 
 def _community_for(document: Document) -> tuple[str, str | None]:

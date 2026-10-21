@@ -141,6 +141,73 @@ def load_checkpoint(
     step: str | None = None,
     version: int | None = None,
 ) -> Checkpoint | None:
+    rows = _matching_rows(
+        conn, run_id=run_id, stage=stage, step=step, version=version, limit=1
+    )
+    return _row_to_checkpoint(rows[0]) if rows else None
+
+
+# shortcut: `load_valid_checkpoint` and `skip_invalid` have no production
+# caller yet, so a corrupt checkpoint still stops `registry.run_log`; wire
+# them into the resume path when that path exists.
+def load_valid_checkpoint(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    stage: str,
+    step: str | None = None,
+    version: int | None = None,
+) -> Checkpoint | None:
+    """Return the newest checkpoint whose state parses.
+
+    A row can be edited outside the worker. Recovery must not stop at a row
+    it cannot read: the previous version is still good.
+    """
+    rows = _matching_rows(
+        conn, run_id=run_id, stage=stage, step=step, version=version
+    )
+    for row in rows:
+        try:
+            return _row_to_checkpoint(row)
+        except CheckpointError:
+            continue
+    return None
+
+
+def list_checkpoints(
+    conn: sqlite3.Connection, *, run_id: str, skip_invalid: bool = False
+) -> list[Checkpoint]:
+    """List the checkpoints of one run, oldest version first.
+
+    With `skip_invalid` set, a row whose state does not parse is left out of
+    the returned list, so the list can be shorter than the rows in the table.
+    """
+    rows = conn.execute(
+        "SELECT * FROM research_checkpoints WHERE run_id = ? "
+        "ORDER BY stage, step, checkpoint_version",
+        (run_id,),
+    ).fetchall()
+    if not skip_invalid:
+        return [_row_to_checkpoint(row) for row in rows]
+    checkpoints: list[Checkpoint] = []
+    for row in rows:
+        try:
+            checkpoints.append(_row_to_checkpoint(row))
+        except CheckpointError:
+            continue
+    return checkpoints
+
+
+def _matching_rows(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    stage: str,
+    step: str | None,
+    version: int | None,
+    limit: int | None = None,
+) -> list[sqlite3.Row]:
+    """The checkpoint rows of one run and stage, newest version first."""
     sql = (
         "SELECT * FROM research_checkpoints WHERE run_id = ? AND stage = ?"
     )
@@ -151,20 +218,11 @@ def load_checkpoint(
     if version is not None:
         sql += " AND checkpoint_version = ?"
         params.append(version)
-    sql += " ORDER BY checkpoint_version DESC, created_at DESC LIMIT 1"
-    row = conn.execute(sql, params).fetchone()
-    return _row_to_checkpoint(row) if row is not None else None
-
-
-def list_checkpoints(
-    conn: sqlite3.Connection, *, run_id: str
-) -> list[Checkpoint]:
-    rows = conn.execute(
-        "SELECT * FROM research_checkpoints WHERE run_id = ? "
-        "ORDER BY stage, step, checkpoint_version",
-        (run_id,),
-    ).fetchall()
-    return [_row_to_checkpoint(row) for row in rows]
+    sql += " ORDER BY checkpoint_version DESC, created_at DESC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    return conn.execute(sql, params).fetchall()
 
 
 def _row_to_checkpoint(row: sqlite3.Row) -> Checkpoint:
