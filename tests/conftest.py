@@ -21,6 +21,7 @@ from product_hunter.documents import Document, parse_documents
 from product_hunter.extraction import ExtractedCandidate, ExtractionCall, ExtractionReject
 from product_hunter.fetch import FetchRecord
 from product_hunter.normalization import Domain, normalize_fields
+from product_hunter.sources import load_registry
 
 FIXTURES = Path(__file__).parent / "fixtures"
 NOW = "2026-10-21T00:00:00+00:00"
@@ -61,16 +62,31 @@ def _candidate(
     document: Document,
     *,
     quote: str,
-    accepted: bool,
+    accepted: bool = False,
+    char_start: int | None = None,
+    char_end: int | None = None,
+    span_id: str | None = None,
+    text_sha256: str | None = None,
+    raw_path: str | None = None,
+    raw_sha256: str | None = None,
+    extractor_version: str = EXTRACTOR,
 ) -> ExtractedCandidate:
-    start = document.text.find(quote)
-    assert start >= 0, f"quote is not in document {document.doc_id}"
-    end = start + len(quote)
-    span_id = "ev_" + hashlib.sha256(
-        f"{document.doc_id}|{start}|{end}|{quote}".encode()
-    ).hexdigest()[:16]
+    """A candidate for one quote of a document, valid or not.
+
+    The offsets and the span id default to what the quote really is, so a
+    test that wants a broken candidate says which part is broken.
+    """
+    if char_start is None:
+        char_start = document.text.find(quote)
+        assert char_start >= 0, f"quote is not in document {document.doc_id}"
+    if char_end is None:
+        char_end = char_start + len(quote)
+    if span_id is None:
+        span_id = "ev_" + hashlib.sha256(
+            f"{document.doc_id}|{char_start}|{char_end}|{quote}".encode()
+        ).hexdigest()[:16]
     candidate_id = "cand_" + hashlib.sha256(
-        f"{document.doc_id}|{start}|{end}|{quote}|{EXTRACTOR}".encode()
+        f"{document.doc_id}|{char_start}|{char_end}|{quote}|{EXTRACTOR}".encode()
     ).hexdigest()[:16]
     pain_id = (
         "pp_" + hashlib.sha256(f"{span_id}|{EXTRACTOR}".encode()).hexdigest()[:16]
@@ -96,8 +112,8 @@ def _candidate(
         url=document.url,
         span_id=span_id,
         quote=quote,
-        char_start=start,
-        char_end=end,
+        char_start=char_start,
+        char_end=char_end,
         match_mode="exact",
         model_quote=quote,
         occurrence=1,
@@ -122,11 +138,11 @@ def _candidate(
         accepted=accepted,
         provider="opencode-go",
         model="deepseek-v4.1-flash",
-        extractor_version=EXTRACTOR,
+        extractor_version=extractor_version,
         prompt_version=PROMPT,
-        raw_path=document.raw_path,
-        raw_sha256=document.raw_sha256,
-        text_sha256=document.text_sha256,
+        raw_path=raw_path if raw_path is not None else document.raw_path,
+        raw_sha256=raw_sha256 if raw_sha256 is not None else document.raw_sha256,
+        text_sha256=text_sha256 if text_sha256 is not None else document.text_sha256,
         created_at=NOW,
     )
 
@@ -217,6 +233,22 @@ def _build_run(tmp_path: Path) -> tuple[Path, Path, list[Document], ExtractedCan
 def open_store(db_path: Path) -> Store:
     """Open a store on a file path. The migration runs on the first open."""
     return Store.open(db_path)
+
+
+def evidence_store(tmp_path: Path) -> Store:
+    """A store with the source registry synced, ready for the pipeline."""
+    store = Store.open(tmp_path / "product_hunter.db")
+    store.sync_registry(load_registry())
+    return store
+
+
+def evidence_document(
+    tmp_path: Path, *, index: int = 0
+) -> tuple[Document, FetchRecord]:
+    """One parsed document from the fixture, and the fetch it came from."""
+    fetch, raw = _fixture_fetch(tmp_path)
+    documents = parse_documents(fetch, raw, repo_root=tmp_path)
+    return documents[index], fetch
 
 
 def crash_child(

@@ -88,14 +88,20 @@ def _apply(conn: sqlite3.Connection, number: int, path: Path) -> None:
 
 
 def _split_statements(sql: str) -> list[str]:
-    # shortcut: statements are split on ';' and full-line '--' comments dropped,
-    # so a semicolon inside a string literal is not supported.
+    # A statement ends where sqlite3 says it ends, so a trigger body keeps
+    # the semicolon it needs and a semicolon inside a string literal does
+    # not cut a statement in half.
     body = _strip_comment_lines(sql)
     statements: list[str] = []
-    for chunk in body.split(";"):
-        statement = _strip_comment_lines(chunk).strip()
-        if statement:
-            statements.append(statement)
+    buffer: list[str] = []
+    for character in body:
+        buffer.append(character)
+        if character == ";" and sqlite3.complete_statement("".join(buffer)):
+            statements.append("".join(buffer).strip())
+            buffer = []
+    tail = "".join(buffer).strip()
+    if tail:
+        statements.append(tail)
     return statements
 
 

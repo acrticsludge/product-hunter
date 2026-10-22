@@ -758,6 +758,15 @@ def _failed_model(
     return config.provider_id, config.model_id
 
 
+def derive_span_id(doc_id: str, char_start: int, char_end: int, quote: str) -> str:
+    """The id of a span, derived from the fields of the span itself.
+
+    The id is the hash of the document, the offsets and the quote, so the
+    same span always has the same id and a different span never does.
+    """
+    return _hash_id("ev_", f"{doc_id}|{char_start}|{char_end}|{quote}")
+
+
 def _candidate(
     *,
     document: Document,
@@ -774,7 +783,7 @@ def _candidate(
     """Build the stored record for one located candidate."""
     quote = span.quote
     position = f"{document.doc_id}|{span.char_start}|{span.char_end}|{quote}"
-    span_id = _hash_id("ev_", position)
+    span_id = derive_span_id(document.doc_id, span.char_start, span.char_end, quote)
     candidate_id = _hash_id("cand_", f"{position}|{extractor_version}")
     accepted = candidate.pain_validity is PainValidity.genuine
     pain_id = _hash_id("pp_", f"{span_id}|{extractor_version}") if accepted else None

@@ -628,9 +628,16 @@ def test_a_quote_that_is_not_valid_utf8_is_read(tmp_path: Path) -> None:
             " '2026-10-20T10:00:00Z')",
             (b"\xff\xfe raw",),
         )
+        # The pain point is backed by the span it links to, because the
+        # database refuses a link to a pain point that no span supports.
+        conn.execute(
+            "INSERT INTO pain_points (pain_id, span_id, doc_id, accepted,"
+            " created_at) VALUES ('pp_bad', 'ev_bad', 'doc_1', 1,"
+            " '2026-10-20T10:00:00Z')"
+        )
         conn.execute(
             "INSERT INTO evidence_pain_links (pain_id, span_id, created_at) VALUES"
-            " ('pp_1', 'ev_bad', '2026-10-20T10:00:00Z')"
+            " ('pp_bad', 'ev_bad', '2026-10-20T10:00:00Z')"
         )
         conn.commit()
         snapshot = _snapshot(conn)
@@ -655,9 +662,16 @@ def test_a_quote_with_a_control_character_is_read(tmp_path: Path) -> None:
             " '2026-10-20T10:00:00Z')",
             ("a\x00b",),
         )
+        # The pain point is backed by the span it links to, because the
+        # database refuses a link to a pain point that no span supports.
+        conn.execute(
+            "INSERT INTO pain_points (pain_id, span_id, doc_id, accepted,"
+            " created_at) VALUES ('pp_ctrl', 'ev_ctrl', 'doc_1', 1,"
+            " '2026-10-20T10:00:00Z')"
+        )
         conn.execute(
             "INSERT INTO evidence_pain_links (pain_id, span_id, created_at) VALUES"
-            " ('pp_1', 'ev_ctrl', '2026-10-20T10:00:00Z')"
+            " ('pp_ctrl', 'ev_ctrl', '2026-10-20T10:00:00Z')"
         )
         conn.commit()
         snapshot = _snapshot(conn)
