@@ -55,6 +55,31 @@ def bounded_detail(text: str, limit: int = MAX_DETAIL_CHARS) -> str:
     return text[:limit] + "..."
 
 
+def fetch_id(
+    source_id: str,
+    final_url: str,
+    raw_sha256: str | None,
+    validators: Validators | None = None,
+) -> str:
+    """The id of a capture.
+
+    It is derived from the source, the URL that answered and the hash of
+    the body, so the same capture has the same id and a different body
+    under the same URL does not. A capture with no body falls back to the
+    validators the server handed out.
+
+    The function is shared, so a capture taken by a tool that is not the
+    shared fetch path gets the same id as one taken through it.
+    """
+    if raw_sha256:
+        basis = f"{source_id}|{final_url}|{raw_sha256}"
+    else:
+        etag = validators.etag if validators else None
+        last_modified = validators.last_modified if validators else None
+        basis = f"{source_id}|{final_url}|{etag or ''}|{last_modified or ''}"
+    return "fetch_" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+
+
 def _as_utc(value: datetime) -> datetime:
     """A datetime that compares with any other: a naive one is read as UTC."""
     if value.tzinfo is None:
@@ -468,6 +493,23 @@ class Fetcher:
     def _acquire(self, source) -> None:
         self._budget.acquire(source)
 
+    def robots_allows(self, source: SourceConfig, url: str) -> bool:
+        """Whether robots.txt lets this source's user agent fetch the URL.
+
+        A source whose robots policy is ``skip`` is allowed without a
+        check. A robots.txt that cannot be read is a refusal, the same way
+        the shared path treats it.
+
+        The method is public because the tools that are not plain HTTP
+        requests need the same answer, and the robots machinery is here
+        rather than in each of them.
+        """
+        try:
+            self._check_robots(source, url)
+        except RobotsBlocked:
+            return False
+        return True
+
     def _check_robots(self, source, page_url: str) -> None:
         if source.robots is not RobotsPolicy.required:
             return
@@ -526,13 +568,7 @@ class Fetcher:
         raw_sha256: str | None,
         validators: Validators | None,
     ) -> str:
-        if raw_sha256:
-            basis = f"{source_id}|{final_url}|{raw_sha256}"
-        else:
-            etag = validators.etag if validators else None
-            last_modified = validators.last_modified if validators else None
-            basis = f"{source_id}|{final_url}|{etag or ''}|{last_modified or ''}"
-        return "fetch_" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+        return fetch_id(source_id, final_url, raw_sha256, validators)
 
     def _reject(self, source_id: str, url: str, exc: Exception) -> None:
         # An unknown source has no terms to report, so the provenance stays None.
