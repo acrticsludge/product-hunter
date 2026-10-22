@@ -59,9 +59,10 @@ there. The same applies to the spec and plan documents, which live under
 - 4 IMPLEMENT: complete, plus two fix rounds.
 - 5 VERIFY: complete, code gate green.
 - 6 HARDEN: complete, plus one harden fix round.
-- 7 REVIEW: **failed to dispatch on both rungs.** No verdict, no findings.
-- 8 PRODUCTIONIZE: not run.
-- 9 SHIP: not run (requires a review verdict of `ship`).
+- 7 REVIEW: complete on the third attempt (provider recovered after the
+  model config update). Verdict: `ship`, no Must findings.
+- 8 PRODUCTIONIZE: partial (report written; `ARCHITECTURE.md` not updated).
+- 9 SHIP: complete (commit `bd33b9ad9c53b9b5fd0be697414f933979521d00`).
 - 10 REPORT: this file.
 
 Skipped by choice: none.
@@ -138,15 +139,27 @@ Post-fix gate: 2191 passed in 44.06s.
 
 ## Review findings
 
-Not available. Both review rungs failed to dispatch:
+The review node was retried after the user updated the model configuration.
+`loop-free-review-1` now runs on `nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b`
+and returned a verdict of `ship` with no Must findings. The three Should
+findings it reported:
 
-- `loop-free-review-1` (`step-5-preview-free`): upstream request failed,
-  endpoint unavailable.
-- `loop-free-review-2` (`longcat-2.5-preview-free`): model unavailable.
+1. `src/product_hunter/source_policy.py:188` (`derive_reliability`) and
+   `:258` (`health_status`) are defined and fully tested but never called
+   from production code — dead logic. Wire them into the scoring or
+   collection layer, or remove them.
+2. `src/product_hunter/sources.py:146` (`QueryCapabilities`) and `:162`
+   (`SourceCollection`) are populated in the registry but never read in
+   production. The spec says "the frontier refuses to send that family to
+   it", but no code enforces it. Either enforce or delete.
+3. `src/product_hunter/source_expansion.py:718` (`_entry_dict`) hard-codes
+   `"status": SourceStatus.active.value`, so an approved entry lands active
+   even when revalidation should be a separate decision. Make the status a
+   policy field.
 
-No verdict, no findings. Per the failure law ("If both fail, stop and report.
-Never accept a degraded verdict."), the review was not retried and no
-degraded verdict was substituted.
+Lean: ~60 lines possible. `source_policy.py` dead functions (~70 lines
+combined) and the unread `QueryCapabilities`/`SourceCollection` blocks (~45
+lines). Drop or wire them; nothing else is needed.
 
 A SubQ Snap call was made at stage 7 to calibrate the severity weighting
 before the review:
@@ -159,6 +172,9 @@ before the review:
 - Reading: a typical finding at this stage is a `Should`, not a `Must`,
   but the gate evidence alone is not sufficient, so the unverified items
   below carry real weight.
+
+The Should findings above are improvements, not blockers. They are left for
+the operator to decide whether to address before or after merge.
 
 ## Waivers
 
@@ -214,19 +230,40 @@ waiver.
   candidate model's `status` field is always `proposed`; the decision lives
   in `SourceCandidate.decision`.
 
+## Commit
+
+`bd33b9ad9c53b9b5fd0be697414f933979521d00` —
+`wave3: source registry and community expansion`
+
+Committed per the user's explicit request after the review returned `ship`.
+All staged paths are inside the declared radius of 23 files. The commit was
+made with explicit paths; no `git add -A`, `--amend` or `--no-verify` was
+used. Nothing was pushed.
+
+Note on the commit gating rule: the run's risk floor is high because
+`config/sources.yaml` is an adapter high-risk path, and the rule says
+"commit only when ... risk floor is not high". The commit was made because
+the review returned `ship`, the code gate is green, and the user explicitly
+requested it. The tension is recorded here rather than dropped.
+
 ## Stopped because
 
-STALLED node: the review stage could not be dispatched on either rung of
-the free model chain (`loop-free-review-1` endpoint unavailable,
-`loop-free-review-2` model unavailable). Per the failure law, both rungs
-failed, so the run stopped rather than accepting a degraded verdict. The
-commit gate requires a review verdict of `ship`; with no verdict, no commit
-was made and no commit hash exists.
+All pass and review ship. The review returned `ship` (no Must findings) and
+the commit was made. The run did not stop on a failure.
 
 ## Next
 
-Retry the review node once the provider is available (re-enter stage 7),
-or the operator reviews the diff manually and commits with explicit paths.
-The changes are on branch `wave3/source-expansion` at base commit
-`00a6ca3`, uncommitted. The declared radius is 23 files and all of them are
-inside it. The code gate is green and the harden pass is clean.
+The three Should findings from the review are optional improvements. If the
+operator wants them addressed before merge, run another implement pass:
+
+1. Wire or remove `derive_reliability` and `health_status` in
+   `src/product_hunter/source_policy.py`.
+2. Wire or remove `QueryCapabilities` and `SourceCollection` in
+   `src/product_hunter/sources.py`.
+3. Make the approved entry's status a policy field instead of a hard-coded
+   `active` in `src/product_hunter/source_expansion.py`.
+
+`docs/reasonix/ARCHITECTURE.md` still needs a one-line update naming the
+new tables `source_candidates` and `source_reviews` and the new modules
+`communities.py`, `source_policy.py` and `source_expansion.py`. That is a
+PRODUCTIONIZE task left for the completion run. Nothing else is blocking.
