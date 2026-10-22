@@ -3,7 +3,7 @@
 **Run ID:** wave-3-qdrant-2026-10-22
 **Branch:** `wave3/qdrant-semantic`
 **Base:** `00a6ca3` (the Wave 2 integration, plus its review fixes)
-**Commit:** `COMMIT_HASH_PLACEHOLDER`
+**Commit:** `769d260f09f58dc05f103873d6b235aa6bb12c47`
 **Risk:** declared `medium`, adapter floor `medium`
 **Adapter:** Product Hunter, 8 forbidden rules in force
 **Specialization:** backend. No user interface is touched.
