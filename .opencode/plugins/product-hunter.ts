@@ -20,9 +20,9 @@ const TIMEOUT_MS = 30_000
 const MAX_STDOUT_BYTES = 1024 * 1024
 const MAX_STDERR_BYTES = 64 * 1024
 
-// The ten commands map onto nine actions: /continue-research and /continue
-// are the same action.
-const ACTIONS = [
+// The twelve commands map onto eleven actions: /continue-research and
+// /continue are the same action.
+export const ACTIONS = [
   "create",
   "list",
   "status",
@@ -32,6 +32,8 @@ const ACTIONS = [
   "retry",
   "cancel",
   "log",
+  "doctor",
+  "recover",
 ]
 
 type RegistryResult = {
@@ -74,7 +76,7 @@ const PLUGIN_DIR = (() => {
   }
 })()
 
-function buildArgs(input: any, sessionID: string | undefined): string[] {
+export function buildArgs(input: any, sessionID: string | undefined): string[] {
   const action = String(input?.action ?? "")
   const args: string[] = [action]
   // Every value rides in the equals form. A value that starts with a dash is
@@ -180,7 +182,7 @@ export default {
       editor.add({
         name: "product_hunter",
         description:
-          "Control the research runs of Product Hunter. One action per call: create a run, list the runs, show one run, continue, resume, pause, retry, cancel, or read the log of a run. The worker owns the execution, so this tool records requests and reads durable state; it never runs a research stage. A run with no live worker says so.",
+          "Control the research runs of Product Hunter. One action per call: create a run, list the runs, show one run, continue, resume, pause, retry, cancel, read the log of a run, report the health of the run store, or repair the requests a missing worker left behind. The worker owns the execution, so this tool records requests and reads durable state; it never runs a research stage. A run with no live worker says so.",
         input: {
           type: "object",
           properties: {
@@ -192,7 +194,7 @@ export default {
             research_id: {
               type: "string",
               description:
-                "The run to act on, as RH-YYYYMMDD-NNNN. Not used by list or create.",
+                "The run to act on, as RH-YYYYMMDD-NNNN. Not used by list, create or doctor.",
             },
             objective: {
               type: "string",
@@ -209,12 +211,11 @@ export default {
           required: ["action"],
           additionalProperties: false,
         },
-        output: { type: "string" },
         execute: async (input: any, toolCtx: any) => {
           const action = String(input?.action ?? "")
           if (!ACTIONS.includes(action)) {
             return {
-              output: `Unknown action "${action}". Expected one of: ${ACTIONS.join(", ")}.`,
+              content: `Unknown action "${action}". Expected one of: ${ACTIONS.join(", ")}.`,
               metadata: { ok: false, code: "invalid_request" },
             }
           }
@@ -229,13 +230,13 @@ export default {
           const result = await runRegistry(directory, buildArgs(input, sessionID))
           if (!result.ok || !result.payload) {
             return {
-              output: result.error ?? "the registry could not be reached",
+              content: result.error ?? "the registry could not be reached",
               metadata: { ok: false, code: "internal_error" },
             }
           }
           const payload = result.payload
           return {
-            output: payload.text || payload.message,
+            content: payload.text || payload.message,
             metadata: {
               ok: payload.ok,
               action: payload.action,
