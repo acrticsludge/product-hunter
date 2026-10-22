@@ -79,11 +79,11 @@ runner splits a statement where `sqlite3.complete_statement` says one ends, so
 a trigger body keeps the semicolon it needs and a semicolon inside a string
 literal does not cut a statement in half.
 
-## The forty-five tables
+## The forty-six tables
 
 `IMPLEMENTED` (`db/migrations/0001_initial.sql` through
-`db/migrations/0007_independence.sql`). The schema holds forty-five tables
-across seven migrations.
+`db/migrations/0008_observability.sql`). The schema holds forty-six tables
+across eight migrations.
 
 | Migration | Number | Tables |
 |---|---|---|
@@ -94,13 +94,17 @@ across seven migrations.
 | `0005_evidence_pipeline.sql` | 5 | `document_versions`, `evidence_observations`, `evidence_lineage` |
 | `0006_clustering.sql` | 6 | `clustering_runs`, `clusters`, `cluster_versions`, `cluster_members`, `cluster_lineage`, `cluster_decisions` |
 | `0007_independence.sql` | 7 | `author_identity_links`, `community_links`, `author_clusters`, `author_cluster_members`, `independence_reports` |
+| `0008_observability.sql` | 8 | `model_comparisons` |
 
 The numbering is the pipeline order of spec §10: collect, then evidence, then
 cluster, then independence. The four Wave 2 migrations were each written as
 `0003_*` in a worktree that forked before the research gate took the number,
 so the integration renumbered them. The migration loader refuses a duplicate
 number and refuses a gap, so an unreconciled merge fails at `db init` rather
-than silently.
+than silently. Wave 3 adds `0008_observability.sql` for the same reason the
+Wave 2 migrations were renumbered: eight branches forked from the same base,
+and the file is numbered `0008` only because `0007` is the last file on
+`main`.
 
 | Group | Tables |
 |---|---|
@@ -114,6 +118,7 @@ than silently.
 | Execution | `jobs`, `stage_attempts`, `projection_tasks` |
 | Model routing | `model_catalogs`, `model_inventory`, `model_role_bindings`, `model_executions` |
 | Research gate | `tool_calls`, `research_stage_executions`, `research_stage_artifacts`, `research_claims`, `stage_gate_results` |
+| Observability | `model_comparisons` |
 | Reserved, no writer | `propagation_edges`, `human_decisions` |
 
 Two tables still have no writer anywhere in `src/`: `propagation_edges` and
@@ -553,15 +558,35 @@ The module docstring says it plainly: nothing runs it yet. There is no CLI
 command and no entry point.
 
 **The evaluation benchmark package.** `IMPLEMENTED`
-(`src/product_hunter/eval/`). `cases.py` holds `TaskName` with ten tasks and
-`EVALUATOR_VERSION = "eval-v1"`; `tasks.py` holds one scorer per task and
-`score_case()`; `run.py` holds `run_dataset()`, `check_thresholds()`, and
-`compare_runs()`; `report.py` renders the benchmark Markdown. The `ph bench`
-group reaches it: `bench run` scores one model's answers against a versioned
-dataset, `bench compare` compares two results and detects regressions,
-`bench report` writes the benchmark report, and `bench labels` reports how
-much of a dataset a human has labelled. `ph eval` still scores the Phase 1
-review sheet, which is a different thing.
+(`src/product_hunter/eval/`). `cases.py` holds `TaskName` with twelve tasks
+and `EVALUATOR_VERSION = "eval-v2"`; `tasks.py` holds one scorer per task
+and `score_case()`; `run.py` holds `run_dataset()`, `check_thresholds()`,
+and `compare_runs()`; `report.py` renders the benchmark Markdown. The `ph
+bench` group reaches it: `bench run` scores one model's answers against a
+versioned dataset, `bench compare` compares two results and detects
+regressions (and, with `--db`, records the comparison in
+`model_comparisons`), `bench report` writes the benchmark report, and `bench
+labels` reports how much of a dataset a human has labelled. `ph eval` still
+scores the Phase 1 review sheet, which is a different thing.
+
+**The observability engine.** `IMPLEMENTED`
+(`src/product_hunter/observability/`). `metrics.py` holds the twenty metric
+families and `collect_metrics()`; `trace.py` holds the read-side union of the
+four trace tables and `collect_trace()`; `comparison.py` holds the writer and
+the reader of `model_comparisons`; `report.py` renders the metrics and the
+trace as Markdown. The `ph observe` group reaches it: `observe metrics` reads
+the twenty families as JSON, `observe trace` reads the chain of one run as
+JSON.
+
+The engine reads the store and never writes to it, and it never raises because
+a table is missing or empty. A number that could not be computed comes back as
+`not_measured` with a reason, so a reader can tell a zero from an unknown. A
+rate with no denominator never reads zero. The trace resolves
+run, stage, agent, tool, purpose, timestamp, result reference and status from
+the tables that already hold them, and it names the two gaps in the chain: a
+model execution carries no agent and no result reference, and a stage
+execution carries no result reference. `ph bench compare --db` is the only
+writer of `model_comparisons`.
 
 **The SubQ Snap decision provider.** `IMPLEMENTED`
 (`src/product_hunter/llm/decision.py`, `src/product_hunter/llm/subq.py`,
@@ -721,7 +746,9 @@ budget measurement, and the fail-closed `require_promotable()` all exist and
 are tested. Nothing in the running system calls them yet: no worker handler
 records a tool call or an artifact, no CLI command evaluates a run, and there
 is no promotion path to refuse. The gate is enforceable and enforced in a
-library, and the caller that makes it bite is the next wave's work.
+library, and the caller that makes it bite is the next wave's work. The
+observability package added in this wave reads the same store the gate
+writes to, so a run's metrics and its gate verdict come from one place.
 
 **Seven of the eight Wave 2 packages have no caller.** `OPEN`. The evidence
 pipeline, the discovery engine, the collection layer, the clustering engine,

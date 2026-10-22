@@ -42,6 +42,7 @@ def test_db_status_reports_every_table_in_the_schema(tmp_path: Path, capsys) -> 
         "independence_reports",
         "source_candidates",
         "source_reviews",
+        "model_comparisons",
     } <= set(tables)
     assert all(count == 0 for count in tables.values())
 

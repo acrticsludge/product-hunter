@@ -1,0 +1,835 @@
+{
+  "dataset_version": "ds-v2",
+  "created_at": "2026-10-22",
+  "description": "Seed cases for the twelve task families. The inputs are the text this repository has captured, the document ids and text hashes are the ones the fetch records produced, and the author accounts are the ones the capture recorded, under the account id the store derives from the source and the handle. The scoring consistency cases carry a tolerance of 10 points, a tenth of the scale, so two readers of the same opportunity within a tenth of the range count as agreeing. No case carries a human label yet: every expected block is null, so every quality metric stays empty and the task is reported as blocked until a person fills it in.",
+  "cases": [
+    {
+      "case_id": "pain-hn-0001",
+      "task": "pain_extraction",
+      "case_version": 1,
+      "input": {
+        "text": "The most limiting factor for \"mainstream computing\" is crapware / ads / shifting UX. That's always the reason why average joe neighbors ends up buying a new machine. Random popups slowing down and frustration over 4-5 years adds up to enough for someone to believe that shelling 500$ out again on new shiny will finally bring them the land of click abundance they dream of.",
+        "doc_id": "doc_b372422568689f3f"
+      },
+      "expected": null
+    },
+    {
+      "case_id": "pain-hn-0002",
+      "task": "pain_extraction",
+      "case_version": 1,
+      "input": {
+        "text": "Very few hard requirements are valuable today for most users: battery lifetime, hd video for skype/facetime. And maybe SSD, which are now large and cheap enough for people to switch, and get back the bliss of instantaneous reaction again.",
+        "doc_id": "doc_ef61245453bae27a"
+      },
+      "expected": null
+    },
+    {
+      "case_id": "pain-gh-0001",
+      "task": "pain_extraction",
+      "case_version": 1,
+      "input": {
+        "text": "Cloudflare workers supports deploying Flask applications. We have the following short guide for deploying Flask workers:\nhttps://developers.cloudflare.com/workers/languages/python/packages/flask/\n\nCould we add a link to this page to the \"Hosting Platforms\" section of the docs?",
+        "doc_id": "doc_c689f82459e25a48"
+      },
+      "expected": null
+    },
+    {
+      "case_id": "fp-book-0001",
+      "task": "false_positive_rejection",
+      "case_version": 1,
+      "input": {
+        "text": "Small business bookkeeping is still broken | Ledger Notes\n\nSmall business bookkeeping is still broken\n\nEvery quarter I rebuild the same report by hand because the export only covers the account I happen to have open.\n\nI run three bank accounts and the totals never match what the bank tells me, so I spend a whole weekend chasing a two hundred dollar difference that was never real.\n\nThe support answer is always \"open a ticket and attach a screenshot\", which does not help when the screenshot looks the same on every page.\n\nIs there a way to see all three accounts in one place without opening three separate tabs every morning?\n\nIt would be nice if the monthly report could be scheduled so it lands in my inbox on the first of the month.\n\nMost of these tools are the same. Every small business tool is worse than the last one and nothing here solves my problem.",
+        "span": "Is there a way to see all three accounts in one place without opening three separate tabs every morning?"
+      },
+      "expected": null
+    },
+    {
+      "case_id": "fp-book-0002",
+      "task": "false_positive_rejection",
+      "case_version": 1,
+      "input": {
+        "text": "Small business bookkeeping is still broken | Ledger Notes\n\nSmall business bookkeeping is still broken\n\nEvery quarter I rebuild the same report by hand because the export only covers the account I happen to have open.\n\nI run three bank accounts and the totals never match what the bank tells me, so I spend a whole weekend chasing a two hundred dollar difference that was never real.\n\nThe support answer is always \"open a ticket and attach a screenshot\", which does not help when the screenshot looks the same on every page.\n\nIs there a way to see all three accounts in one place without opening three separate tabs every morning?\n\nIt would be nice if the monthly report could be scheduled so it lands in my inbox on the first of the month.\n\nMost of these tools are the same. Every small business tool is worse than the last one and nothing here solves my problem.",
+        "span": "It would be nice if the monthly report could be scheduled so it lands in my inbox on the first of the month."
+      },
+      "expected": null
+    },
+    {
+      "case_id": "fp-gh-0001",
+      "task": "false_positive_rejection",
+      "case_version": 1,
+      "input": {
+        "text": "Add Cloudflare to Flask Hosting Platforms docs?\n\nCloudflare workers supports deploying Flask applications. We have the following short guide for deploying Flask workers:\nhttps://developers.cloudflare.com/workers/languages/python/packages/flask/\n\nCould we add a link to this page to the \"Hosting Platforms\" section of the docs?",
+        "span": "Could we add a link to this page to the \"Hosting Platforms\" section of the docs?"
+      },
+      "expected": null
+    },
+    {
+      "case_id": "quote-book-0001",
+      "task": "quote_fidelity",
+      "case_version": 1,
+      "input": {
+        "text": "Small business bookkeeping is still broken | Ledger Notes\n\nSmall business bookkeeping is still broken\n\nEvery quarter I rebuild the same report by hand because the export only covers the account I happen to have open.\n\nI run three bank accounts and the totals never match what the bank tells me, so I spend a whole weekend chasing a two hundred dollar difference that was never real.\n\nThe support answer is always \"open a ticket and attach a screenshot\", which does not help when the screenshot looks the same on every page.\n\nIs there a way to see all three accounts in one place without opening three separate tabs every morning?\n\nIt would be nice if the monthly report could be scheduled so it lands in my inbox on the first of the month.\n\nMost of these tools are the same. Every small business tool is worse than the last one and nothing here solves my problem."
+      },
+      "expected": null
+    },
+    {
+      "case_id": "quote-hank-0001",
+      "task": "quote_fidelity",
+      "case_version": 1,
+      "input": {
+        "text": "Our bookkeeping tool \"does not export\" anything. The PDF it produces is unreadable, so I retype every number into the ledger by hand and hope I do not miss a row."
+      },
+      "expected": null
+    },
+    {
+      "case_id": "quote-postmac-0001",
+      "task": "quote_fidelity",
+      "case_version": 1,
+      "input": {
+        "text": "I used to do that too. The most limiting factor for \"mainstream computing\" is crapware / ads / shifting UX. That's always the reason why average joe neighbors ends up buying a new machine. Random popups slowing down and frustration over 4-5 years adds up to enough for someone to believe that shelling 500$ out again on new shiny will finally bring them the land of click abundance they dream of. Very few hard requirements are valuable today for most users: battery lifetime, hd video for skype/facetime. And maybe SSD, which are now large and cheap enough for people to switch, and get back the bliss of instantaneous reaction again. Other than that no important task will require more than a core 2 duo. They won't saturate Excel (which was not long ago still single core only). In the case they really do, that spreadsheet is probably worth enough to buy a full fledge MBP."
+      },
+      "expected": null
+    },
+    {
+      "case_id": "sev-book-0001",
+      "task": "severity",
+      "case_version": 1,
+      "input": {
+        "text": "Small business bookkeeping is still broken | Ledger Notes\n\nSmall business bookkeeping is still broken\n\nEvery quarter I rebuild the same report by hand because the export only covers the account I happen to have open.\n\nI run three bank accounts and the totals never match what the bank tells me, so I spend a whole weekend chasing a two hundred dollar difference that was never real.\n\nThe support answer is always \"open a ticket and attach a screenshot\", which does not help when the screenshot looks the same on every page.\n\nIs there a way to see all three accounts in one place without opening three separate tabs every morning?\n\nIt would be nice if the monthly report could be scheduled so it lands in my inbox on the first of the month.\n\nMost of these tools are the same. Every small business tool is worse than the last one and nothing here solves my problem.",
+        "quote": "Every quarter I rebuild the same report by hand because the export only covers the account I happen to have open."
+      },
+      "expected": null
+    },
+    {
+      "case_id": "sev-book-0002",
+      "task": "severity",
+      "case_version": 1,
+      "input": {
+        "text": "Small business bookkeeping is still broken | Ledger Notes\n\nSmall business bookkeeping is still broken\n\nEvery quarter I rebuild the same report by hand because the export only covers the account I happen to have open.\n\nI run three bank accounts and the totals never match what the bank tells me, so I spend a whole weekend chasing a two hundred dollar difference that was never real.\n\nThe support answer is always \"open a ticket and attach a screenshot\", which does not help when the screenshot looks the same on every page.\n\nIs there a way to see all three accounts in one place without opening three separate tabs every morning?\n\nIt would be nice if the monthly report could be scheduled so it lands in my inbox on the first of the month.\n\nMost of these tools are the same. Every small business tool is worse than the last one and nothing here solves my problem.",
+        "quote": "I spend a whole weekend chasing a two hundred dollar difference that was never real."
+      },
+      "expected": null
+    },
+    {
+      "case_id": "sev-hank-0001",
+      "task": "severity",
+      "case_version": 1,
+      "input": {
+        "text": "Our bookkeeping tool \"does not export\" anything. The PDF it produces is unreadable, so I retype every number into the ledger by hand and hope I do not miss a row.",
+        "quote": "The PDF it produces is unreadable, so I retype every number into the ledger by hand and hope I do not miss a row."
+      },
+      "expected": null
+    },
+    {
+      "case_id": "norm-book-0001",
+      "task": "normalization",
+      "case_version": 1,
+      "input": {
+        "text": "Small business bookkeeping is still broken | Ledger Notes\n\nSmall business bookkeeping is still broken\n\nEvery quarter I rebuild the same report by hand because the export only covers the account I happen to have open.\n\nI run three bank accounts and the totals never match what the bank tells me, so I spend a whole weekend chasing a two hundred dollar difference that was never real.\n\nThe support answer is always \"open a ticket and attach a screenshot\", which does not help when the screenshot looks the same on every page.\n\nIs there a way to see all three accounts in one place without opening three separate tabs every morning?\n\nIt would be nice if the monthly report could be scheduled so it lands in my inbox on the first of the month.\n\nMost of these tools are the same. Every small business tool is worse than the last one and nothing here solves my problem.",
+        "quote": "Every quarter I rebuild the same report by hand because the export only covers the account I happen to have open."
+      },
+      "expected": null
+    },
+    {
+      "case_id": "norm-hank-0001",
+      "task": "normalization",
+      "case_version": 1,
+      "input": {
+        "text": "Our bookkeeping tool \"does not export\" anything. The PDF it produces is unreadable, so I retype every number into the ledger by hand and hope I do not miss a row.",
+        "quote": "The PDF it produces is unreadable, so I retype every number into the ledger by hand and hope I do not miss a row."
+      },
+      "expected": null
+    },
+    {
+      "case_id": "norm-postmac-0001",
+      "task": "normalization",
+      "case_version": 1,
+      "input": {
+        "text": "I used to do that too. The most limiting factor for \"mainstream computing\" is crapware / ads / shifting UX. That's always the reason why average joe neighbors ends up buying a new machine. Random popups slowing down and frustration over 4-5 years adds up to enough for someone to believe that shelling 500$ out again on new shiny will finally bring them the land of click abundance they dream of. Very few hard requirements are valuable today for most users: battery lifetime, hd video for skype/facetime. And maybe SSD, which are now large and cheap enough for people to switch, and get back the bliss of instantaneous reaction again. Other than that no important task will require more than a core 2 duo. They won't saturate Excel (which was not long ago still single core only). In the case they really do, that spreadsheet is probably worth enough to buy a full fledge MBP.",
+        "quote": "Random popups slowing down and frustration over 4-5 years adds up to enough for someone to believe that shelling 500$ out again on new shiny will finally bring them the land of click abundance they dream of."
+      },
+      "expected": null
+    },
+    {
+      "case_id": "dup-hn-0001",
+      "task": "duplicate_detection",
+      "case_version": 1,
+      "input": {
+        "documents": [
+          {
+            "doc_id": "doc_b372422568689f3f",
+            "text_sha256": "cd99d0bb30388e6ed4f46156c5ce319883ec6468c27723b8489744af9c48b1e4"
+          },
+          {
+            "doc_id": "doc_c77756a36e9c64a7",
+            "text_sha256": "cd99d0bb30388e6ed4f46156c5ce319883ec6468c27723b8489744af9c48b1e4"
+          },
+          {
+            "doc_id": "doc_ef61245453bae27a",
+            "text_sha256": "cd99d0bb30388e6ed4f46156c5ce319883ec6468c27723b8489744af9c48b1e4"
+          },
+          {
+            "doc_id": "doc_314b4440614486e2",
+            "text_sha256": "cd99d0bb30388e6ed4f46156c5ce319883ec6468c27723b8489744af9c48b1e4"
+          },
+          {
+            "doc_id": "doc_15854399283339ef",
+            "text_sha256": "cd99d0bb30388e6ed4f46156c5ce319883ec6468c27723b8489744af9c48b1e4"
+          },
+          {
+            "doc_id": "doc_c689f82459e25a48",
+            "text_sha256": "807e168634877b5e72e3d0041a839f12f99214206424e56df98892660e34a22f"
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "case_id": "dup-hn-0002",
+      "task": "duplicate_detection",
+      "case_version": 1,
+      "input": {
+        "documents": [
+          {
+            "doc_id": "doc_b372422568689f3f",
+            "text_sha256": "cd99d0bb30388e6ed4f46156c5ce319883ec6468c27723b8489744af9c48b1e4"
+          },
+          {
+            "doc_id": "doc_314b4440614486e2",
+            "text_sha256": "cd99d0bb30388e6ed4f46156c5ce319883ec6468c27723b8489744af9c48b1e4"
+          },
+          {
+            "doc_id": "doc_69f0241f9bb62ed9",
+            "text_sha256": "89eaed2b607b486bb06b9afb95b089f1d7ca5ede197f01f1f47a57bb8d3aac33"
+          },
+          {
+            "doc_id": "doc_f2598250613ec09a",
+            "text_sha256": "c0cafcf0e2d6a236aca78b03f4c33b25ca970788fd6adde4ccc7db6acecb3ee1"
+          },
+          {
+            "doc_id": "doc_48c756d0a2e6f28b",
+            "text_sha256": "d51ad3864377e78299abde6098ed2f26233071c6b909eaf736d86287b3bd497d"
+          },
+          {
+            "doc_id": "doc_80b95f975a12d3a5",
+            "text_sha256": "fd002d99775a132851a7f6a24a6b57ca6e18601fdfd4ca6297bec772b9348969"
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "case_id": "dup-mixed-0003",
+      "task": "duplicate_detection",
+      "case_version": 1,
+      "input": {
+        "documents": [
+          {
+            "doc_id": "doc_c77756a36e9c64a7",
+            "text_sha256": "cd99d0bb30388e6ed4f46156c5ce319883ec6468c27723b8489744af9c48b1e4"
+          },
+          {
+            "doc_id": "doc_c689f82459e25a48",
+            "text_sha256": "807e168634877b5e72e3d0041a839f12f99214206424e56df98892660e34a22f"
+          },
+          {
+            "doc_id": "doc_69f0241f9bb62ed9",
+            "text_sha256": "89eaed2b607b486bb06b9afb95b089f1d7ca5ede197f01f1f47a57bb8d3aac33"
+          },
+          {
+            "doc_id": "doc_f2598250613ec09a",
+            "text_sha256": "c0cafcf0e2d6a236aca78b03f4c33b25ca970788fd6adde4ccc7db6acecb3ee1"
+          },
+          {
+            "doc_id": "doc_48c756d0a2e6f28b",
+            "text_sha256": "d51ad3864377e78299abde6098ed2f26233071c6b909eaf736d86287b3bd497d"
+          },
+          {
+            "doc_id": "doc_80b95f975a12d3a5",
+            "text_sha256": "fd002d99775a132851a7f6a24a6b57ca6e18601fdfd4ca6297bec772b9348969"
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "case_id": "auth-hn-0001",
+      "task": "author_independence",
+      "case_version": 1,
+      "input": {
+        "mentions": [
+          {
+            "mention_id": "doc_b372422568689f3f",
+            "author_id": "agumonkey",
+            "text": "I used to do that too. The most limiting factor for \"mainstream computing\" is crapware / ads / shifting UX. That's always the reason why average joe neighbors ends up buying a new machine. Random popups slowing down and frustration over 4-5 years adds up to enough for someone to believe that shelling 500$ out again on new shiny will finally bring them the land of click abundance they dream of. Very few hard requirements are valuable today for most users: battery lifetime, hd video for skype/facetime. And maybe SSD, which are now large and cheap enough for people to switch, and get back the bliss of instantaneous reaction again. Other than that no important task will require more than a core 2 duo. They won't saturate Excel (which was not long ago still single core only). In the case they really do, that spreadsheet is probably worth enough to buy a full fledge MBP."
+          },
+          {
+            "mention_id": "doc_c77756a36e9c64a7",
+            "author_id": "agumonkey",
+            "text": "I used to do that too. The most limiting factor for \"mainstream computing\" is crapware / ads / shifting UX. That's always the reason why average joe neighbors ends up buying a new machine. Random popups slowing down and frustration over 4-5 years adds up to enough for someone to believe that shelling 500$ out again on new shiny will finally bring them the land of click abundance they dream of. Very few hard requirements are valuable today for most users: battery lifetime, hd video for skype/facetime. And maybe SSD, which are now large and cheap enough for people to switch, and get back the bliss of instantaneous reaction again. Other than that no important task will require more than a core 2 duo. They won't saturate Excel (which was not long ago still single core only). In the case they really do, that spreadsheet is probably worth enough to buy a full fledge MBP."
+          },
+          {
+            "mention_id": "doc_ef61245453bae27a",
+            "author_id": "agumonkey",
+            "text": "I used to do that too. The most limiting factor for \"mainstream computing\" is crapware / ads / shifting UX. That's always the reason why average joe neighbors ends up buying a new machine. Random popups slowing down and frustration over 4-5 years adds up to enough for someone to believe that shelling 500$ out again on new shiny will finally bring them the land of click abundance they dream of. Very few hard requirements are valuable today for most users: battery lifetime, hd video for skype/facetime. And maybe SSD, which are now large and cheap enough for people to switch, and get back the bliss of instantaneous reaction again. Other than that no important task will require more than a core 2 duo. They won't saturate Excel (which was not long ago still single core only). In the case they really do, that spreadsheet is probably worth enough to buy a full fledge MBP."
+          },
+          {
+            "mention_id": "doc_314b4440614486e2",
+            "author_id": "agumonkey",
+            "text": "I used to do that too. The most limiting factor for \"mainstream computing\" is crapware / ads / shifting UX. That's always the reason why average joe neighbors ends up buying a new machine. Random popups slowing down and frustration over 4-5 years adds up to enough for someone to believe that shelling 500$ out again on new shiny will finally bring them the land of click abundance they dream of. Very few hard requirements are valuable today for most users: battery lifetime, hd video for skype/facetime. And maybe SSD, which are now large and cheap enough for people to switch, and get back the bliss of instantaneous reaction again. Other than that no important task will require more than a core 2 duo. They won't saturate Excel (which was not long ago still single core only). In the case they really do, that spreadsheet is probably worth enough to buy a full fledge MBP."
+          },
+          {
+            "mention_id": "doc_15854399283339ef",
+            "author_id": "agumonkey",
+            "text": "I used to do that too. The most limiting factor for \"mainstream computing\" is crapware / ads / shifting UX. That's always the reason why average joe neighbors ends up buying a new machine. Random popups slowing down and frustration over 4-5 years adds up to enough for someone to believe that shelling 500$ out again on new shiny will finally bring them the land of click abundance they dream of. Very few hard requirements are valuable today for most users: battery lifetime, hd video for skype/facetime. And maybe SSD, which are now large and cheap enough for people to switch, and get back the bliss of instantaneous reaction again. Other than that no important task will require more than a core 2 duo. They won't saturate Excel (which was not long ago still single core only). In the case they really do, that spreadsheet is probably worth enough to buy a full fledge MBP."
+          },
+          {
+            "mention_id": "doc_69f0241f9bb62ed9",
+            "author_id": "sama",
+            "text": "\"the rising star of venture capital\" -unknown VC eating lunch on SHR"
+          },
+          {
+            "mention_id": "doc_f2598250613ec09a",
+            "author_id": "dmon",
+            "text": "sure"
+          },
+          {
+            "mention_id": "doc_48c756d0a2e6f28b",
+            "author_id": "pg",
+            "text": "Is there anywhere to eat on Sandhill Road?"
+          },
+          {
+            "mention_id": "doc_80b95f975a12d3a5",
+            "author_id": "pg",
+            "text": "Y Combinator"
+          }
+        ],
+        "propagation_edges": [
+          {
+            "from": "doc_b372422568689f3f",
+            "to": "doc_c77756a36e9c64a7"
+          },
+          {
+            "from": "doc_c77756a36e9c64a7",
+            "to": "doc_ef61245453bae27a"
+          },
+          {
+            "from": "doc_ef61245453bae27a",
+            "to": "doc_314b4440614486e2"
+          },
+          {
+            "from": "doc_314b4440614486e2",
+            "to": "doc_15854399283339ef"
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "case_id": "auth-hn-0002",
+      "task": "author_independence",
+      "case_version": 1,
+      "input": {
+        "mentions": [
+          {
+            "mention_id": "doc_b372422568689f3f",
+            "author_id": "agumonkey",
+            "text": "I used to do that too. The most limiting factor for \"mainstream computing\" is crapware / ads / shifting UX. That's always the reason why average joe neighbors ends up buying a new machine. Random popups slowing down and frustration over 4-5 years adds up to enough for someone to believe that shelling 500$ out again on new shiny will finally bring them the land of click abundance they dream of. Very few hard requirements are valuable today for most users: battery lifetime, hd video for skype/facetime. And maybe SSD, which are now large and cheap enough for people to switch, and get back the bliss of instantaneous reaction again. Other than that no important task will require more than a core 2 duo. They won't saturate Excel (which was not long ago still single core only). In the case they really do, that spreadsheet is probably worth enough to buy a full fledge MBP."
+          },
+          {
+            "mention_id": "doc_15854399283339ef",
+            "author_id": "agumonkey",
+            "text": "I used to do that too. The most limiting factor for \"mainstream computing\" is crapware / ads / shifting UX. That's always the reason why average joe neighbors ends up buying a new machine. Random popups slowing down and frustration over 4-5 years adds up to enough for someone to believe that shelling 500$ out again on new shiny will finally bring them the land of click abundance they dream of. Very few hard requirements are valuable today for most users: battery lifetime, hd video for skype/facetime. And maybe SSD, which are now large and cheap enough for people to switch, and get back the bliss of instantaneous reaction again. Other than that no important task will require more than a core 2 duo. They won't saturate Excel (which was not long ago still single core only). In the case they really do, that spreadsheet is probably worth enough to buy a full fledge MBP."
+          },
+          {
+            "mention_id": "doc_c689f82459e25a48",
+            "author_id": "hoodmane",
+            "text": "Add Cloudflare to Flask Hosting Platforms docs?\n\nCloudflare workers supports deploying Flask applications. We have the following short guide for deploying Flask workers:\nhttps://developers.cloudflare.com/workers/languages/python/packages/flask/\n\nCould we add a link to this page to the \"Hosting Platforms\" section of the docs?"
+          },
+          {
+            "mention_id": "doc_69f0241f9bb62ed9",
+            "author_id": "sama",
+            "text": "\"the rising star of venture capital\" -unknown VC eating lunch on SHR"
+          },
+          {
+            "mention_id": "doc_80b95f975a12d3a5",
+            "author_id": "pg",
+            "text": "Y Combinator"
+          }
+        ],
+        "propagation_edges": [
+          {
+            "from": "doc_b372422568689f3f",
+            "to": "doc_15854399283339ef"
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "case_id": "auth-mixed-0003",
+      "task": "author_independence",
+      "case_version": 1,
+      "input": {
+        "mentions": [
+          {
+            "mention_id": "doc_c689f82459e25a48",
+            "author_id": "hoodmane",
+            "text": "Add Cloudflare to Flask Hosting Platforms docs?\n\nCloudflare workers supports deploying Flask applications. We have the following short guide for deploying Flask workers:\nhttps://developers.cloudflare.com/workers/languages/python/packages/flask/\n\nCould we add a link to this page to the \"Hosting Platforms\" section of the docs?"
+          },
+          {
+            "mention_id": "doc_69f0241f9bb62ed9",
+            "author_id": "sama",
+            "text": "\"the rising star of venture capital\" -unknown VC eating lunch on SHR"
+          },
+          {
+            "mention_id": "doc_f2598250613ec09a",
+            "author_id": "dmon",
+            "text": "sure"
+          },
+          {
+            "mention_id": "doc_48c756d0a2e6f28b",
+            "author_id": "pg",
+            "text": "Is there anywhere to eat on Sandhill Road?"
+          },
+          {
+            "mention_id": "doc_80b95f975a12d3a5",
+            "author_id": "pg",
+            "text": "Y Combinator"
+          }
+        ],
+        "propagation_edges": []
+      },
+      "expected": null
+    },
+    {
+      "case_id": "clu-book-0001",
+      "task": "clustering",
+      "case_version": 1,
+      "input": {
+        "items": [
+          {
+            "item_id": "book-p1",
+            "text": "Every quarter I rebuild the same report by hand because the export only covers the account I happen to have open."
+          },
+          {
+            "item_id": "hank-p1",
+            "text": "The PDF it produces is unreadable, so I retype every number into the ledger by hand and hope I do not miss a row."
+          },
+          {
+            "item_id": "book-p2",
+            "text": "I spend a whole weekend chasing a two hundred dollar difference that was never real."
+          },
+          {
+            "item_id": "book-p3",
+            "text": "The support answer is always \"open a ticket and attach a screenshot\", which does not help when the screenshot looks the same on every page."
+          },
+          {
+            "item_id": "hank-p2",
+            "text": "Our bookkeeping tool \"does not export\" anything."
+          },
+          {
+            "item_id": "book-p4",
+            "text": "Most of these tools are the same. Every small business tool is worse than the last one and nothing here solves my problem."
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "case_id": "clu-mixed-0002",
+      "task": "clustering",
+      "case_version": 1,
+      "input": {
+        "items": [
+          {
+            "item_id": "book-p1",
+            "text": "Every quarter I rebuild the same report by hand because the export only covers the account I happen to have open."
+          },
+          {
+            "item_id": "hank-p1",
+            "text": "The PDF it produces is unreadable, so I retype every number into the ledger by hand and hope I do not miss a row."
+          },
+          {
+            "item_id": "postmac-p1",
+            "text": "Random popups slowing down and frustration over 4-5 years adds up to enough for someone to believe that shelling 500$ out again on new shiny will finally bring them the land of click abundance they dream of."
+          },
+          {
+            "item_id": "book-p2",
+            "text": "I spend a whole weekend chasing a two hundred dollar difference that was never real."
+          },
+          {
+            "item_id": "postmac-p2",
+            "text": "Other than that no important task will require more than a core 2 duo."
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "case_id": "clu-postmac-0003",
+      "task": "clustering",
+      "case_version": 1,
+      "input": {
+        "items": [
+          {
+            "item_id": "postmac-p1",
+            "text": "Random popups slowing down and frustration over 4-5 years adds up to enough for someone to believe that shelling 500$ out again on new shiny will finally bring them the land of click abundance they dream of."
+          },
+          {
+            "item_id": "postmac-p3",
+            "text": "The most limiting factor for \"mainstream computing\" is crapware / ads / shifting UX. That's always the reason why average joe neighbors ends up buying a new machine."
+          },
+          {
+            "item_id": "postmac-p2",
+            "text": "Other than that no important task will require more than a core 2 duo."
+          },
+          {
+            "item_id": "postmac-p4",
+            "text": "Very few hard requirements are valuable today for most users: battery lifetime, hd video for skype/facetime."
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "case_id": "comp-book-0001",
+      "task": "competitor_identification",
+      "case_version": 1,
+      "input": {
+        "product": {
+          "name": "QuickBooks Online",
+          "description": "Bookkeeping software for small businesses: bank feeds, invoicing, and a monthly profit and loss report."
+        },
+        "candidates": [
+          {
+            "name": "Xero",
+            "description": "Accounting software for small businesses with bank feeds, invoices, and a monthly report."
+          },
+          {
+            "name": "Wave",
+            "description": "Accounting software for small businesses with bank feeds and invoicing."
+          },
+          {
+            "name": "FreshBooks",
+            "description": "Accounting and invoicing software for small service businesses."
+          },
+          {
+            "name": "Zoho Books",
+            "description": "Accounting software with invoicing, expenses, and a bank feed."
+          },
+          {
+            "name": "Sage Accounting",
+            "description": "Accounting software for small and medium sized businesses."
+          },
+          {
+            "name": "NetSuite",
+            "description": "Enterprise resource planning suite for mid-size and large companies."
+          },
+          {
+            "name": "Intuit Payroll",
+            "description": "Payroll service that pays employees and files their taxes."
+          },
+          {
+            "name": "Microsoft Excel",
+            "description": "Spreadsheet application used to build a report by hand."
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "case_id": "comp-book-0002",
+      "task": "competitor_identification",
+      "case_version": 1,
+      "input": {
+        "product": {
+          "name": "Xero",
+          "description": "Accounting software for small businesses: bank feeds, invoices, and a monthly report."
+        },
+        "candidates": [
+          {
+            "name": "QuickBooks Online",
+            "description": "Bookkeeping software for small businesses with bank feeds, invoicing, and a monthly report."
+          },
+          {
+            "name": "QuickBooks Desktop",
+            "description": "The desktop accounting program sold to the same small businesses."
+          },
+          {
+            "name": "Sage Accounting",
+            "description": "Accounting software for small and medium sized businesses."
+          },
+          {
+            "name": "Patriot",
+            "description": "Accounting software for small businesses sold as a one-time purchase."
+          },
+          {
+            "name": "Microsoft Dynamics 365 Business Central",
+            "description": "Business management suite for mid-size companies, sold by subscription."
+          },
+          {
+            "name": "QuickBooks Payroll",
+            "description": "Payroll service that pays employees and files their taxes."
+          },
+          {
+            "name": "Zoho Invoice",
+            "description": "Invoicing and payment collection for small businesses."
+          },
+          {
+            "name": "Microsoft Excel",
+            "description": "Spreadsheet application used to build a report by hand."
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "case_id": "comp-book-0003",
+      "task": "competitor_identification",
+      "case_version": 1,
+      "input": {
+        "product": {
+          "name": "FreshBooks",
+          "description": "Accounting and invoicing software for small service businesses, with time tracking and estimates."
+        },
+        "candidates": [
+          {
+            "name": "QuickBooks Online",
+            "description": "Bookkeeping software for small businesses with bank feeds, invoicing, and a monthly report."
+          },
+          {
+            "name": "Wave",
+            "description": "Accounting software for small businesses with bank feeds and invoicing."
+          },
+          {
+            "name": "Zoho Books",
+            "description": "Accounting software with invoicing, expenses, and a bank feed."
+          },
+          {
+            "name": "Zoho Invoice",
+            "description": "Invoicing and payment collection for small businesses."
+          },
+          {
+            "name": "QuickBooks Payroll",
+            "description": "Payroll service that pays employees and files their taxes."
+          },
+          {
+            "name": "Google Sheets",
+            "description": "Spreadsheet application used to build a report by hand."
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "case_id": "cev-book-0001",
+      "task": "counter_evidence_classification",
+      "case_version": 1,
+      "input": {
+        "claim": "Bookkeeping software that exports one account at a time saves a business time.",
+        "items": [
+          {
+            "item_id": "ev-1",
+            "text": "Every quarter I rebuild the same report by hand because the export only covers the account I happen to have open."
+          },
+          {
+            "item_id": "ev-2",
+            "text": "It would be nice if the monthly report could be scheduled so it lands in my inbox on the first of the month."
+          },
+          {
+            "item_id": "ev-3",
+            "text": "The support answer is always \"open a ticket and attach a screenshot\", which does not help when the screenshot looks the same on every page."
+          },
+          {
+            "item_id": "ev-4",
+            "text": "Is there a way to see all three accounts in one place without opening three separate tabs every morning?"
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "case_id": "cev-hank-0002",
+      "task": "counter_evidence_classification",
+      "case_version": 1,
+      "input": {
+        "claim": "A PDF report from a bookkeeping tool is enough to keep the ledger up to date.",
+        "items": [
+          {
+            "item_id": "ev-1",
+            "text": "Our bookkeeping tool \"does not export\" anything."
+          },
+          {
+            "item_id": "ev-2",
+            "text": "The PDF it produces is unreadable, so I retype every number into the ledger by hand and hope I do not miss a row."
+          },
+          {
+            "item_id": "ev-3",
+            "text": "Every quarter I rebuild the same report by hand because the export only covers the account I happen to have open."
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "case_id": "cev-postmac-0003",
+      "task": "counter_evidence_classification",
+      "case_version": 1,
+      "input": {
+        "claim": "A computer bought today is still fast enough for everyday work in five years.",
+        "items": [
+          {
+            "item_id": "ev-1",
+            "text": "Random popups slowing down and frustration over 4-5 years adds up to enough for someone to believe that shelling 500$ out again on new shiny will finally bring them the land of click abundance they dream of."
+          },
+          {
+            "item_id": "ev-2",
+            "text": "Other than that no important task will require more than a core 2 duo."
+          },
+          {
+            "item_id": "ev-3",
+            "text": "Very few hard requirements are valuable today for most users: battery lifetime, hd video for skype/facetime."
+          },
+          {
+            "item_id": "ev-4",
+            "text": "They won't saturate Excel (which was not long ago still single core only)."
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "case_id": "er-hn-0001",
+      "task": "entity_resolution",
+      "case_version": 1,
+      "input": {
+        "accounts": [
+          {
+            "account_id": "au_e33af033704f4d77",
+            "handle": "agumonkey",
+            "display_name": "agumonkey",
+            "source_id": "hn_algolia"
+          },
+          {
+            "account_id": "au_97c72934a831c332",
+            "handle": "sama",
+            "display_name": "sama",
+            "source_id": "hn_algolia"
+          },
+          {
+            "account_id": "au_a3d750402c9f1781",
+            "handle": "dmon",
+            "display_name": "dmon",
+            "source_id": "hn_algolia"
+          },
+          {
+            "account_id": "au_32b56dd706f59b53",
+            "handle": "pg",
+            "display_name": "pg",
+            "source_id": "hn_algolia"
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "case_id": "er-gh-0002",
+      "task": "entity_resolution",
+      "case_version": 1,
+      "input": {
+        "accounts": [
+          {
+            "account_id": "au_4932b9af918b8d0a",
+            "handle": "hoodmane",
+            "display_name": "hoodmane",
+            "source_id": "github_issues"
+          },
+          {
+            "account_id": "au_a3d750402c9f1781",
+            "handle": "dmon",
+            "display_name": "dmon",
+            "source_id": "hn_algolia"
+          },
+          {
+            "account_id": "au_32b56dd706f59b53",
+            "handle": "pg",
+            "display_name": "pg",
+            "source_id": "hn_algolia"
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "case_id": "er-mixed-0003",
+      "task": "entity_resolution",
+      "case_version": 1,
+      "input": {
+        "accounts": [
+          {
+            "account_id": "au_e33af033704f4d77",
+            "handle": "agumonkey",
+            "display_name": "agumonkey",
+            "source_id": "hn_algolia"
+          },
+          {
+            "account_id": "au_4932b9af918b8d0a",
+            "handle": "hoodmane",
+            "display_name": "hoodmane",
+            "source_id": "github_issues"
+          },
+          {
+            "account_id": "au_97c72934a831c332",
+            "handle": "sama",
+            "display_name": "sama",
+            "source_id": "hn_algolia"
+          },
+          {
+            "account_id": "au_a3d750402c9f1781",
+            "handle": "dmon",
+            "display_name": "dmon",
+            "source_id": "hn_algolia"
+          },
+          {
+            "account_id": "au_32b56dd706f59b53",
+            "handle": "pg",
+            "display_name": "pg",
+            "source_id": "hn_algolia"
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "case_id": "sc-book-0001",
+      "task": "scoring_consistency",
+      "case_version": 1,
+      "input": {
+        "opportunity": "Every quarter the same report is rebuilt by hand, because the export only covers the account that happens to be open.",
+        "tolerance": 10
+      },
+      "expected": null
+    },
+    {
+      "case_id": "sc-book-0002",
+      "task": "scoring_consistency",
+      "case_version": 1,
+      "input": {
+        "opportunity": "The totals never match what the bank says, so a business that runs three bank accounts spends a whole weekend chasing a two hundred dollar difference that was never real.",
+        "tolerance": 10
+      },
+      "expected": null
+    },
+    {
+      "case_id": "sc-hank-0003",
+      "task": "scoring_consistency",
+      "case_version": 1,
+      "input": {
+        "opportunity": "The bookkeeping tool exports nothing usable: the PDF is unreadable, so every number is retyped into the ledger by hand.",
+        "tolerance": 10
+      },
+      "expected": null
+    }
+  ]
+}

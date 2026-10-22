@@ -66,6 +66,7 @@ EXPECTED_TABLES = {
     "independence_reports",
     "source_candidates",
     "source_reviews",
+    "model_comparisons",
 }
 
 

@@ -1,4 +1,4 @@
-"""The ten task families, the four metric primitives, and the case scorer.
+"""The twelve task families, the four metric primitives, and the case scorer.
 
 Every scorer is a pure function of a case and one model output: no clock, no
 randomness, no network. The same input always produces the same numbers, so a
@@ -243,7 +243,7 @@ def agreement_metrics(predicted: list[int], expected: list[int]) -> dict[str, An
     }
 
 
-# --- the ten families -------------------------------------------------------
+# --- the twelve families ----------------------------------------------------
 
 
 def score_pain_extraction(case: EvalCase, output: dict[str, Any]) -> dict[str, Any]:
@@ -401,6 +401,24 @@ def score_clustering(case: EvalCase, output: dict[str, Any]) -> dict[str, Any]:
     return _pairwise(case, groups, expected_groups)
 
 
+def score_entity_resolution(case: EvalCase, output: dict[str, Any]) -> dict[str, Any]:
+    """Compare the identity groups with the labelled ones.
+
+    The family answers whether two accounts are the same person. The
+    independence family groups mentions into authors; this one groups the
+    accounts themselves, which is the step the identity resolver takes.
+
+    An account the case does not hold is a case error, the way it is in the
+    other three grouping families.
+    """
+    known = _account_ids(case)
+    groups = _groups(output, "output")
+    expected_groups = _groups(_expected(case), "expected block")
+    _check_members(groups, known, "output")
+    _check_members(expected_groups, known, "expected block")
+    return _pairwise(case, groups, expected_groups)
+
+
 def _pairwise(
     case: EvalCase, groups: list[list[str]], expected_groups: list[list[str]]
 ) -> dict[str, Any]:
@@ -454,6 +472,43 @@ def score_counter_evidence_classification(
             f"but the case holds {len(items)}"
         )
     return classification_metrics(labels, expected_labels, COUNTER_EVIDENCE_LABELS)
+
+
+def score_scoring_consistency(
+    case: EvalCase, output: dict[str, Any]
+) -> dict[str, Any]:
+    """Compare the two scores with the ones a human gave.
+
+    The tolerance is the case's own: how many points apart two scores may be
+    and still count as the same answer. A scorer that fixed the tolerance in
+    the code would make the number a property of the scorer instead of a
+    property of the case.
+
+    A score outside 0 to 100 is a case error, the way an unknown label is in
+    the classification families.
+    """
+    tolerance = _tolerance(case)
+    # The opportunity is the text the model reads. The score does not depend
+    # on it, but a case that does not hold one is malformed.
+    _text_field(case.input, "opportunity", "case input")
+    expected = _expected(case)
+    potential_gap = abs(
+        _score_number(output, "potential", "output")
+        - _score_number(expected, "potential", "expected block")
+    )
+    confidence_gap = abs(
+        _score_number(output, "confidence", "output")
+        - _score_number(expected, "confidence", "expected block")
+    )
+    return {
+        "n": 1,
+        "potential_exact_rate": 1.0 if potential_gap == 0 else 0.0,
+        "confidence_exact_rate": 1.0 if confidence_gap == 0 else 0.0,
+        "potential_within_rate": 1.0 if potential_gap <= tolerance else 0.0,
+        "confidence_within_rate": 1.0 if confidence_gap <= tolerance else 0.0,
+        "potential_mean_absolute_error": potential_gap,
+        "confidence_mean_absolute_error": confidence_gap,
+    }
 
 
 # --- the dispatcher ---------------------------------------------------------
@@ -591,6 +646,33 @@ _FAMILIES: dict[TaskName, _Family] = {
         metrics=("n", "accuracy", "precision", "recall", "f1"),
         primary="accuracy",
         scorer=score_counter_evidence_classification,
+    ),
+    TaskName.entity_resolution: _Family(
+        metrics=(
+            "true_positive",
+            "false_positive",
+            "false_negative",
+            "precision",
+            "recall",
+            "f1",
+            "group_count",
+            "expected_group_count",
+        ),
+        primary="f1",
+        scorer=score_entity_resolution,
+    ),
+    TaskName.scoring_consistency: _Family(
+        metrics=(
+            "n",
+            "potential_exact_rate",
+            "confidence_exact_rate",
+            "potential_within_rate",
+            "confidence_within_rate",
+            "potential_mean_absolute_error",
+            "confidence_mean_absolute_error",
+        ),
+        primary="potential_within_rate",
+        scorer=score_scoring_consistency,
     ),
 }
 
@@ -772,6 +854,31 @@ def _severity(mapping: dict[str, Any], where: str) -> int:
     return value
 
 
+def _score_number(mapping: dict[str, Any], name: str, where: str) -> float:
+    """Read one score: a number from 0 to 100."""
+    value = _required(mapping, name, where)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ScoreError(f"the {where} has a {name!r} that is not a number")
+    if not 0 <= value <= 100:
+        raise ScoreError(
+            f"the {where} has a {name!r} of {brief_value(value)}, expected 0 to 100"
+        )
+    return float(value)
+
+
+def _tolerance(case: EvalCase) -> float:
+    """How many points apart two scores may be and still count as the same."""
+    value = _required(case.input, "tolerance", "case input")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ScoreError("the case input has a 'tolerance' that is not a number")
+    if value < 0:
+        raise ScoreError(
+            f"the case input has a tolerance of {brief_value(value)}, which is "
+            "negative"
+        )
+    return float(value)
+
+
 def _normalization_fields(mapping: dict[str, Any], where: str) -> dict[str, str]:
     return {name: _text_field(mapping, name, where) for name in NORMALIZATION_FIELDS}
 
@@ -829,6 +936,19 @@ def _item_ids(case: EvalCase) -> set[str]:
         if not isinstance(item, dict):
             raise ScoreError(f"item {index} of the case input is not an object")
         ids.add(_text_field(item, "item_id", f"item {index} of the case input"))
+    return ids
+
+
+def _account_ids(case: EvalCase) -> set[str]:
+    """The account ids the case holds."""
+    ids: set[str] = set()
+    accounts = _list_field(case.input, "accounts", "case input")
+    for index, account in enumerate(accounts):
+        if not isinstance(account, dict):
+            raise ScoreError(f"account {index} of the case input is not an object")
+        ids.add(
+            _text_field(account, "account_id", f"account {index} of the case input")
+        )
     return ids
 
 

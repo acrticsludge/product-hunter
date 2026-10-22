@@ -200,7 +200,7 @@ def test_the_run_record_carries_the_model_identity_and_the_versions(tmp_path):
     assert run.model_version is None
     assert run.model_catalog is None
     assert run.prompt_version == "extract-v3"
-    assert run.evaluator_version == "eval-v1"
+    assert run.evaluator_version == "eval-v2"
     assert run.dataset_version == "ds-v1"
     assert run.prompt_versions == {"clustering": "cluster-v1"}
 
@@ -1025,7 +1025,7 @@ def test_the_report_names_the_model_under_test(tmp_path):
     assert "# Benchmark report" in markdown
     assert "opencode-go" in markdown
     assert "deepseek-v4.1-flash" in markdown
-    assert "eval-v1" in markdown
+    assert "eval-v2" in markdown
     assert "ds-v1" in markdown
     assert "extract-v3" in markdown
 
