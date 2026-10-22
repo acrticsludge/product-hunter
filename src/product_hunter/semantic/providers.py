@@ -12,6 +12,7 @@ is refused before anything is fetched if it is not an org/name pair.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -111,6 +112,25 @@ class UnknownProvider(ProviderError):
     reason_code = "embedding_provider_unknown"
 
 
+def _is_degenerate(vector: object) -> bool:
+    """A vector carries no information when it is all zero, all equal, or
+    contains a non-finite value. None of those may be accepted as evidence.
+    """
+    try:
+        values = [float(value) for value in vector]  # type: ignore[not-iterable]
+    except (TypeError, ValueError):
+        return True
+    if not values:
+        return True
+    if any(not math.isfinite(value) for value in values):
+        return True
+    if all(value == 0.0 for value in values):
+        return True
+    if all(value == values[0] for value in values):
+        return True
+    return False
+
+
 def _checked_model_id(model: str) -> str:
     """The model identifier, refused when it is not an org/name pair.
 
@@ -192,6 +212,12 @@ class LocalBGEM3Provider:
                     f"the model returned {len(encoded)} vectors for "
                     f"{len(chunk)} texts"
                 )
+            for vector in encoded:
+                if _is_degenerate(vector):
+                    raise ProviderError(
+                        "the model produced a degenerate vector "
+                        "(zero, constant, or non-finite)"
+                    )
             vectors.extend(
                 tuple(float(value) for value in vector) for vector in encoded
             )
@@ -325,8 +351,14 @@ class LocalBGEM3Provider:
 
         A corrupt cache is a fact an operator has to see, so the provider
         refuses it instead of fetching the weights again behind its back.
+
+        BGE-M3 ships either ``model.safetensors`` or ``pytorch_model.bin``
+        depending on the revision, so the two are treated as alternatives:
+        at least one of them must be present and non-empty.
         """
-        for name in self._required_files:
+        weight_names = {"model.safetensors", "pytorch_model.bin"}
+        other_files = [name for name in self._required_files if name not in weight_names]
+        for name in other_files:
             candidate = Path(path) / name
             if not candidate.is_file():
                 raise ModelCacheCorrupt(
@@ -336,6 +368,21 @@ class LocalBGEM3Provider:
                 raise ModelCacheCorrupt(
                     f"the model cache at {path} holds an empty {name}"
                 )
+        # The model ships either format depending on the revision, so at
+        # least one of them must be present and non-empty.
+        present = [
+            Path(path) / name for name in weight_names
+            if (Path(path) / name).is_file()
+        ]
+        if not present:
+            raise ModelCacheCorrupt(
+                f"the model cache at {path} is missing one of "
+                + ", ".join(sorted(weight_names))
+            )
+        if any(candidate.stat().st_size == 0 for candidate in present):
+            raise ModelCacheCorrupt(
+                f"the model cache at {path} holds an empty weight file"
+            )
 
     def _load(self, path: str, device: str) -> tuple[Any, str]:
         """The model on the device, with the fall back when it is allowed."""

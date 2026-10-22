@@ -1758,7 +1758,7 @@ def project_command(
                 projector = Projector(vault_root, source=SqliteProjectionSource(conn))
                 projector.as_of = as_of
                 if work is not None:
-                    processed = _drain_outbox(work, projector)
+                    processed = _drain_outbox(work, projector, db_path=path, root=root)
                 result = projector.last_result
                 if result is None:
                     # No task was pending, so the drain built nothing and the
@@ -1916,29 +1916,76 @@ def _run_index_action(
     return 1
 
 
-def _drain_outbox(conn, projector: Projector) -> int:
-    """Run the pending obsidian tasks through the outbox.
+def _drain_outbox(conn, projector: Projector, *, db_path=None, root=None) -> int:
+    """Run the pending projection tasks through the outbox.
 
     The outbox owns the task bookkeeping: a projection that raises leaves
     the task pending and schedules the retry. The vault is built once for
     the whole drain, not once per task: it is a projection of the whole
     state, and the state does not change while the outbox runs.
+
+    Qdrant and DuckDB are downstream projections too. They are wired in
+    here so a projection task enqueued for either target is actually
+    drained, instead of failing closed with "no handler". A backend that
+    cannot be built (missing config, unreachable server) is skipped, and
+    its tasks stay pending for a later run rather than aborting the drain.
     """
+    handlers: dict[str, object] = {}
+
     built = False
 
-    def handle(task) -> None:
-        """Build the vault for the first task of the drain, and leave the rest."""
+    def handle_obsidian(task) -> None:
         nonlocal built
         if built:
             return
         projector.handle_projection_task(task)
         built = True
 
+    handlers["obsidian"] = handle_obsidian
+
+    # Qdrant projection handler.
+    try:
+        from product_hunter.semantic import SemanticIndex, build_provider
+        from product_hunter.semantic.qdrant import QdrantAdapter
+
+        config = load_semantic_config()
+        adapter = _qdrant_adapter(config)
+        provider = build_provider(config, root=_root(root))
+        index = SemanticIndex(conn, adapter, provider, config=config)
+        index.ensure_ready()
+
+        def handle_qdrant(task) -> None:
+            index.handle_projection_task(task)
+
+        handlers["qdrant"] = handle_qdrant
+    except Exception:
+        # Qdrant is optional at drain time; tasks stay pending.
+        pass
+
+    # DuckDB projection handler.
+    try:
+        from product_hunter.analytics.ingest import Analytics
+
+        resolved_root = _root(root)
+        db_path_resolved = db_path if db_path is not None else resolved_root / "db" / "product_hunter.db"
+        analytics = Analytics.open(
+            duckdb_path=resolved_root / "db" / "product_hunter.duckdb",
+            sqlite_path=db_path_resolved,
+        )
+
+        def handle_duckdb(task) -> None:
+            analytics.refresh()
+
+        handlers["duckdb"] = handle_duckdb
+        handlers["analytics"] = handle_duckdb
+    except Exception:
+        pass
+
     return process_outbox(
         conn,
-        {"obsidian": handle},
+        handlers,
         f"ph-project-{os.getpid()}",
-        target="obsidian",
+        target=None,
         max_tasks=100,
     )
 

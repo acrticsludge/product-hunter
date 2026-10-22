@@ -16,7 +16,7 @@ from product_hunter.db import (
 # The number of migration files in db/migrations, and so the schema version a
 # migrated database carries. One number, so a new migration is a one-line
 # change here instead of a hunt through the file.
-EXPECTED_VERSION = 8
+EXPECTED_VERSION = 10
 
 EXPECTED_TABLES = {
     "sources",

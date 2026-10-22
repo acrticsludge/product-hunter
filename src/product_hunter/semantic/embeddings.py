@@ -13,6 +13,7 @@ from pathlib import Path
 
 from product_hunter.clustering.similarity import Embedder, MixedVectorSpaceError
 from product_hunter.config import SemanticConfig
+from product_hunter.semantic.providers import _is_degenerate
 from product_hunter.semantic.providers import build_provider
 
 
@@ -40,5 +41,10 @@ def embed_all(embedder: Embedder, texts: Sequence[str]) -> list[tuple[float, ...
             raise MixedVectorSpaceError(
                 f"a vector of {len(vector)} dimensions came back from a space "
                 f"of {width} dimensions"
+            )
+        if _is_degenerate(vector):
+            raise MixedVectorSpaceError(
+                "a degenerate vector (zero, constant, or non-finite) "
+                "came back from the embedder"
             )
     return [tuple(float(value) for value in vector) for vector in vectors]

@@ -250,6 +250,7 @@ def test_the_config_loader_leaves_the_provider_disabled_without_a_key(monkeypatc
     from product_hunter.config import load_subq_config
 
     monkeypatch.delenv("SUBQ_API_KEY", raising=False)
+    monkeypatch.setattr("product_hunter.config.load_dotenv", lambda *a, **k: None)
 
     config = load_subq_config()
 
