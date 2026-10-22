@@ -1038,7 +1038,7 @@ def db_status_command(
                 return 1
             counts = {
                 table: int(
-                    conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                    conn.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0]
                 )
                 for table in _schema_tables(conn)
             }

@@ -1,12 +1,17 @@
 # Product Hunter architecture
 
-**Baseline.** This document describes the working tree, not the last commit. At
-the fourth stage-8 pass of phase 4, on 2026-10-21, HEAD was `80a98a4`. The
-model router, the research contract and gate engine, the scheduler, the worker
-runtime, and the evaluation benchmark package are in the tree and were still
-uncommitted when this was written. They are `IMPLEMENTED` like any other code.
-The full specification is
+**Baseline.** This document describes the working tree. It was rewritten on
+2026-10-22, after the Wave 2 final integration, when the tree held the eight
+Wave 2 packages: the evidence pipeline, the discovery engine, the collection
+layer, the clustering engine, the independence analysis, the opportunity
+scoring, the investigation engine, and the Obsidian projection. The model
+router, the research contract and gate engine, the scheduler, the worker
+runtime, and the evaluation benchmark package are still here. They are
+`IMPLEMENTED` like any other code. The full specification is
 [Product-Hunter-Full-Spec.md](specs/Product-Hunter-Full-Spec.md).
+
+The integration report for that pass is
+[wave-2-final-integration.md](reports/wave-2-final-integration.md).
 
 ## Claim labels
 
@@ -69,36 +74,65 @@ migration-history table and no checksum, so drift is not detected. Files in
 `db/migrations/` must be named `NNNN_name.sql`, must start at 1, and must be
 contiguous; a gap or a duplicate number raises `MigrationError`. Each migration
 runs inside `BEGIN IMMEDIATE` and `COMMIT`, then sets `PRAGMA user_version`.
-`migrate()` is idempotent and returns 2 on a current database. The runner splits
-SQL on `;`, so a semicolon inside a string literal is not supported.
+`migrate()` is idempotent and returns the version on a current database. The
+runner splits a statement where `sqlite3.complete_statement` says one ends, so
+a trigger body keeps the semicolon it needs and a semicolon inside a string
+literal does not cut a statement in half.
 
-## The twenty-eight tables
+## The forty-five tables
 
-`IMPLEMENTED` (`db/migrations/0001_initial.sql`,
-`db/migrations/0002_model_routing.sql`,
-`db/migrations/0003_research_gate.sql`). The schema holds twenty-eight tables:
-nineteen from the base migration, four from the model routing migration, and
-five from the research gate migration.
+`IMPLEMENTED` (`db/migrations/0001_initial.sql` through
+`db/migrations/0007_independence.sql`). The schema holds forty-five tables
+across seven migrations.
+
+| Migration | Number | Tables |
+|---|---|---|
+| `0001_initial.sql` | 1 | `sources`, `fetches`, `communities`, `documents`, `authors`, `author_links`, `evidence`, `pain_points`, `evidence_pain_links`, `propagation_edges`, `research_runs`, `research_artifacts`, `research_events`, `research_checkpoints`, `jobs`, `stage_attempts`, `projection_tasks`, `spend_ledger`, `human_decisions` |
+| `0002_model_routing.sql` | 2 | `model_catalogs`, `model_inventory`, `model_role_bindings`, `model_executions` |
+| `0003_research_gate.sql` | 3 | `tool_calls`, `research_stage_executions`, `research_stage_artifacts`, `research_claims`, `stage_gate_results` |
+| `0004_collection.sql` | 4 | `collection_source_state`, `collection_run_state`, `collection_items` |
+| `0005_evidence_pipeline.sql` | 5 | `document_versions`, `evidence_observations`, `evidence_lineage` |
+| `0006_clustering.sql` | 6 | `clustering_runs`, `clusters`, `cluster_versions`, `cluster_members`, `cluster_lineage`, `cluster_decisions` |
+| `0007_independence.sql` | 7 | `author_identity_links`, `community_links`, `author_clusters`, `author_cluster_members`, `independence_reports` |
+
+The numbering is the pipeline order of spec §10: collect, then evidence, then
+cluster, then independence. The four Wave 2 migrations were each written as
+`0003_*` in a worktree that forked before the research gate took the number,
+so the integration renumbered them. The migration loader refuses a duplicate
+number and refuses a gap, so an unreconciled merge fails at `db init` rather
+than silently.
 
 | Group | Tables |
 |---|---|
 | Collection and provenance | `sources`, `fetches`, `communities`, `documents`, `authors`, `author_links` |
 | Analysis | `evidence`, `pain_points`, `evidence_pain_links` |
+| Evidence lifecycle | `document_versions`, `evidence_observations`, `evidence_lineage` |
+| Collection state | `collection_source_state`, `collection_run_state`, `collection_items` |
+| Clustering | `clustering_runs`, `clusters`, `cluster_versions`, `cluster_members`, `cluster_lineage`, `cluster_decisions` |
+| Independence | `author_identity_links`, `community_links`, `author_clusters`, `author_cluster_members`, `independence_reports` |
 | Research registry | `research_runs`, `research_artifacts`, `research_events`, `research_checkpoints` |
 | Execution | `jobs`, `stage_attempts`, `projection_tasks` |
 | Model routing | `model_catalogs`, `model_inventory`, `model_role_bindings`, `model_executions` |
 | Research gate | `tool_calls`, `research_stage_executions`, `research_stage_artifacts`, `research_claims`, `stage_gate_results` |
-| Reserved, no writer | `propagation_edges`, `spend_ledger`, `human_decisions` |
+| Reserved, no writer | `propagation_edges`, `human_decisions` |
 
-Three tables have no writer anywhere in `src/`: `propagation_edges`,
-`spend_ledger`, and `human_decisions`. They exist so a later phase can use them,
-and today they stay empty. The independent-author and propagation analysis from
-spec §12, the budget writes from spec §22, and the approval records from spec
-§37 are the work that would fill them.
+Two tables still have no writer anywhere in `src/`: `propagation_edges` and
+`human_decisions`. `propagation_edges` gained its columns in the independence
+migration but still holds no row, because nothing writes a propagation edge
+yet. `human_decisions` is the approval record of spec §37, and there is no
+external-account or posting path for it to record.
+
+`spend_ledger` now has a writer: `src/product_hunter/discovery/store.py` writes
+one row per discovery record. That is the only writer, so the budget
+dimensions measured from it are still narrow.
 
 `research_stage_artifacts` is not `research_artifacts`. The first holds the
 files of an extraction run, the second holds the stage outputs the research gate
 judges. They are different things and they are not merged.
+
+`documents.live_status` is added by the evidence migration. The independence
+migration wanted the same column with the same definition, and it is left to
+the evidence migration to add it.
 
 ## Runtime artifacts
 
@@ -292,6 +326,97 @@ headings, table rows, blockquotes, code fences and frontmatter delimiters,
 and blocks every URL whose scheme is not `http` or `https`. A value the
 database does not hold reads `not recorded`, never a zero.
 
+## The Wave 2 subsystems
+
+Eight packages arrived with the Wave 2 sessions. They are listed in the order
+of the pipeline of spec §10, and each one says what calls it.
+
+**The evidence pipeline.** `IMPLEMENTED` (`src/product_hunter/evidence.py`,
+`src/product_hunter/db/evidence.py`). It owns the chain from a document to a
+span: a document carries a content version, a span carries an observation
+history and a lineage, and the derived strength and reliability carry the
+version of the rule that produced them, so a later rule cannot silently
+rewrite an old row. `Store.import_document_version()` moves a document to its
+next content version and leaves the one it leaves behind in
+`document_versions`. Nothing calls it yet.
+
+**The discovery engine.** `IMPLEMENTED` (`src/product_hunter/discovery/`). It
+owns what to search: the ten query families of spec §7A, the controlled
+variants, the novelty and saturation bookkeeping, the per-run discovery
+budgets, and the persistent frontier. A frontier query stores its parent
+query, its family, its novelty yield, its duplicate yield, its source yield,
+its independent-author yield, and its last-seen time. `discovery/store.py`
+writes a discovery record as a tool-call-shaped row and a `spend_ledger`
+entry. Nothing calls it yet.
+
+**The collection layer.** `IMPLEMENTED` (`src/product_hunter/collection/`,
+`src/product_hunter/fetch.py`). It owns how to fetch: the collector ladder
+from an official API through a feed, direct HTTP, a local crawler, browser
+automation, to a managed scraper, and the refusal to run a rung that is not
+installed. `collection_items` holds one row per attempt, so a failure is not
+erased by the retry that follows it. The reason vocabulary separates a
+terminal refusal (`robots_blocked`, `terms_not_permitted`, `unsafe_url`) from a
+failure (`http_error`, `network_error`) and from a capture that produced
+nothing. `RequestBudget` in `fetch.py` holds the per-source interval and the
+per-run cap. Nothing calls it yet.
+
+**The clustering engine.** `IMPLEMENTED` (`src/product_hunter/clustering/`,
+`src/product_hunter/db/clustering.py`). It answers one question: do these
+pieces of evidence describe the same underlying problem? It does not answer
+whether the problem is a good startup. It normalises, compares, generates
+candidates, assigns, merges and splits, and records every decision with the
+model that made it and the version of the prompt. The history is never
+rewritten: a membership is closed with a `valid_to` and never deleted, and a
+lineage edge points from the old cluster to the new one. The nearest-neighbour
+comparison is a full scan of the corpus today, which is recorded as a
+`shortcut:` marker. Nothing calls it yet.
+
+**The independence analysis.** `IMPLEMENTED`
+(`src/product_hunter/independence/`, `src/product_hunter/db/independence.py`).
+It answers how many independent people a body of evidence really holds. The
+identity resolver resolves authors and communities, the propagation detector
+finds reposts, quotes, cross-posts and syndication, and the analytics layer
+counts raw mentions, canonical observations, independent authors, uncertain
+authors, independent communities, propagation-adjusted evidence and source
+concentration. A model may supply a signal; the policy refuses a
+configuration that would let a weak or model-supplied signal reach a merge
+threshold, so the count is computed by code and not declared by a model.
+Nothing writes a propagation edge yet, and nothing calls the package.
+
+**The opportunity scoring.** `IMPLEMENTED` (`src/product_hunter/opportunity/`).
+Potential and Confidence are two separate scales and never share a term.
+Potential considers severity, frequency, the willingness-to-pay tier, the
+reachable market, the competitive gap, buildability and recurrence.
+Confidence considers independent authors discounted for identity uncertainty,
+community diversity, the source-reliability mix, temporal persistence, the
+propagation-adjusted count, extraction agreement and the counter-evidence
+coverage. The willingness-to-pay tiers are `W0` to `W4`, and a niche override
+is recorded with its reason rather than silently applied. Every score is a
+content-addressed snapshot that names the policy version and the input
+snapshot ids. Nothing calls it yet.
+
+**The investigation engine.** `IMPLEMENTED`
+(`src/product_hunter/research/investigation/`). It researches an opportunity
+instead of only scoring it: competitor search, counter-evidence, coverage,
+the investigation budget, the checkpoints, and the startup-killer pass. The
+query families come from code-side templates, not from the model. A zero
+result is only reachable on a complete coverage, so an incomplete search reads
+as incomplete rather than as "no competitor exists". The engine bridges into
+the research gate through `investigation_stage_execution()`. It has no
+persistence: the checkpoint is a value, and storing it arrives with the wave
+that owns the migration.
+
+**The Obsidian projection.** Described above. `ph project` builds the vault
+and `ph project --outbox` drains the outbox through it.
+
+### The seam each of them waits for
+
+Seven of the eight are libraries with a store and no caller. The projection
+is the exception: it has a CLI command and an outbox handler. The missing
+piece is a stage handler that claims a job, runs one stage, records its tool
+calls and artifacts in the gate's tables, and advances the run. The gate can
+already refuse a run; nothing yet asks it to.
+
 ## Subsystems that exist but are not on the pipeline
 
 Each of these is `IMPLEMENTED` and reachable, and each has one thing that does
@@ -311,6 +436,19 @@ manifest says which one ran. No model is named in the business logic: the
 chains are patterns in `config/model_routing.yaml`, resolved against a
 catalogue discovered from OpenCode at runtime. The full story is in
 [MODEL_ROUTING_IMPLEMENTATION.md](MODEL_ROUTING_IMPLEMENTATION.md).
+
+All thirteen roles of spec §3 exist as `ModelRole` members and as configured
+chains in `config/model_routing.yaml`: `extraction`, `classification`,
+`normalization`, `deduplication`, `entity_resolution`, `clustering`,
+`validation`, `investigation`, `competitor_research`, `counter_evidence`,
+`scoring`, `reporting`, `synthesis`. Only `extraction` is bound to a live
+call path. The Wave 2 engines take a resolved model identity as an input and
+record it, which is the seam a caller resolves the role through: the
+clustering adjudicator takes `provider`, `model`, `model_version` and
+`prompt_version` and writes them into every decision row, and the similarity
+layer takes the embedding model's identity and derives the vector space id
+from it. No Wave 2 package resolves a role itself, and none of them names a
+model.
 
 **The research contract and gate engine.** `IMPLEMENTED`
 (`src/product_hunter/research/`, `config/research_contract.yaml`). The contract
@@ -401,12 +539,52 @@ extraction side uses a different vocabulary, described in
 machine from spec §41.2 is not implemented, and neither is `continue` from spec
 §41.6 or cross-chat continuity from spec §41.8.
 
+### What the Wave 2 packages added to the chain
+
+The evidence pipeline extends the chain with three things the earlier tree did
+not have.
+
+A document carries a `content_version`, so a re-capture of the same URL is a
+new version of the same document rather than a conflict. The version it
+leaves behind stays in `document_versions`, and the row keeps the first and
+last time it was seen.
+
+A span carries an observation history. The same span seen again in another
+version of the document is another observation of the same span, written to
+`evidence_observations` with the extractor, the model, the prompt version and
+the quote that was seen. `evidence_lineage` records every lifecycle event: a
+document event, a span event, a rejection.
+
+The derived facts carry their rule version. The strength and the reliability
+of a span are written with the version of the rule that produced them, so a
+later rule cannot silently rewrite an old row, and a recomputation is an
+explicit act.
+
+The database enforces the weakest link of the chain. `0005_evidence_pipeline.sql`
+installs three triggers: a pain point cannot be inserted without an evidence
+span that has a non-empty quote and a possible character range, and an
+evidence link cannot point at a pain point that a different span backs. The
+check is in the schema, so it holds for every writer, including one that does
+not know the rule.
+
+The clustering layer extends the chain with the cluster: a membership that
+closes is closed with a `valid_to` and never deleted, a version row holds one
+snapshot of a cluster, and a lineage edge points from a merged or split
+cluster to its successor. The opportunity layer extends it with the score: a
+snapshot is content-addressed, names the policy version it was computed
+under, and names the input snapshot ids it was computed from.
+
+The independence layer extends it with the author: an author carries an
+identity key, an identity confidence, the basis of that confidence, a
+deletion status and a first and last seen date. The identity key is a hash.
+No raw handle is stored in it.
+
 ## Roles that are not code
 
 **OpenCode.** It is the interaction surface. The operator runs `ph` through it,
 it holds the user's model selection, and it hosts the ten project skills under
-`.opencode/skills/`. It is not the authority for research state. The repository
-README still says five skills; that line is stale and this wave does not fix it.
+`.opencode/skills/`. It is not the authority for research state. The README
+lists the same ten skills.
 
 **MCP.** Spec §6 specifies MCP as an OpenCode integration surface for interactive
 exploration, not as the authoritative execution mechanism for unattended runs.
@@ -427,7 +605,8 @@ rather than an approval gate.
 
 ## Hazards
 
-One is closed, one is closed, and one is a standing limit.
+Two are closed, two are closed by the Wave 2 integration, and one is a
+standing limit.
 
 **`.gitignore` hides the worker runtime package.** `CLOSED`. `.gitignore` holds
 `/runtime/`, and the leading slash anchors the pattern to the repository root,
@@ -445,12 +624,35 @@ is in the committed tree.
 now say `0003`. The file exists and holds the five tables the gate needs, and
 `0003` is taken by it.
 
+**Four Wave 2 migrations claimed the number `0003`.** `CLOSED`. Each of the
+collection, evidence, clustering and independence sessions wrote a `0003_*`
+migration in its own worktree, which forked before the research gate took the
+number. The migration loader refuses a duplicate number and refuses a gap, so
+the break failed loudly at `db init` rather than silently. The integration
+renumbered them to `0004`, `0005`, `0006` and `0007` in the pipeline order of
+spec §10, and the one column two of them both wanted,
+`documents.live_status`, has one owner.
+
+**The migration runner split a statement on a semicolon.** `CLOSED`. The
+runner cut the SQL on `;`, so a trigger body was cut in half and a semicolon
+inside a string literal ended a statement early. The evidence migration needs
+triggers, so the runner now splits where `sqlite3.complete_statement` says a
+statement ends.
+
 **The gate has a home but no caller.** `OPEN`. The evidence, the verdicts, the
 budget measurement, and the fail-closed `require_promotable()` all exist and
 are tested. Nothing in the running system calls them yet: no worker handler
 records a tool call or an artifact, no CLI command evaluates a run, and there
 is no promotion path to refuse. The gate is enforceable and enforced in a
 library, and the caller that makes it bite is the next wave's work.
+
+**Seven of the eight Wave 2 packages have no caller.** `OPEN`. The evidence
+pipeline, the discovery engine, the collection layer, the clustering engine,
+the independence analysis, the opportunity scoring and the investigation engine
+are complete, tested libraries, and nothing in the running system calls them.
+The projection is the exception. The same missing piece causes both hazards:
+a stage handler that claims a job, runs one stage, records its tool calls and
+artifacts in the gate's tables, and advances the run.
 
 ## What is not implemented
 
@@ -461,17 +663,19 @@ named there and have no code in this branch.
 |---|---|---|
 | Research run lifecycle and transitions | §41.2 | `PLANNED`, full spec only, no wave spec |
 | `continue` and cross-chat continuity | §41.6, §41.8 | `PLANNED`, full spec only, no wave spec |
-| `spend_ledger` writes and global spend caps | §22 | `PLANNED`; the table exists and stays empty, and the gate reads it for the budget it measures |
-| Opportunity states and scoring | §20, §23 | `PLANNED`, full spec only, no wave spec |
+| `spend_ledger` writes and global spend caps | §22 | `PARTIAL`; the discovery store writes one row per discovery record, and the other budget dimensions still have no writer, so the gate reports them as unmeasured rather than as zero |
+| Opportunity states and scoring | §20, §23 | `IMPLEMENTED` as a library (`src/product_hunter/opportunity/`); the `opportunities` table and the lifecycle in the database are `PLANNED`, and no caller |
 | Qdrant and DuckDB projections | §14, §16 | `PLANNED`, full spec only, no wave spec |
 | Obsidian projection | §27 | `IMPLEMENTED` (`src/product_hunter/projection/`); two-way interaction is `PLANNED` |
-| Independent-author and propagation analysis | §12 | `PLANNED`; the `propagation_edges` table exists and stays empty |
+| Independent-author and propagation analysis | §12 | `IMPLEMENTED` as a library (`src/product_hunter/independence/`); `propagation_edges` still has no writer, and the analysis has no caller |
+| Embeddings and a vector store | §14 | `PARTIAL`; the similarity layer takes an embedding identity and a space id, the local embedding model is imported lazily and was never run, and the vector store is `PLANNED` |
 | Backup, restore, retention, drift canaries | §38B | `PLANNED`, full spec only, no wave spec |
 | Human approval gates | §37 | `BLOCKED` on an external-account, posting, or Git write path that does not exist |
 | MCP server or client | §6 | `PLANNED`; no MCP code exists |
 | Obsidian projection handler for the outbox | §15A, §27 | `IMPLEMENTED` (`src/product_hunter/projection/engine.py`) |
-| A persistent query frontier with novelty and saturation | §7A | `PARTIAL`; the families, the controlled variants, and the mandatory templates are worker-owned and enforced, and the frontier's novelty and saturation bookkeeping is not built |
+| A persistent query frontier with novelty and saturation | §7A | `IMPLEMENTED` (`src/product_hunter/discovery/`); it has no caller |
 | A stage handler that records tool calls and artifacts | §6A | `PLANNED`; the stores and the fence exist, and no handler writes to them yet |
+| The scheduler has no entry point | §18 | `IMPLEMENTED` as a library; nothing runs `Scheduler.tick()` and no CLI command calls it |
 
 Model selection and its honest status are in
 [MODEL_ROUTING_IMPLEMENTATION.md](MODEL_ROUTING_IMPLEMENTATION.md). What the code

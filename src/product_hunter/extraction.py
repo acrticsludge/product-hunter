@@ -396,10 +396,10 @@ The quote must be an exact substring of the source text between the markers, at 
 
 pain_statement is a short neutral statement of the problem, in your own words. rationale explains the classification and uses only the source text.
 
-Return at most {max_candidates} candidates. If the text has no pain point, return {{"candidates": []}}.
+Return at most {max_candidates} candidates. If the text has no pain point, return {"candidates": []}.
 
 Return one json object shaped like this:
-{{"candidates": [{{"quote": "the exact sentence from the source", "pain_validity": "genuine", "reason": "time_cost", "pain_statement": "the team spends a Saturday pasting invoice totals by hand", "severity": 3, "frequency": "monthly", "confidence": 0.8, "rationale": "the text says the totals are pasted by hand and it takes a Saturday", "domain": "finance", "actor": "the bookkeeping team", "action": "paste invoice totals by hand", "object": "invoice totals", "consequence": "a Saturday of manual work every month"}}]}}
+{"candidates": [{"quote": "the exact sentence from the source", "pain_validity": "genuine", "reason": "time_cost", "pain_statement": "the team spends a Saturday pasting invoice totals by hand", "severity": 3, "frequency": "monthly", "confidence": 0.8, "rationale": "the text says the totals are pasted by hand and it takes a Saturday", "domain": "finance", "actor": "the bookkeeping team", "action": "paste invoice totals by hand", "object": "invoice totals", "consequence": "a Saturday of manual work every month"}]}
 """
 
 
@@ -420,7 +420,14 @@ def build_prompt(
 ) -> str:
     """Build the extraction prompt for one chunk, or refuse to build it."""
     limit = _default_max_input_chars() if max_input_chars is None else max_input_chars
-    prompt = _PROMPT.format(text=chunk.text, max_candidates=max_candidates)
+    # The source text is data, not a template. The placeholders are replaced
+    # literally, so a brace in a scraped page cannot break the prompt's
+    # structure, and the text reaches the model exactly as it was captured.
+    # The candidate count is replaced first, so a page that holds the
+    # placeholder text cannot have it substituted a second time.
+    prompt = _PROMPT.replace("{max_candidates}", str(max_candidates)).replace(
+        "{text}", chunk.text
+    )
     if len(prompt) > limit:
         raise PromptTooLarge(
             f"prompt is {len(prompt)} characters, the limit is {limit}"

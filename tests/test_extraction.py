@@ -1315,6 +1315,47 @@ def test_prompt_fits_the_shipped_config_limit():
     assert len(prompt) <= config.limits.max_input_chars
 
 
+def test_a_brace_in_the_source_text_cannot_break_the_prompt():
+    # A scraped page is data. A brace in it is data too, and it must not be
+    # able to break the prompt's structure or stop the run.
+    text = 'the team pastes {every} total by hand, and {max_candidates} is odd'
+    chunk = DocumentChunk(
+        doc_id="doc_test",
+        chunk_index=0,
+        char_start=0,
+        char_end=len(text),
+        text=text,
+    )
+
+    prompt = build_prompt(chunk, max_candidates=3)
+
+    # The text arrives verbatim, braces and all.
+    assert text in prompt
+    # The candidate count is the real one, and the text did not get a second
+    # substitution.
+    assert "Return at most 3 candidates" in prompt
+    assert "Return at most {max_candidates} candidates" not in prompt
+    # The json example still shows single braces, so the model reads the
+    # shape it is asked to return.
+    assert '{"candidates": []}' in prompt
+
+
+def test_a_source_text_with_a_placeholder_is_not_substituted_again():
+    text = "the page says {max_candidates} and {text} in its body"
+    chunk = DocumentChunk(
+        doc_id="doc_test",
+        chunk_index=0,
+        char_start=0,
+        char_end=len(text),
+        text=text,
+    )
+
+    prompt = build_prompt(chunk, max_candidates=3)
+
+    assert text in prompt
+    assert "Return at most 3 candidates" in prompt
+
+
 # --- boundaries ------------------------------------------------------------
 
 

@@ -10,7 +10,6 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-import logging
 from datetime import date, datetime, timezone
 
 import httpx
@@ -182,6 +181,9 @@ class Harness:
         self.sleeper = FakeSleeper()
         self.calls: list[str] = []
         self.requests: list[httpx.Request] = []
+        # The collection layer does not log. It hands a structured event to
+        # the caller, and the caller decides what to do with it.
+        self.events: list[dict[str, str]] = []
 
         def recording(request: httpx.Request) -> httpx.Response:
             self.calls.append(str(request.url))
@@ -206,10 +208,12 @@ class Harness:
             resolver=resolver if resolver is not None else (lambda host: [PUBLIC]),
             now=lambda: FROZEN,
             contract=contract,
+            events=self.events.append,
         )
 
     def restart(self, *, clock=None, resolver=None, contract=None):
         """A new orchestrator over the same store, as a restarted process has."""
+        self.events.clear()
         return self._build(clock, resolver, contract)
 
     def create_run(self, run_id: str = "run-1") -> None:
@@ -875,7 +879,7 @@ def test_the_plan_reports_what_it_left_out(tmp_path):
 # --- the checkpoint ------------------------------------------------------
 
 
-def test_a_broken_checkpoint_does_not_erase_the_attempt(tmp_path, caplog):
+def test_a_broken_checkpoint_does_not_erase_the_attempt(tmp_path):
     def handler(request):
         return body_200(b"{}")
 
@@ -891,8 +895,7 @@ def test_a_broken_checkpoint_does_not_erase_the_attempt(tmp_path, caplog):
         checkpoint_version=1,
     )
 
-    with caplog.at_level(logging.WARNING):
-        outcome = harness.orchestrator.collect("run-1", target())
+    outcome = harness.orchestrator.collect("run-1", target())
 
     # The attempt is the fact: it survives the broken checkpoint.
     assert outcome.outcome == "fetched"
@@ -901,8 +904,14 @@ def test_a_broken_checkpoint_does_not_erase_the_attempt(tmp_path, caplog):
     assert item.outcome == "fetched"
     assert harness.state().request_counts("run-1") == {"hn_algolia": 1}
     assert harness.state().run_state("run-1", "hn_algolia").fetch_count == 1
-    # The broken checkpoint is reported, not raised.
-    assert any("checkpoint" in record.getMessage() for record in caplog.records)
+    # The broken checkpoint is reported to the caller, not raised.
+    events = [event for event in harness.events if event["event"] == "checkpoint_write_failed"]
+    assert len(events) == 1
+    assert events[0]["source_id"] == "hn_algolia"
+    assert events[0]["scope"] == "run-1"
+    # The event names the source and the error class. It does not name the
+    # URL, because the URL came from the network.
+    assert URL not in events[0].values()
 
 
 # --- the ladder ----------------------------------------------------------
@@ -1239,7 +1248,7 @@ def test_a_keyboard_interrupt_is_not_swallowed(tmp_path):
         harness.orchestrator.collect("run-1", target())
 
 
-def test_the_run_over_its_contract_is_reported(tmp_path, caplog):
+def test_the_run_over_its_contract_is_reported(tmp_path):
     def handler(request):
         return body_200(b"{}")
 
@@ -1250,13 +1259,13 @@ def test_the_run_over_its_contract_is_reported(tmp_path, caplog):
 
     # The run is replayed against a contract it is over.
     restarted = harness.restart(contract=tight_contract(1))
-    with caplog.at_level(logging.WARNING):
-        restarted.start_run("run-1")
+    restarted.start_run("run-1")
 
-    messages = [record.getMessage() for record in caplog.records]
-    assert any("fetch_requests" in message for message in messages)
-    assert any("per_run" in message for message in messages)
-    assert any("run-1" in message for message in messages)
+    events = [event for event in harness.events if event["event"] == "budget_overrun"]
+    assert events
+    assert any(event["dimension"] == "fetch_requests" for event in events)
+    assert any(event["budget_scope"] == "per_run" for event in events)
+    assert any(event["run"] == "run-1" for event in events)
 
 
 def test_the_rejection_detail_is_bounded(tmp_path):
@@ -1302,7 +1311,7 @@ def test_the_per_source_check_reads_the_same_stage_as_the_charge(tmp_path):
     assert len(harness.calls) == 1
 
 
-def test_the_replay_reads_the_same_stage_as_the_live_path(tmp_path, caplog):
+def test_the_replay_reads_the_same_stage_as_the_live_path(tmp_path):
     def handler(request):
         return body_200(b"{}")
 
@@ -1317,16 +1326,17 @@ def test_the_replay_reads_the_same_stage_as_the_live_path(tmp_path, caplog):
         harness.orchestrator.collect("run-1", target(f"https://hn.algolia.com/{index}"))
 
     # The scope is replayed against a contract it is over.
-    caplog.clear()
     restarted = harness.restart(contract=stage_limited_contract(1))
-    with caplog.at_level(logging.WARNING):
-        restarted.start_run("run-1")
+    restarted.start_run("run-1")
 
     # The replay charges the per-stage scope, so the per-stage limit is the
     # one it reports.
-    messages = [record.getMessage() for record in caplog.records]
-    assert any("source_requests_per_source" in message for message in messages)
-    assert any("per_stage" in message for message in messages)
+    events = [event for event in harness.events if event["event"] == "budget_overrun"]
+    assert events
+    assert any(
+        event["dimension"] == "source_requests_per_source" for event in events
+    )
+    assert any(event["budget_scope"] == "per_stage" for event in events)
 
 
 # --- the attempts --------------------------------------------------------

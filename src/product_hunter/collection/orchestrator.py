@@ -10,10 +10,9 @@ to fetch and records what came back.
 
 from __future__ import annotations
 
-import logging
 import sqlite3
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -102,7 +101,14 @@ NO_CAPTURE_REASONS = frozenset(
     }
 )
 
-logger = logging.getLogger(__name__)
+EventSink = Callable[[Mapping[str, str]], None]
+"""Where the collection layer hands the events it cannot record itself.
+
+The layer does not log. It hands a structured event to the caller, and the
+caller decides what to do with it, so the observability policy stays with the
+application layer. An event carries identifiers the worker owns. It never
+carries a URL, a page title or any other text that came from the network.
+"""
 
 
 @dataclass(frozen=True)
@@ -328,12 +334,14 @@ class CollectionOrchestrator:
         sleeper=time.sleep,
         now=utcnow,
         contract: ResearchContract | None = None,
+        events: EventSink | None = None,
     ) -> None:
         self._registry = registry
         self._store = store
         self._conn = store.conn
         self._now = now
         self._resolver = resolver
+        self._events = events
         self._state = CollectionState(self._conn)
         self._contract = contract or load_research_contract()
         self._tracker = BudgetTracker(self._contract.budgets)
@@ -671,15 +679,27 @@ class CollectionOrchestrator:
                     # overrun.
                     self._log_overrun(exc, scope)
 
-    @staticmethod
-    def _log_overrun(exc: BudgetExceeded, scope: str | None) -> None:
+    def _emit(self, event: str, **fields: str) -> None:
+        """Hand an event to the caller, when the caller wants events.
+
+        The library does not log, and an event never carries a URL or any
+        other text that came from the network. The caller owns the
+        observability policy, so the event is handed over as data.
+        """
+        if self._events is None:
+            return
+        self._events({"event": event, **fields})
+
+    def _log_overrun(self, exc: BudgetExceeded, scope: str | None) -> None:
         """Say that the scope went over its contract, and by how much."""
-        logger.warning(
-            "the %s budget of scope %s is over its limit of %s for %s",
-            exc.dimension,
-            exc.scope,
-            exc.limit,
-            scope or "the current scope",
+        self._emit(
+            "budget_overrun",
+            dimension=exc.dimension,
+            budget_scope=exc.scope,
+            limit=str(exc.limit),
+            spent=str(exc.spent),
+            requested=str(exc.requested),
+            run=scope or "",
         )
 
     def _gap_floors(self, scope: str) -> dict[str, datetime]:
@@ -752,12 +772,14 @@ class CollectionOrchestrator:
                 checkpoint_version=1,
             )
         except Exception as exc:
-            logger.warning(
-                "the checkpoint for %s %s could not be written: %s: %s",
-                target.source_id,
-                target.url,
-                type(exc).__name__,
-                exc,
+            # The event names the source and the error class. It does not name
+            # the URL: the URL came from the network, and the caller decides
+            # what may be logged.
+            self._emit(
+                "checkpoint_write_failed",
+                source_id=target.source_id,
+                scope=scope,
+                error=type(exc).__name__,
             )
 
     def _run_exists(self, run_id: str) -> bool:

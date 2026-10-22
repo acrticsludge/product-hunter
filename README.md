@@ -2,8 +2,15 @@
 
 Product Hunter turns a manually chosen public page into a stored observation: it
 captures the raw bytes, extracts a pain point with a language model, and checks
-that the pain point quotes the source verbatim. Phase 1 proves that chain at
-small scale. Clustering, scoring, and market validity wait for later phases.
+that the pain point quotes the source verbatim. Phase 1 proved that chain at
+small scale.
+
+Wave 2 built the layers above it: the evidence pipeline, the discovery engine,
+the collection layer, the problem clustering engine, the independence analysis,
+the opportunity scoring, the investigation engine, and the Obsidian projection.
+They are libraries with stores and tests, and the one that runs today is the
+projection. What is still missing is the stage handler that drives a run
+through them.
 
 ## Commands
 
@@ -41,6 +48,35 @@ small scale. Clustering, scoring, and market validity wait for later phases.
   controls the research runs. The actions are `create`, `list`, `status`,
   `continue`, `resume`, `pause`, `retry`, `cancel`, and `log`. It prints one
   JSON object and exits 1 on a refusal. `PH_DB_PATH` moves the database.
+- `ph project [--vault PATH] [--outbox] [--as-of YYYY-MM-DD]` builds the
+  Obsidian projection of the store. `--outbox` drains the pending projection
+  tasks first. The vault is a projection: it can be deleted and rebuilt.
+
+## The Wave 2 pipeline
+
+Eight packages sit between the extraction chain and the vault.
+
+| Package | Owns | Called by |
+| --- | --- | --- |
+| `product_hunter.evidence` | document versions, span observations, lineage, the derived strength and reliability | nothing yet |
+| `product_hunter.discovery` | the query families, the frontier, the novelty and saturation, the discovery budgets | nothing yet |
+| `product_hunter.collection` | the collector ladder, the per-source run state, the attempt ledger | nothing yet |
+| `product_hunter.clustering` | the problem clusters, their versions, their lineage, the decisions | nothing yet |
+| `product_hunter.independence` | the author and community identity, the propagation edges, the independent counts | nothing yet |
+| `product_hunter.opportunity` | Potential, Confidence, the willingness-to-pay tiers, the lifecycle, the score snapshots | nothing yet |
+| `product_hunter.research.investigation` | competitor search, counter-evidence, coverage, the startup killer | nothing yet |
+| `product_hunter.projection` | the sanitised, deterministic Obsidian vault | `ph project` |
+
+The chain the specification names is raw source, document, evidence span, claim,
+cluster, opportunity. The code holds the links between them. The parts that
+count independent people are computed by deterministic analytics, not declared
+by a model, and a counter-evidence search that did not run reads as incomplete
+rather than as "nothing found".
+
+The gap is the runner. A stage handler that claims a job, runs one stage,
+records its tool calls and artifacts in the research gate's tables, and
+advances the run does not exist yet. The gate can already refuse a run; nothing
+asks it to.
 
 ## Fetch safety
 

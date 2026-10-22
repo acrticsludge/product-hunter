@@ -18,13 +18,21 @@ conflict surface small at each step.
 | # | Branch | Why here | Expected conflicts |
 |---|---|---|---|
 | 1 | `wave2/obsidian-reporting` | `main` is its ancestor, so this is a fast-forward with no conflict at all. It also carries the Wave 1 commits in its history, so it is the one branch that already knows about `db/leases.py` and `research/query_plan.py`. | none |
-| 2 | `wave2/evidence-pipeline` | First of the seven that fork from `3d7bc68`. It changes the write semantics of `pain_points` and the migration statement splitter, so it must land before anything else writes against the new schema. | `db/__init__.py`, `db/migrations.py`, `db/store.py`, `tests/test_db_migrations.py`, `ARCHITECTURE.md` |
-| 3 | `wave2/collection-engine` | Touches `fetch.py`, which nothing else touches. Lands before the branches that read collection state. | `tests/test_db_migrations.py`, `ARCHITECTURE.md` |
-| 4 | `wave2/discovery-engine` | A self-contained package. Lands wherever there is room; here it is between the two schema-heavy branches. | `ARCHITECTURE.md` |
-| 5 | `wave2/clustering` | Reads `pain_points`, so it lands after the evidence migration. | `tests/test_db_migrations.py`, `ARCHITECTURE.md` |
-| 6 | `wave2/independence` | Alters `authors`, `documents` and `propagation_edges`, and it is the second claimant of `documents.live_status`. It lands after the evidence migration so the column owner is already decided. | `db/__init__.py`, `tests/test_db_migrations.py`, `ARCHITECTURE.md` |
+| 2 | `wave2/collection-engine` | Touches `fetch.py`, which nothing else touches. It lands second because its migration takes the number `0004`, and the numbering has to stay contiguous at every step for the tree to stay runnable. | `tests/test_db_migrations.py`, `ARCHITECTURE.md` |
+| 3 | `wave2/evidence-pipeline` | First of the branches that change the write semantics of `pain_points` and the migration statement splitter, so it lands before anything else writes against the new schema. Its migration takes `0005`. | `db/__init__.py`, `db/migrations.py`, `db/store.py`, `tests/test_db_migrations.py`, `ARCHITECTURE.md` |
+| 4 | `wave2/discovery-engine` | A self-contained package. It lands wherever there is room; here it is between the two schema-heavy branches. | `ARCHITECTURE.md` |
+| 5 | `wave2/clustering` | Reads `pain_points`, so it lands after the evidence migration. Its migration takes `0006`. | `tests/test_db_migrations.py`, `ARCHITECTURE.md` |
+| 6 | `wave2/independence` | Alters `authors`, `documents` and `propagation_edges`, and it is the second claimant of `documents.live_status`. It lands after the evidence migration so the column owner is already decided. Its migration takes `0007`. | `db/__init__.py`, `tests/test_db_migrations.py`, `ARCHITECTURE.md` |
 | 7 | `wave2/scoring-validation` | A self-contained package with no migration. | `ARCHITECTURE.md` |
-| 8 | `wave2/investigation` | Reads the Wave 1 gate. Lands last so it can be reconciled against the gate that is actually in the tree. | `research/__init__.py` |
+| 8 | `wave2/investigation` | Reads the Wave 1 gate. It lands last so it can be reconciled against the gate that is actually in the tree. | `research/__init__.py` |
+
+The order was changed once, after the first attempt. The original order put
+the evidence branch second, which gave the evidence migration the number
+`0004` and the collection migration the number `0005`. The pipeline order
+that the SubQ Snap chose puts collection first, and a gap in the migration
+numbers makes `migrate()` refuse to run, so the tree would not have been
+runnable between two merges. Collection does not write pain points, so
+nothing about the evidence branch's trigger depends on it landing first.
 
 ## 2. The conflict resolutions
 
