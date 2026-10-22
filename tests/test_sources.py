@@ -8,6 +8,7 @@ import yaml
 from pydantic import ValidationError
 
 from product_hunter.sources import (
+    POLICY_FIELDS,
     AllowedUse,
     Collector,
     RateLimit,
@@ -15,6 +16,8 @@ from product_hunter.sources import (
     SourceBlocked,
     SourceConfig,
     SourceRegistry,
+    SourceStatus,
+    SourceType,
     TermsStatus,
     load_registry,
 )
@@ -60,12 +63,22 @@ def _write(tmp_path, sources) -> Path:
     return path
 
 
+def _entry(**overrides) -> dict:
+    data = _source()
+    data.update(overrides)
+    if "status" in overrides and "enabled" not in overrides:
+        data["enabled"] = overrides["status"] == "active"
+    return data
+
+
 def _config(**overrides) -> SourceConfig:
     data = {
         "source_id": "hn_algolia",
         "terms_status": TermsStatus.permitted,
         "allowed_use": [AllowedUse.discovery, AllowedUse.retrieval, AllowedUse.analysis, AllowedUse.storage],
         "reviewed_at": date(2026, 10, 20),
+        "review_basis": "reviewed",
+        "robots_or_api_notes": "notes",
         "collector": Collector.api,
         "rate_limit": RateLimit(**_rate()),
         "domains": ["hn.algolia.com"],
@@ -74,6 +87,8 @@ def _config(**overrides) -> SourceConfig:
         "enabled": True,
     }
     data.update(overrides)
+    if "status" in overrides and "enabled" not in overrides:
+        data["enabled"] = overrides["status"] is SourceStatus.active
     return SourceConfig(**data)
 
 
@@ -185,3 +200,153 @@ def test_non_positive_request_cap_fails_validation(tmp_path):
         SourceRegistry.from_yaml(
             _write(tmp_path, [_source("bad", rate_limit=_rate(max_requests_per_run=0))])
         )
+
+
+def test_the_enabled_key_is_derived_from_the_status(tmp_path):
+    registry = SourceRegistry.from_yaml(
+        _write(
+            tmp_path,
+            [
+                _entry(
+                    status="pending_review",
+                    terms_status="unknown",
+                    reviewed_at=None,
+                    allowed_use=["none"],
+                    domains=[],
+                )
+            ],
+        )
+    )
+    source = registry.get("hn_algolia")
+    assert source.status is SourceStatus.pending_review
+    assert source.enabled is False
+
+
+def test_a_file_that_contradicts_itself_is_refused(tmp_path):
+    entry = _source()
+    entry["status"] = "pending_review"
+    with pytest.raises(ValidationError):
+        SourceRegistry.from_yaml(_write(tmp_path, [entry]))
+
+
+def test_an_expired_review_reads_as_stale():
+    source = _config(review_expires_at=date(2020, 1, 1))
+    assert source.effective_status(date(2026, 10, 22)) is SourceStatus.stale
+    assert source.effective_status(date(2019, 1, 1)) is SourceStatus.active
+
+
+def test_the_policy_gaps_name_every_missing_field():
+    assert _config().policy_gaps() == []
+    gaps = _config(
+        terms_status=TermsStatus.unknown,
+        reviewed_at=None,
+        review_basis="",
+        robots_or_api_notes="",
+        allowed_use=[AllowedUse.discovery],
+        domains=[],
+    ).policy_gaps()
+    assert set(gaps) == {
+        "terms_status",
+        "allowed_use",
+        "reviewed_at",
+        "review_basis",
+        "robots_or_api_notes",
+        "domains",
+    }
+    assert set(gaps) <= set(POLICY_FIELDS)
+
+
+def test_the_admission_decision_carries_the_reason_code():
+    registry = SourceRegistry({"hn_algolia": _config()})
+    assert registry.admission("hn_algolia", USES).admitted is True
+    assert registry.admission("reddit", USES).reason_code == "unknown_source"
+    disabled = SourceRegistry(
+        {"hn_algolia": _config(status=SourceStatus.pending_review)}
+    )
+    assert disabled.admission("hn_algolia", USES).reason_code == "source_disabled"
+    stale = SourceRegistry(
+        {"hn_algolia": _config(review_expires_at=date(2020, 1, 1))}
+    )
+    assert (
+        stale.admission("hn_algolia", USES, today=date(2026, 10, 22)).reason_code
+        == "review_expired"
+    )
+    unknown = SourceRegistry(
+        {"hn_algolia": _config(terms_status=TermsStatus.unknown, reviewed_at=None)}
+    )
+    assert unknown.admission("hn_algolia", USES).reason_code == "terms_not_permitted"
+    prohibited = SourceRegistry(
+        {"hn_algolia": _config(terms_status=TermsStatus.prohibited)}
+    )
+    assert prohibited.admission("hn_algolia", USES).reason_code == "terms_not_permitted"
+    no_use = SourceRegistry({"hn_algolia": _config(allowed_use=[AllowedUse.none])})
+    assert no_use.admission("hn_algolia", USES).reason_code == "use_not_allowed"
+    partial = SourceRegistry(
+        {"hn_algolia": _config(allowed_use=[AllowedUse.discovery])}
+    )
+    assert partial.admission("hn_algolia", USES).reason_code == "missing_use"
+    no_domains = SourceRegistry({"hn_algolia": _config(domains=[])})
+    assert no_domains.admission("hn_algolia", USES).reason_code == "no_domains"
+    incomplete = SourceRegistry({"hn_algolia": _config(review_basis="")})
+    decision = incomplete.admission("hn_algolia", USES)
+    assert decision.reason_code == "incomplete_policy"
+    assert "review_basis" in decision.gaps
+    over_http = SourceRegistry(
+        {"hn_algolia": _config(collector=Collector.http, robots=RobotsPolicy.skip)}
+    )
+    assert over_http.admission("hn_algolia", USES).reason_code == "robots_policy_missing"
+
+
+def test_a_retired_source_needs_its_date_and_reason(tmp_path):
+    with pytest.raises(ValidationError):
+        SourceRegistry.from_yaml(_write(tmp_path, [_entry(status="retired")]))
+    registry = SourceRegistry.from_yaml(
+        _write(
+            tmp_path,
+            [
+                _entry(
+                    status="retired",
+                    retired_at=date(2026, 10, 22),
+                    retire_reason="the terms changed",
+                )
+            ],
+        )
+    )
+    assert registry.get("hn_algolia").status is SourceStatus.retired
+
+
+def test_a_suspended_source_needs_its_date_and_reason(tmp_path):
+    with pytest.raises(ValidationError):
+        SourceRegistry.from_yaml(_write(tmp_path, [_entry(status="suspended")]))
+    registry = SourceRegistry.from_yaml(
+        _write(
+            tmp_path,
+            [
+                _entry(
+                    status="suspended",
+                    suspended_at=date(2026, 10, 22),
+                    suspend_reason="a failure spike",
+                )
+            ],
+        )
+    )
+    assert registry.get("hn_algolia").status is SourceStatus.suspended
+
+
+def test_the_shipped_registry_names_its_lifecycle():
+    registry = load_registry()
+    hn = registry.get("hn_algolia")
+    assert hn.status is SourceStatus.active
+    assert hn.enabled is True
+    assert hn.source_type is SourceType.community
+    assert hn.review_expires_at is not None
+    assert hn.review_expires_at > hn.reviewed_at
+    assert hn.metadata.name
+    assert hn.query_capabilities.families
+    assert hn.collection.endpoint_path
+    github = registry.get("github_issues")
+    assert github.status is SourceStatus.active
+    assert github.source_type is SourceType.code_host
+    blog = registry.get("blog_http")
+    assert blog.status is SourceStatus.pending_review
+    assert blog.enabled is False

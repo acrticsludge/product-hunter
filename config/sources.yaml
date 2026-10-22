@@ -1,11 +1,21 @@
 version: 1
 
+# The registry of reviewed sources. Every entry here was reviewed by a human:
+# the status, the terms status, the domains and the collection blocks are
+# decisions, not guesses. A source that was merely discovered is not here.
+#
+# The status is the only switch. `enabled` is derived from it, so the two
+# keys below always agree, and the file is refused when they do not.
+
 sources:
   - source_id: hn_algolia
     source_type: community
+    status: active
     terms_status: permitted
     allowed_use: [discovery, retrieval, analysis, storage]
     reviewed_at: 2026-10-20
+    review_expires_at: 2027-04-20
+    last_reviewed_by: operator
     review_basis: "Public Hacker News content via the Algolia HN Search API; no authentication; public read."
     robots_or_api_notes: "API access at https://hn.algolia.com/api; robots.txt is not used for API calls."
     collector: api
@@ -19,12 +29,35 @@ sources:
     schemes: [https]
     robots: skip
     enabled: true
+    metadata:
+      name: Hacker News
+      homepage: https://news.ycombinator.com
+      platform: hacker_news
+      language: en
+      topics: [startups, software, technology]
+      independence_group: hacker_news
+    query_capabilities:
+      families: [problem, workflow_pain, workaround, existing_solution]
+      full_text: true
+      max_query_length: 200
+      supports_filters: true
+      pagination: offset
+    collection:
+      endpoint_path: /api/v1/search
+      query_param: query
+      content_type: application/json
+      max_results_per_query: 100
+      max_communities_per_run: 5
+      max_items_per_community: 20
 
   - source_id: github_issues
-    source_type: code host
+    source_type: code_host
+    status: active
     terms_status: permitted
     allowed_use: [discovery, retrieval, analysis, storage]
     reviewed_at: 2026-10-20
+    review_expires_at: 2027-04-20
+    last_reviewed_by: operator
     review_basis: "Public GitHub REST API for public repositories; unauthenticated requests are rate limited by GitHub."
     robots_or_api_notes: "API access at https://api.github.com; robots.txt is not used for API calls."
     collector: api
@@ -38,9 +71,30 @@ sources:
     schemes: [https]
     robots: skip
     enabled: true
+    metadata:
+      name: GitHub Issues
+      homepage: https://github.com
+      platform: github
+      language: en
+      topics: [developer tooling, open source]
+      independence_group: github
+    query_capabilities:
+      families: [problem, workflow_pain, workaround, existing_solution]
+      full_text: true
+      max_query_length: 256
+      supports_filters: true
+      pagination: page
+    collection:
+      endpoint_path: /search/issues
+      query_param: q
+      content_type: application/json
+      max_results_per_query: 50
+      max_communities_per_run: 5
+      max_items_per_community: 10
 
   - source_id: blog_http
     source_type: publication
+    status: pending_review
     terms_status: unknown
     allowed_use: [none]
     reviewed_at: null

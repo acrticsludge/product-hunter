@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
@@ -21,8 +22,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from product_hunter.discovery.families import (
     DERIVED_FAMILIES,
     FAMILY_SPECS,
-    QueryFamily,
     SUBJECT_SLOT,
+    QueryFamily,
 )
 from product_hunter.fetch import utcnow
 from product_hunter.normalization import NormalizedProblem
@@ -140,12 +141,51 @@ class Query(BaseModel):
         return self
 
 
+@dataclass(frozen=True)
+class CandidateSignals:
+    """The measured signals of one proposed source.
+
+    The first seven are shares between zero and one. The volume is a count,
+    and it is never a score component: it is the tie-break between two
+    candidates with the same score, and nothing else.
+    """
+
+    recurring_problem_density: float = 0.0
+    evidence_yield: float = 0.0
+    independence: float = 0.0
+    community_diversity: float = 0.0
+    freshness: float = 0.0
+    source_reliability: float = 0.0
+    duplication_risk: float = 0.0
+    volume: int = 0
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("recurring_problem_density", self.recurring_problem_density),
+            ("evidence_yield", self.evidence_yield),
+            ("independence", self.independence),
+            ("community_diversity", self.community_diversity),
+            ("freshness", self.freshness),
+            ("source_reliability", self.source_reliability),
+            ("duplication_risk", self.duplication_risk),
+        ):
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be between 0 and 1, got {value!r}")
+        if self.volume < 0:
+            raise ValueError(f"volume must not be negative, got {self.volume!r}")
+
+
 class SourceCandidate(BaseModel):
     """A source discovery proposed, and not yet admitted.
 
     A candidate is a proposal until a human reviews it, so the model refuses
-    to be built with another status, another terms status, or an allowed
-    use. Discovery proposes a source; it never admits one.
+    to be built with another terms status, or an allowed use. Discovery
+    proposes a source; it never admits one.
+
+    The status is the proposal's own state, and it never changes: a
+    candidate is always a proposal. The decision is the verdict a reviewer
+    reached about it. Neither carries permission: the source registry is
+    the only thing that admits a source.
 
     The fields of a candidate are a proposal and never admission authority:
     no consumer may read them as the permission to use a source. A source
@@ -163,8 +203,10 @@ class SourceCandidate(BaseModel):
     discovered_by: str = Field(min_length=1)
     discovered_at: datetime
     status: Literal["proposed"] = "proposed"
+    decision: Literal["proposed", "approved", "rejected"] = "proposed"
     terms_status: Literal["unknown"] = "unknown"
     allowed_use: list[str] = Field(default_factory=list)
+    signals: CandidateSignals = Field(default_factory=CandidateSignals)
 
     @field_validator("discovered_at")
     @classmethod

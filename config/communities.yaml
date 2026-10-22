@@ -1,0 +1,39 @@
+version: 1
+
+# The communities the system knows about. Each entry names the source it
+# belongs to, so a community can never introduce a source: the file is
+# checked against config/sources.yaml when it is loaded, and a community
+# whose source is not there is refused.
+#
+# The independence group says two communities came from the same origin, so
+# evidence from both is one opinion rather than two. The selection step uses
+# it to stop one platform from filling a batch.
+#
+# A community that is the same place as another one names it in
+# `duplicate_of`. The canonical community of a group is the one nothing
+# points at.
+
+communities:
+  - community_id: ask_hn
+    source_id: hn_algolia
+    name: Ask HN
+    host: news.ycombinator.com
+    url: https://news.ycombinator.com/ask
+    platform: hacker_news
+    topics: [advice, requests, tooling]
+    independence_group: hacker_news
+    duplicate_of: null
+    status: active
+    activity: high
+
+  - community_id: github_issues
+    source_id: github_issues
+    name: GitHub Issues
+    host: github.com
+    url: https://github.com/issues
+    platform: github
+    topics: [bugs, feature requests, developer tooling]
+    independence_group: github
+    duplicate_of: null
+    status: active
+    activity: medium
