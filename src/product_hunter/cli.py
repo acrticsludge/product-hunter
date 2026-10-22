@@ -15,6 +15,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from product_hunter import __version__
+from product_hunter.communities import load_communities
 from product_hunter.config import (
     ExtractionConfig,
     RoutingConfig,
@@ -34,6 +35,7 @@ from product_hunter.db import (
     recover_projection_leases,
 )
 from product_hunter.db.model_routing import RunProvenance
+from product_hunter.discovery.queries import SourceCandidate
 from product_hunter.documents import (
     Document,
     DocumentChunk,
@@ -105,6 +107,11 @@ from product_hunter.reporting import (
     write_report as write_run_report,
 )
 from product_hunter.safety import UrlBlocked
+from product_hunter.source_expansion import (
+    discover_candidates,
+    list_candidates,
+    score_candidate,
+)
 from product_hunter.sources import AllowedUse, SourceBlocked, load_registry
 
 FETCH_LOG = Path("data") / "raw" / "fetches.jsonl"
@@ -138,6 +145,20 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("doctor", help="check the configured provider and model")
     commands.add_parser("version", help="print the package version")
     commands.add_parser("sources", help="list configured sources as JSON")
+    candidates_parser = commands.add_parser(
+        "source-candidates", help="list and discover source candidates"
+    )
+    candidate_commands = candidates_parser.add_subparsers(
+        dest="source_candidate_command", required=True
+    )
+    candidate_list = candidate_commands.add_parser(
+        "list", help="list the source candidates as JSON"
+    )
+    candidate_list.add_argument("--path", dest="db_path", default=None)
+    candidate_discover = candidate_commands.add_parser(
+        "discover", help="discover the hosts the collectors saw"
+    )
+    candidate_discover.add_argument("--path", dest="db_path", default=None)
     fetch_parser = commands.add_parser("fetch", help="fetch one URL and record provenance")
     fetch_parser.add_argument("source_id")
     fetch_parser.add_argument("url")
@@ -276,6 +297,87 @@ def sources_command(registry=None) -> int:
     ]
     print(json.dumps(payload))
     return 0
+
+
+def source_candidates_list_command(
+    *, db_path: str | Path | None = None, repo_root: Path | None = None
+) -> int:
+    """Print the source candidates with their signals and their score.
+
+    Returns 0 when the list was printed, and 1 when it could not be read.
+    """
+    root = _root(repo_root)
+    path = _db_path(db_path, root)
+    if not _require_db(path):
+        return 1
+    try:
+        store = Store.open(path)
+        try:
+            candidates = list_candidates(store.conn)
+        finally:
+            store.close()
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    print(json.dumps([_candidate_payload(candidate) for candidate in candidates]))
+    return 0
+
+
+def source_candidates_discover_command(
+    *, db_path: str | Path | None = None, repo_root: Path | None = None
+) -> int:
+    """Run the discovery pass and print what it found.
+
+    The pass reports the hosts and communities neither registry holds. It
+    proposes; it never admits a source and never writes the registry file.
+    """
+    root = _root(repo_root)
+    path = _db_path(db_path, root)
+    if not _require_db(path):
+        return 1
+    try:
+        registry = load_registry()
+        communities = load_communities(registry=registry)
+        store = Store.open(path)
+        try:
+            candidates = discover_candidates(
+                store.conn, registry, communities=communities
+            )
+        finally:
+            store.close()
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    print(json.dumps([_candidate_payload(candidate) for candidate in candidates]))
+    return 0
+
+
+def _candidate_payload(candidate: SourceCandidate) -> dict[str, object]:
+    """One candidate, with the signals it carries and the score they give."""
+    score = score_candidate(candidate.signals)
+    return {
+        "candidate_id": candidate.candidate_id,
+        "source_id": candidate.source_id,
+        "domain": candidate.domain,
+        "community": candidate.community,
+        "status": candidate.status,
+        "decision": candidate.decision,
+        "terms_status": candidate.terms_status,
+        "discovered_by": candidate.discovered_by,
+        "discovered_at": candidate.discovered_at.isoformat(),
+        "signals": asdict(candidate.signals),
+        "score": score.total,
+        "eligible": score.eligible,
+        "reasons": list(score.reasons),
+    }
+
+
+def _run_source_candidates_command(args: argparse.Namespace) -> int:
+    if args.source_candidate_command == "list":
+        return source_candidates_list_command(db_path=args.db_path)
+    if args.source_candidate_command == "discover":
+        return source_candidates_discover_command(db_path=args.db_path)
+    return 1
 
 
 def models_command(
@@ -1828,6 +1930,8 @@ def main(argv: list[str] | None = None) -> int:
         return doctor()
     if args.command == "sources":
         return sources_command()
+    if args.command == "source-candidates":
+        return _run_source_candidates_command(args)
     if args.command == "fetch":
         return fetch_command(args.source_id, args.url)
     if args.command == "extract":

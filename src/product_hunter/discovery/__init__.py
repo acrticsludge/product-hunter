@@ -41,6 +41,7 @@ from product_hunter.discovery.frontier import (
     SaturationVerdict,
 )
 from product_hunter.discovery.queries import (
+    CandidateSignals,
     Query,
     SourceCandidate,
     generate_derived_queries,
@@ -75,6 +76,7 @@ __all__ = [
     "REASON_FAMILY_COVERAGE",
     "REASON_REPEATED_RESULTS",
     "REASON_SOURCE_COVERAGE",
+    "CandidateSignals",
     "DiscoveryBudget",
     "DiscoveryRecord",
     "DiscoveryStatus",

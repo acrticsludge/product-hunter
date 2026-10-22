@@ -165,7 +165,7 @@ class Store:
             """,
             (
                 source.source_id,
-                source.source_type,
+                source.source_type.value,
                 source.terms_status.value,
                 json.dumps([use.value for use in source.allowed_use]),
                 int(source.enabled),
