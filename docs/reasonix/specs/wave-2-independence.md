@@ -1,5 +1,11 @@
 # Wave 2 Session 5: source independence and entity resolution
 
+> **Integrated as `0007_independence.sql`.** The migration named below was
+> written as `0003_independence.sql` and was renumbered by the Wave 2 final
+> integration, which also gave `documents.live_status` a single owner in the
+> evidence-pipeline migration. See
+> [wave-2-final-integration.md](../reports/wave-2-final-integration.md).
+
 **Status:** approved for implementation.
 **Spec basis:** `docs/reasonix/specs/Product-Hunter-Full-Spec.md` §12, §15, §15A,
 §22, §38A Phase 3; `.opencode/skills/source-independence/SKILL.md`;

@@ -1,5 +1,11 @@
 # Wave 2 Session 3: the source collection layer
 
+> **Integrated as `0004_collection.sql`.** This session wrote the migration as
+> `0003_collection.sql`, because its worktree forked before the Wave 1
+> research-gate migration took the number. The Wave 2 final integration
+> renumbered it. See
+> [wave-2-final-integration.md](wave-2-final-integration.md).
+
 Branch: `wave2/collection-engine`. Worktree: `.worktrees/wave2-collection-engine`.
 Implementation commit: `5489559dd5b0d54822d1e0c3311c457a81947cbf`.
 Base commit: `3d7bc68`. Risk: high. Code gate: `uv run pytest`.

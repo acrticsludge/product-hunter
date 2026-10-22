@@ -1,5 +1,10 @@
 # Wave 2 Session 3: Source Collection Layer
 
+> **Integrated as `0004_collection.sql`.** The migration named below was
+> written as `0003_collection.sql` and was renumbered by the Wave 2 final
+> integration. See
+> [wave-2-final-integration.md](../reports/wave-2-final-integration.md).
+
 Status: spec, accepted for implementation.
 Contract version: `wave2-collection-v1`.
 

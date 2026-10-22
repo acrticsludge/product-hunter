@@ -1,5 +1,11 @@
 ﻿# Phase 4 Wave 2: problem clustering engine, run report
 
+> **Integrated as `0006_clustering.sql`.** This session wrote the migration as
+> `0003_clustering.sql`, because its worktree forked before the Wave 1
+> research-gate migration took the number. The Wave 2 final integration
+> renumbered it. See
+> [wave-2-final-integration.md](wave-2-final-integration.md).
+
 **RUN_ID:** wave2-clustering-20261021
 **Node:** REPORT (stage 10)
 **Date:** 2026-10-21

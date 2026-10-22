@@ -1,5 +1,10 @@
 # Wave 2 spec: the evidence pipeline
 
+> **Integrated as `0005_evidence_pipeline.sql`.** The migration named below was
+> written as `0003_evidence_pipeline.sql` and was renumbered by the Wave 2 final
+> integration. See
+> [wave-2-final-integration.md](../reports/wave-2-final-integration.md).
+
 **Status.** Approved for implementation. Written 2026-10-21 on branch
 `wave2/evidence-pipeline`, against Wave 1 at commit `3d7bc68`.
 

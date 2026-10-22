@@ -1,5 +1,10 @@
 # Wave 2, Session 4: problem clustering
 
+> **Integrated as `0006_clustering.sql`.** The migration named below was
+> written as `0003_clustering.sql` and was renumbered by the Wave 2 final
+> integration. See
+> [wave-2-final-integration.md](../reports/wave-2-final-integration.md).
+
 **Status:** approved for implementation
 **Date:** 2026-10-21
 **Branch:** `wave2/clustering`

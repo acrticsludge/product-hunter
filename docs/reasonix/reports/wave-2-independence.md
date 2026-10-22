@@ -1,5 +1,12 @@
 # Wave 2 Session 5: source independence and entity resolution
 
+> **Integrated as `0007_independence.sql`.** This session wrote the migration as
+> `0003_independence.sql`, because its worktree forked before the Wave 1
+> research-gate migration took the number. The Wave 2 final integration
+> renumbered it, and it no longer adds `documents.live_status`, because the
+> evidence-pipeline migration owns that column. See
+> [wave-2-final-integration.md](wave-2-final-integration.md).
+
 **Branch:** `wave2/independence`
 **Base commit:** `3d7bc68` (main)
 **Implementation commit:** `a9974b8fc09b0927d29a3a3e73d7517d14448d6a`

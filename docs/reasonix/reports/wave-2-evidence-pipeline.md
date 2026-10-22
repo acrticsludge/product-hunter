@@ -1,5 +1,11 @@
 # Wave 2 report: the evidence pipeline
 
+> **Integrated as `0005_evidence_pipeline.sql`.** This session wrote the
+> migration as `0003_evidence_pipeline.sql`, because its worktree forked before
+> the Wave 1 research-gate migration took the number. The Wave 2 final
+> integration renumbered it. See
+> [wave-2-final-integration.md](wave-2-final-integration.md).
+
 **Branch.** `wave2/evidence-pipeline`
 **Base.** `3d7bc68`
 **Date.** 2026-10-21
