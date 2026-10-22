@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 from dotenv import load_dotenv
@@ -10,8 +11,15 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from product_hunter.llm.routing import ModelRole, RouteCandidate
 
+if TYPE_CHECKING:
+    # The SubQ module is optional: importing it here would load it for
+    # every caller of the config, so the type is imported for the checker
+    # only and the loader imports it when it is asked for.
+    from product_hunter.llm.subq import SubQConfig
+
 CONFIG_NAME = Path("config") / "extraction.yaml"
 ROUTING_CONFIG_NAME = Path("config") / "model_routing.yaml"
+DECISION_ROUTING_CONFIG_NAME = Path("config") / "decision_routing.yaml"
 CLUSTERING_CONFIG_NAME = Path("config") / "clustering.yaml"
 SEMANTIC_CONFIG_NAME = Path("config") / "semantic.yaml"
 ENV_FILE = ".env"
@@ -38,6 +46,35 @@ _SEMANTIC_ENV_OVERRIDES = {
 
 # The devices an embedding provider may be asked for.
 EMBEDDING_DEVICES = ("auto", "cpu", "cuda")
+
+# The SubQ settings, and the environment name that overrides each of them.
+# The key is one of the three names SubQ documents, so the same key works
+# for the loop tooling and for this repository.
+_SUBQ_ENV_OVERRIDES = {
+    "api_key": "SUBQ_API_KEY",
+    "base_url": "SUBQ_BASE_URL",
+    "model": "SUBQ_MODEL",
+    "timeout_seconds": "PH_SUBQ_TIMEOUT_SECONDS",
+    "max_retries": "PH_SUBQ_MAX_RETRIES",
+    "backoff_base_seconds": "PH_SUBQ_BACKOFF_SECONDS",
+    "max_calls": "PH_SUBQ_MAX_CALLS",
+    "max_input_tokens": "PH_SUBQ_MAX_INPUT_TOKENS",
+    "max_usd": "PH_SUBQ_MAX_USD",
+    "max_batch_items": "PH_SUBQ_MAX_BATCH_ITEMS",
+    "usd_per_mtok_input": "PH_SUBQ_USD_PER_MTOK_INPUT",
+    "failure_threshold": "PH_SUBQ_FAILURE_THRESHOLD",
+    "cooldown_seconds": "PH_SUBQ_COOLDOWN_SECONDS",
+    "max_cache_entries": "PH_SUBQ_MAX_CACHE_ENTRIES",
+}
+_SUBQ_TEXT_FIELDS = ("api_key", "base_url", "model")
+_SUBQ_INT_FIELDS = (
+    "max_retries",
+    "max_calls",
+    "max_input_tokens",
+    "max_batch_items",
+    "failure_threshold",
+    "max_cache_entries",
+)
 
 
 class Limits(BaseModel):
@@ -127,6 +164,47 @@ class RoutingConfig(BaseModel):
         )
         digest = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:12]
         return f"routing-v{self.version}-{digest}"
+
+
+class DecisionProviderConfig(BaseModel):
+    """One provider of the decision chain.
+
+    The order of the list in the file is the order of preference. An
+    operator who does not want a provider removes it from the list or sets
+    ``enabled`` to false, and the next provider takes the work.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    enabled: bool = True
+    model_role: ModelRole | None = None
+
+
+class DecisionRoutingConfig(BaseModel):
+    """The chain of decision providers."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(gt=0)
+    providers: list[DecisionProviderConfig]
+
+    @model_validator(mode="after")
+    def _check_chain(self) -> DecisionRoutingConfig:
+        """Refuse a chain that names a provider twice or leaves one unbound.
+
+        A provider named twice would be asked twice, and the second answer
+        would be paid for and thrown away. The text provider resolves a
+        model role, and a chain that names it without a role would leave the
+        fallback without a model.
+        """
+        names = [provider.name for provider in self.providers]
+        if len(set(names)) != len(names):
+            raise ValueError("the decision routing config names a provider twice")
+        for provider in self.providers:
+            if provider.name == "text" and provider.model_role is None:
+                raise ValueError("the text decision provider needs a model_role")
+        return self
 
 
 class ClusteringError(Exception):
@@ -375,6 +453,45 @@ def load_routing_config(path: Path | None = None) -> RoutingConfig:
     config_path = path if path is not None else repo_root() / ROUTING_CONFIG_NAME
     raw = _load_yaml(config_path)
     return RoutingConfig.model_validate(raw)
+
+
+def load_decision_routing_config(path: Path | None = None) -> DecisionRoutingConfig:
+    """Load config/decision_routing.yaml, the chain of decision providers."""
+    config_path = (
+        path if path is not None else repo_root() / DECISION_ROUTING_CONFIG_NAME
+    )
+    raw = _load_yaml(config_path)
+    return DecisionRoutingConfig.model_validate(raw)
+
+
+def load_subq_config() -> SubQConfig:
+    """Load the SubQ settings from the environment.
+
+    The key is read from the environment and nowhere else, and it stays out
+    of every record this repository writes. An empty value is ignored, so
+    the built-in default applies.
+    """
+    # Imported here so the pipeline never loads the SubQ module unless it
+    # asks for this config.
+    from product_hunter.llm.subq import SubQConfig
+
+    load_dotenv(repo_root() / ENV_FILE, override=False)
+    values: dict[str, object] = {}
+    for field_name, env_name in _SUBQ_ENV_OVERRIDES.items():
+        raw = os.environ.get(env_name)
+        if not raw:
+            continue
+        values[field_name] = _subq_value(field_name, raw)
+    return SubQConfig.model_validate(values)
+
+
+def _subq_value(field_name: str, raw: str) -> object:
+    """The value of one environment override, in the type the field takes."""
+    if field_name in _SUBQ_TEXT_FIELDS:
+        return raw
+    if field_name in _SUBQ_INT_FIELDS:
+        return int(raw)
+    return float(raw)
 
 
 def load_clustering_config(path: Path | None = None) -> ClusteringConfig:

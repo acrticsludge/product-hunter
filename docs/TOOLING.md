@@ -174,7 +174,10 @@ None of these was requested, and none is written anywhere in this repository.
 
 | Name | Needed by | Effect while missing |
 |---|---|---|
-| `SUBQ_API_KEY` | the optional SubQ Snap verification gate in §38A | nothing. The pipeline never reads it, and the empty name sits in `.env.example` so the file keeps its names-only rule. |
+| `SUBQ_API_KEY` | the optional SubQ Snap decision provider, `src/product_hunter/llm/subq.py` | nothing. The research pipeline never reads it. The provider reports itself disabled without it, and the routing chain moves to the next provider. The empty name sits in `.env.example` so the file keeps its names-only rule. |
+| `SUBQ_BASE_URL` | the same provider | nothing. The default is `https://api.subq.ai/v1`. |
+| `SUBQ_MODEL` | the same provider | nothing. The default is `subq-snap-preview`. |
+| `PH_SUBQ_TIMEOUT_SECONDS`, `PH_SUBQ_MAX_RETRIES`, `PH_SUBQ_BACKOFF_SECONDS`, `PH_SUBQ_MAX_CALLS`, `PH_SUBQ_MAX_INPUT_TOKENS`, `PH_SUBQ_MAX_USD`, `PH_SUBQ_MAX_BATCH_ITEMS`, `PH_SUBQ_USD_PER_MTOK_INPUT`, `PH_SUBQ_FAILURE_THRESHOLD`, `PH_SUBQ_COOLDOWN_SECONDS`, `PH_SUBQ_MAX_CACHE_ENTRIES` | the same provider | nothing. Every one of them falls back to the default in `SubQConfig`. |
 | `FIRECRAWL_API_KEY` | only if the Phase 4 search decision goes that way | nothing. The skill is not installed. |
 | an Apify token | only if a Phase 7 benchmark justifies Apify | nothing. The operator has already authenticated the Apify server through OAuth, and the worker does not use it. |
 

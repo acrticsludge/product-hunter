@@ -1,0 +1,15 @@
+version: 1
+# The chain of decision providers, in order of preference. The first
+# provider that answers wins; a provider that is disabled or unavailable is
+# skipped, and one that fails hands the work to the next.
+#
+# The text provider is the fallback. It resolves the model role named here
+# through the routing that already exists, so no new plumbing is needed for
+# it. An operator who does not want SubQ removes it from this list or sets
+# enabled to false, and the text provider takes the work.
+providers:
+  - name: subq
+    enabled: true
+  - name: text
+    enabled: true
+    model_role: classification
