@@ -104,8 +104,8 @@ work is visible in the same working tree. Three things came out of that:
 1. The module is `src/product_hunter/registry.py` and not `research.py`. The
    other agent owns the `src/product_hunter/research/` package, and a package
    and a module of one name in one directory cannot both import.
-2. The documents moved from `docs/resonix` to `docs/reasonix` under that
-   agent's rename, and the radius was re-declared to match.
+2. The documents moved with that agent's rename of the documentation tree
+   to `docs/reasonix`, and the radius was re-declared to match.
 3. `cli.py` and `README.md` carry that agent's uncommitted benchmark work.
    Committing either file whole would claim that work and would leave the
    commit pointing at `src/product_hunter/eval/`, which is not in the commit.

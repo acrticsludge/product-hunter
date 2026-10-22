@@ -25,8 +25,8 @@ commit that contains only this pass's changes.
 | Remote | `github.com/acrticsludge/product-hunter.git`. Not pushed. |
 
 The tree moved underneath this pass several times. The documentation tree was
-renamed from `docs/resonix/` to `docs/reasonix/`, and
-`docs/resonix/reports/` became `docs/reasonix/reports/`. The radius was
+renamed from a misspelled directory name to `docs/reasonix/`, and its reports
+moved with it. The radius was
 re-declared once for the new paths.
 
 ## 3. What changed

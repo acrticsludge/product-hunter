@@ -172,7 +172,8 @@ the commit. The index therefore holds `HEAD` plus this run's hunks only, and
 the working tree keeps the other agent's version. Their files stay uncommitted
 and untouched.
 
-The `docs/resonix` to `docs/reasonix` rename is also theirs and uncommitted.
+The rename of the documentation tree to `docs/reasonix` is also theirs and
+uncommitted.
 This run's documents sit under `docs/reasonix/`, so they follow the rename
 without staging it.
 

@@ -148,4 +148,4 @@ STOPPED BECAUSE: all pass and review ship
 NEXT: the collection wave calls frontier.admit or frontier.expand, runs the search, and calls frontier.record_execution with the result identities
 ```
 
-Note on paths: the task brief spelled the report path as `docs/resonix/...`. That directory does not exist in this repository. Every other report lives under `docs/reasonix/`, and the brief's path was a typo. This report is written to `docs/reasonix/reports/wave-2-discovery.md`.
+Note on paths: the task brief misspelled the docs root in the report path it asked for. That directory does not exist in this repository. Every other report lives under `docs/reasonix/`, and the brief's path was a typo. This report is written to `docs/reasonix/reports/wave-2-discovery.md`.

@@ -14,7 +14,7 @@ Spec: [specs/wave-2-collection.md](../specs/wave-2-collection.md).
 Plan: [plans/wave-2-collection.md](../plans/wave-2-collection.md).
 Handoff: [handoffs/wave-2-collection-handoff.md](../handoffs/wave-2-collection-handoff.md).
 
-The mission asked for the report at `docs/resonix/reports/wave-2-collection.md`.
+The mission asked for the report under a misspelled docs root.
 The repository's docs root is `docs/reasonix`, so the file is here.
 
 ## What landed

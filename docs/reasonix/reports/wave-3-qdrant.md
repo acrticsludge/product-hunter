@@ -155,11 +155,27 @@ centroid, outbox or fake Qdrant.
    `FlagEmbedding` is installed. The test guards itself with
    `pytest.importorskip("FlagEmbedding")`, so it does no harm here, but a
    reviewer who wants the skip to be unconditional should add the hook.
-8. **The mission asked for `docs/resonix/reports/wave-3-qdrant.md`.** The
+8. **The mission asked for the report under a misspelled docs root.** The
    repository's directory is `docs/reasonix/`, so the report was written
    there. The path in the mission is a typo.
 
-## 8. Debt ledger
+## 8. The misspelled docs root
+
+The mission brief spelled the documentation directory with one `o` too few.
+Sixteen places in the tree carried that spelling, in two kinds of sentence:
+the name of the directory the tree was renamed away from, and a quotation of
+a mission brief that asked for a report under it. A plain replacement would
+have made the first kind read "renamed from `docs/reasonix/` to
+`docs/reasonix/`" and the second kind claim a brief said something it did
+not, so the sentences were reworded instead. The rename is still recorded and
+the briefs are still recorded as having misspelled the path, and the only
+concrete path in the tree is now the one that exists.
+
+The files that carried the misspelling were outside the radius this wave
+declared, so the radius was widened for this pass and the change is its own
+commit. No code was touched.
+
+## 9. Debt ledger
 
 One `shortcut:` marker is in the wave's code.
 
@@ -168,7 +184,7 @@ One `shortcut:` marker is in the wave's code.
   failure or a device fallback is silent. The worker wires a sink. The house
   format is `shortcut: <the limit>, <when to upgrade>`.
 
-## 9. What was not checked
+## 10. What was not checked
 
 - A live Qdrant server. The wire format is modelled from the API reference.
 - A live BGE-M3 model. The provider is exercised through its injectable
@@ -183,7 +199,7 @@ One `shortcut:` marker is in the wave's code.
 - A cluster row in a real database. The cluster path was tested by inserting
   a cluster and its members into an in-memory store.
 
-## 10. The next step
+## 11. The next step
 
 The wave is ready to merge. The open pieces it leaves for the next wave are
 the same ones the Wave 2 report named, plus one: the `EmbeddingProvider`
@@ -200,7 +216,9 @@ ADAPTER: Product Hunter [repo] 8 forbidden rules in force
 STAGES: 11/11 complete, skipped: none. Stage 5b visual was not required; the
   adapter sets visualRequired to never and no UI file is in the radius.
 GATES: uv run pytest -> 2259 passed, 1 skipped, exit 0
-CHANGES: 20 files, +4900/-18 lines (approx), one commit on wave3/qdrant-semantic
+CHANGES: 24 files, +7857/-13 lines, in the implementation commit on
+  wave3/qdrant-semantic, plus a docs commit that removes the misspelled docs
+  root from 16 files (no code touched)
 HARDEN: two findings, both fixed. The sync report no longer carries an
   exception message, and the status report does not either.
 REVIEW: fix-then-ship, one Should fix, applied. The space guard, the point

@@ -15,7 +15,8 @@ implementer, by design).
 
 Another agent is editing the same tree. Their uncommitted work (the `ph bench`
 command, `src/product_hunter/eval/`, the model routing files, and the rename of
-`docs/resonix` to `docs/reasonix`) is not part of this change and is not to be
+the documentation tree to `docs/reasonix`) is not part of this change and is
+not to be
 reviewed.
 
 ## The contract

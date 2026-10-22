@@ -114,7 +114,7 @@ NEXT: ready to commit — phase2: add dynamic model routing, not pushed.
 
 **The working tree was shared.** Other agents were working in the same checkout
 at the same time. Their files appear in the same directories, and one of them
-renamed `docs/resonix` to `docs/reasonix` and moved the reports to
+renamed the documentation tree to `docs/reasonix` and moved the reports to
 `docs/reasonix/reports` mid-run. The commit therefore stages explicit paths only, and
 three shared files — `src/product_hunter/cli.py`, `src/product_hunter/db/__init__.py`
 and `README.md` — were staged as a rebuilt "HEAD plus the model-routing change",
