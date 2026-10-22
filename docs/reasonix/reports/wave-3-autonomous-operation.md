@@ -178,10 +178,23 @@ Do not push. To satisfy the gate, either run the review when the free models
 are available again, or explicitly instruct the orchestrator to waive the review
 gate and the risk floor, in which case the same command above commits the run.
 
+## COMMIT
+
+`befd59f` on `wave3/autonomous-operation` (parent `00a6ca3`). Message:
+`wave3: autonomous operation`. The commit was made on the user's explicit
+instruction, with the review gate waived because both free review models were
+unavailable; the waiver is recorded in the WAIVERS section above. Not pushed.
+
 ## NEXT
 
-Ready to commit once the gate is waived or the review has run. No code change is
-outstanding.
+The run is complete. The remaining manual steps, in order, are:
+
+1. Run the review when the free models are available again, then fix anything it
+   objects to with a new commit on the branch.
+2. Re-run the code gate after any fix: `uv run pytest`.
+3. Push the branch when the review is clean: `git push -u origin wave3/autonomous-operation`.
+
+No code change is outstanding.
 
 ## SCHEDULER BEHAVIOUR
 
