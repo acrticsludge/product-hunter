@@ -12,6 +12,13 @@ dependencies = [
     "python-dotenv>=1.2,<2",
 ]
 
+[project.optional-dependencies]
+embeddings = [
+    "flagembedding>=1.3.0,<2",
+    "huggingface-hub>=0.23,<1",
+    "torch>=2.2",
+]
+
 [project.scripts]
 ph = "product_hunter.cli:main"
 
