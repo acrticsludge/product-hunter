@@ -597,3 +597,27 @@ commit stays on its own `wave2/*` branch, so nothing is rewritten and
 nothing is lost.
 
 Nothing was pushed. The remote still points at `3d7bc68`.
+
+### The state the repository was left in
+
+One working tree, on `main`, in the repository itself. The eight Wave 2
+worktrees and the `.worktrees/` folder inside the repository were removed,
+and the worktree the Wave 1 integration created was removed once `main`
+came back to the repository. Every branch was checked against the integrated
+tree before its worktree went, and the tree of `main` and the tree of
+`integration/wave2` are the same digest.
+
+What is left:
+
+| | |
+|---|---|
+| Working tree | the repository, on `main` |
+| Branches | `main`, `integration/wave2`, and the eight `wave2/*` session branches |
+| Untracked | nothing |
+| Secrets | none tracked, `.env.example` holds names only |
+| Temporary files | the run's scratch files were removed |
+
+One empty directory named `product-hunter-main` is left beside the
+repository. A running memory server from another session holds a handle on
+it, so the operating system refuses to remove it. It holds no file, and git
+no longer knows it as a worktree.
