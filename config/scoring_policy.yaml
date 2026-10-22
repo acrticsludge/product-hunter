@@ -1,0 +1,267 @@
+# The shipped opportunity scoring policy.
+#
+# The weights are the shares each component holds of its score. Potential and
+# confidence have their own weight map, and each map sums to one, so a
+# component can be compared across two opportunities scored under the same
+# policy version.
+#
+# The factor tables are the spec's component tables: the frequency factors,
+# the willingness-to-pay tiers, and the competitive directions. The market
+# mapping is logarithmic, so the ceiling is the annual opportunity that maps
+# to a factor of one; it is five orders of magnitude above a hobby project,
+# which is where the category sits.
+#
+# The competition cap is the point of the absence rule. An empty search
+# result is evidence about the search, not proof that the market is open, so a
+# zero-competitor assessment is capped below the tailwind value.
+#
+# The identity threshold is the confidence a resolved author needs before the
+# author counts as an independent person. It is high on purpose: a wrong
+# independent author is worse than an uncertain one.
+#
+# The lifecycle requirements are the gates of the state machine. The
+# staleness window is the one number both the lifecycle and the confidence
+# scorer read, so it lives here.
+#
+# The experiment templates are the recommendations the engine hands out. No
+# method may propose a sample below the minimum sample size below, because a
+# measurement of nothing settles nothing, and every threshold must be
+# reachable in the sample its own method proposes: a threshold of fifty
+# signups needs an audience that can produce fifty signups. The unit says
+# what the threshold's number counts, so an amount of money is never read as
+# a count of people.
+
+policy_version: opportunity-v1
+
+potential_weights:
+  severity: 0.20
+  frequency: 0.15
+  wtp: 0.25
+  market: 0.20
+  competition: 0.10
+  buildability: 0.10
+
+confidence_weights:
+  independent_people: 0.25
+  community_diversity: 0.15
+  source_reliability: 0.20
+  temporal_persistence: 0.15
+  counter_evidence: 0.15
+  extraction_agreement: 0.10
+
+frequency_factors:
+  daily: 1.0
+  weekly: 0.85
+  monthly: 0.6
+  occasional: 0.35
+  one_off: 0.1
+  unknown: 0.0
+
+wtp_factors:
+  tiers:
+    W0: 0.0
+    W1: 0.25
+    W2: 0.5
+    W3: 0.75
+    W4: 1.0
+  # The highest tier each kind of signal can support. A complaint is a
+  # complaint, so it cannot carry a tier above W1, and a run that claims more
+  # than its signals support is refused.
+  signal_caps:
+    complaint: W1
+    stated_budget: W3
+    purchase_intent: W2
+    repeated_payment: W4
+    paid_customer: W4
+
+competition_factors:
+  tailwind: 1.0
+  neutral: 0.55
+  headwind: 0.1
+
+competition_absent_factor_cap: 0.7
+
+market:
+  ceiling_usd: 100000000
+  niche:
+    # A small reachable market can still be the right product, so there is
+    # no market-size floor. Below the ceiling, and with severity and
+    # willingness to pay both strong, the factor is lifted to the floor.
+    factor_ceiling: 0.35
+    factor_floor: 0.55
+    min_severity: 4
+    min_wtp_tier: W3
+
+buildability:
+  blocker_penalty: 0.1
+
+identity:
+  min_confidence: 0.7
+
+confidence:
+  target_independent_people: 10
+  target_communities: 3
+  target_months: 6
+  target_span_days: 180
+  # The discount counts the extractors, not the extractions: ten extractions
+  # from one model are not agreement across models.
+  agreement_min_extractors: 3
+  # The counter-evidence floor, from the research contract's baseline. A
+  # caller may ask for more query families than this, never for fewer.
+  min_counter_evidence_families: 3
+  # The range brackets the score by a margin built from the share of
+  # uncertain identities and the extraction disagreement rate. The fraction
+  # is a fraction of the 0-100 scale, not of the score, so the widest
+  # margin it can produce is a quarter of the scale.
+  range_max_fraction: 0.25
+  uncertain_share_weight: 0.5
+  disagreement_share_weight: 0.5
+
+concentration:
+  # One community carrying everything scores a Herfindahl index of one.
+  # Three communities carrying it equally score a third, so the penalty only
+  # bites above an index of a third.
+  neutral_index: 0.34
+  max_penalty: 0.5
+
+source_reliability_weights:
+  tier_a: 1.0
+  tier_b: 0.8
+  tier_c: 0.6
+  tier_d: 0.4
+  unrated: 0.2
+
+lifecycle:
+  min_independent_people: 10
+  min_confidence: 55.0
+  staleness_days: 90
+
+experiment:
+  min_sample_size: 30
+  low_confidence_threshold: 40.0
+  min_independent_people: 5
+  templates:
+    W0:
+      validation:
+        hypothesis: >-
+          The people who report this pain solve it themselves rather than
+          pay for a tool, so the pain is real but the willingness to pay is
+          not there.
+        method: >-
+          Run 30 problem interviews and record what the reporters do today
+          and what that costs them.
+        sample_size: 30
+        threshold:
+          comparator: at_most
+          value: 10
+          unit: people
+      commercial:
+        hypothesis: >-
+          A free tool that removes the reported step is used often enough to
+          reach a paying audience later.
+        method: >-
+          Show the landing page to 2000 people in the community that reports
+          the pain and count the signups.
+        sample_size: 2000
+        threshold:
+          comparator: at_least
+          value: 50
+          unit: signups
+    W1:
+      validation:
+        hypothesis: >-
+          The reporters already pay for something, and it costs them more
+          than the pain does.
+        method: >-
+          Interview 30 reporters and record what they pay for the workaround
+          today.
+        sample_size: 30
+        threshold:
+          comparator: at_most
+          value: 15
+          unit: money_usd
+      commercial:
+        hypothesis: >-
+          The reporters who pay for a workaround today pay for this one at
+          the same price.
+        method: >-
+          Sell the tool to 30 reporters at the price of the workaround and
+          measure how many buy.
+        sample_size: 30
+        threshold:
+          comparator: at_least
+          value: 3
+          unit: people
+    W2:
+      validation:
+        hypothesis: >-
+          The workaround costs the reporters enough money and time that they
+          look for a better way.
+        method: >-
+          Ask 30 reporters what the workaround costs them in money and in
+          hours.
+        sample_size: 30
+        threshold:
+          comparator: at_least
+          value: 100
+          unit: money_usd
+      commercial:
+        hypothesis: >-
+          A monthly subscription at the tested price keeps the people who
+          sign up.
+        method: >-
+          Sell the tool to 30 reporters for one month and measure how many
+          pay a second month.
+        sample_size: 30
+        threshold:
+          comparator: at_least
+          value: 3
+          unit: people
+    W3:
+      validation:
+        hypothesis: >-
+          The reporters already budget for a tool in this category, and the
+          budget covers the tested price.
+        method: >-
+          Ask 30 reporters what they budget for this category and what they
+          would pay for this.
+        sample_size: 30
+        threshold:
+          comparator: at_least
+          value: 20
+          unit: money_usd
+      commercial:
+        hypothesis: >-
+          The reporters who already pay for a workaround switch at the tested
+          price.
+        method: >-
+          Offer the tool to 30 paying reporters at the tested price and
+          measure how many switch.
+        sample_size: 30
+        threshold:
+          comparator: at_least
+          value: 5
+          unit: people
+    W4:
+      validation:
+        hypothesis: >-
+          The reporters already pay for a tool in this category, so the
+          budget exists.
+        method: >-
+          Ask 30 reporters which tool they pay for and what it costs them.
+        sample_size: 30
+        threshold:
+          comparator: at_least
+          value: 20
+          unit: money_usd
+      commercial:
+        hypothesis: >-
+          A team budget covers the tested price without a discount.
+        method: >-
+          Sell the tool to 30 teams at the full price and measure how many
+          buy.
+        sample_size: 30
+        threshold:
+          comparator: at_least
+          value: 5
+          unit: people
