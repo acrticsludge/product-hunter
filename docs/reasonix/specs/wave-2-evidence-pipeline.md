@@ -457,7 +457,7 @@ another Wave 2 branch can hit.
 
 ## 14. Assumptions
 
-- The mission names the report path `docs/resonix/reports/...`. The
+- The mission names a report path under a misspelled docs root. The
   repository spells the directory `docs/reasonix`, so the report is written
   there.
 - "Where supported" for the live or deleted state means the GitHub issue

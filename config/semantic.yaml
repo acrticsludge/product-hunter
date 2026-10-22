@@ -1,0 +1,19 @@
+version: 1
+index_version: semantic-v1
+collection: product_hunter_evidence
+url: http://localhost:6333
+api_key_env: QDRANT_API_KEY
+embedding:
+  provider: bge-m3-local
+  model: BAAI/bge-m3
+  model_version: "1"
+  dimensions: 1024
+  cache_dir: data/models
+  device: auto
+  batch_size: 16
+  normalize: true
+distance: Cosine
+timeout_seconds: 30
+max_attempts: 4
+backoff_seconds: 1
+write_batch_size: 64

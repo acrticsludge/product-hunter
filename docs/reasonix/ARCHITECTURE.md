@@ -275,10 +275,10 @@ truncated or edited artifact set fails closed instead of importing half a run.
 `process_outbox(conn, handlers, worker_id, ...)` claims up to `max_tasks`
 (default 10) and dispatches by `task.target` to a handler. A missing handler
 fails the task with `no handler for target ...`; an exception fails it with
-`<ExceptionType>: <message>`. `LeaseLost` stops the batch. The Obsidian
-target has a handler (`src/product_hunter/projection/engine.py`) and `ph
-project --outbox` runs the outbox; there is no Qdrant handler, and `ph db
-outbox` only lists the tasks.
+`<ExceptionType>: <message>`. `LeaseLost` stops the batch. The Obsidian target has a handler (`src/product_hunter/projection/engine.py`)
+and `ph project --outbox` runs the outbox. The Qdrant target now has a handler
+too (`src/product_hunter/semantic/index.py`, `ph index sync`); `ph db outbox`
+still lists every task.
 
 A crash after the SQLite commit leaves the task `pending`, and a later
 `process_outbox()` picks it up. A crash during the projection leaves the task
@@ -325,6 +325,44 @@ HTML, wikilinks, embeds, Templater expressions, Dataview queries, comments,
 headings, table rows, blockquotes, code fences and frontmatter delimiters,
 and blocks every URL whose scheme is not `http` or `https`. A value the
 database does not hold reads `not recorded`, never a zero.
+
+### The semantic index
+
+`IMPLEMENTED` (`src/product_hunter/semantic/`, `ph index`). The index is a
+projection of the database, not a second copy of the truth. SQLite stays
+authoritative, and the index is rebuilt from it the way the Obsidian vault is:
+read the whole state, write what changed, remove what is gone.
+
+The layer is read-only against SQLite and writes only to the Qdrant collection
+named in `config/semantic.yaml` (`product_hunter_evidence` by default, the
+same name the Qdrant MCP server in `opencode.json` is pointed at). A vector
+is derived work: the authoritative row is written first, in its own
+transaction, together with the projection task that will index it, and a
+Qdrant failure never rolls back committed evidence.
+
+The space id is the guard. It is a digest of the embedding provider, model,
+model version and dimensions, and it is written into the collection metadata,
+into every payload and into every search filter. The configured model is
+BAAI/bge-m3 running locally, 1024 dimensions, with the weights fetched on
+first use and kept in `data/models`. When the configured model changes, the
+space id changes with it, `ensure_ready()` raises `EmbeddingSpaceMismatch`,
+and the operator runs `ph index rebuild`, which drops the collection,
+recreates it under the new space and re-embeds everything. There is no path
+in this wave that writes a vector of one space into a collection that holds
+another.
+
+`projection_tasks` carries a `target="qdrant"` row as well as the obsidian
+one. `Store.import_run()` enqueues it in the same transaction that writes
+the evidence, and `SemanticIndex.handle_projection_task()` indexes only the
+entities the task names. A failure lets the exception out, so the outbox
+records it and retries with a backoff; the database is never touched by the
+index.
+
+`ph index sync` reconciles, `ph index rebuild` replaces the collection,
+`ph index search` answers a question in words, and `ph index status` reports
+the space, the collection and the counts. `ph doctor` reports the provider,
+the model, the cache, the device, the dimensions and the collection, and
+answers on a machine with no Qdrant and no ML stack.
 
 ## The Wave 2 subsystems
 
@@ -686,7 +724,7 @@ named there and have no code in this branch.
 | `continue` and cross-chat continuity | §41.6, §41.8 | `PLANNED`, full spec only, no wave spec |
 | `spend_ledger` writes and global spend caps | §22 | `PARTIAL`; the discovery store writes one row per discovery record, and the other budget dimensions still have no writer, so the gate reports them as unmeasured rather than as zero |
 | Opportunity states and scoring | §20, §23 | `IMPLEMENTED` as a library (`src/product_hunter/opportunity/`); the `opportunities` table and the lifecycle in the database are `PLANNED`, and no caller |
-| Qdrant and DuckDB projections | §14, §16 | `PLANNED`, full spec only, no wave spec |
+| Qdrant projection | §14 | `IMPLEMENTED` as a library (`src/product_hunter/semantic/`); `ph index sync`, `rebuild`, `search`, `status` drive it, and the store enqueues a `target="qdrant"` task per imported run. `ph doctor` reports its state. DuckDB stays `PLANNED` |
 | Obsidian projection | §27 | `IMPLEMENTED` (`src/product_hunter/projection/`); two-way interaction is `PLANNED` |
 | Independent-author and propagation analysis | §12 | `IMPLEMENTED` as a library (`src/product_hunter/independence/`); `propagation_edges` still has no writer, and the analysis has no caller |
 | Embeddings and a vector store | §14 | `PARTIAL`; the similarity layer takes an embedding identity and a space id, the local embedding model is imported lazily and was never run, and the vector store is `PLANNED` |

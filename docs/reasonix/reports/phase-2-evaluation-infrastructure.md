@@ -153,7 +153,7 @@ The re-review returned **ship**.
 
 Other agents were working in this repository at the same time. Twelve
 commits landed while this run was open, and the documentation tree was
-renamed from `docs/resonix/` to `docs/reasonix/` underneath it.
+renamed to `docs/reasonix/` underneath it.
 
 Two files are therefore shared: `src/product_hunter/cli.py` and `README.md`.
 This change is committed with only its own hunks in those two files, so the

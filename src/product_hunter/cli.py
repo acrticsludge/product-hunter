@@ -18,9 +18,11 @@ from product_hunter import __version__
 from product_hunter.config import (
     ExtractionConfig,
     RoutingConfig,
+    SemanticConfig,
     database_path,
     load_config,
     load_routing_config,
+    load_semantic_config,
     repo_root,
 )
 from product_hunter.db import (
@@ -105,6 +107,13 @@ from product_hunter.reporting import (
     write_report as write_run_report,
 )
 from product_hunter.safety import UrlBlocked
+from product_hunter.semantic import (
+    QdrantAdapter,
+    SearchFilter,
+    SemanticIndex,
+    build_provider,
+)
+from product_hunter.semantic.qdrant import vector_size
 from product_hunter.sources import AllowedUse, SourceBlocked, load_registry
 
 FETCH_LOG = Path("data") / "raw" / "fetches.jsonl"
@@ -195,6 +204,47 @@ def build_parser() -> argparse.ArgumentParser:
     project_parser.add_argument(
         "--as-of", dest="as_of", default=None, help="the reference date, YYYY-MM-DD"
     )
+    index_parser = commands.add_parser(
+        "index", help="the semantic index of the store"
+    )
+    index_commands = index_parser.add_subparsers(dest="index_command", required=True)
+    index_sync = index_commands.add_parser(
+        "sync", help="reconcile the index with the store"
+    )
+    index_sync.add_argument("--db", dest="db_path", default=None)
+    index_sync.add_argument(
+        "--json", action="store_true", help="print JSON (the default)"
+    )
+    index_rebuild = index_commands.add_parser(
+        "rebuild", help="replace the collection and index it again"
+    )
+    index_rebuild.add_argument("--db", dest="db_path", default=None)
+    index_rebuild.add_argument(
+        "--json", action="store_true", help="print JSON (the default)"
+    )
+    index_search = index_commands.add_parser(
+        "search", help="answer a question in words"
+    )
+    index_search.add_argument("--text", required=True)
+    index_search.add_argument("--limit", type=int, default=10)
+    index_search.add_argument("--source", dest="source_id", default=None)
+    index_search.add_argument("--community", dest="community_id", default=None)
+    index_search.add_argument("--entity-type", dest="entity_type", default=None)
+    index_search.add_argument("--domain", default=None)
+    index_search.add_argument("--cluster", dest="cluster_id", default=None)
+    index_search.add_argument("--since", default=None)
+    index_search.add_argument("--until", default=None)
+    index_search.add_argument("--db", dest="db_path", default=None)
+    index_search.add_argument(
+        "--json", action="store_true", help="print JSON (the default)"
+    )
+    index_status = index_commands.add_parser(
+        "status", help="report the state of the index"
+    )
+    index_status.add_argument("--db", dest="db_path", default=None)
+    index_status.add_argument(
+        "--json", action="store_true", help="print JSON (the default)"
+    )
     research_parser = commands.add_parser("research", help="control research runs")
     research_parser.add_argument("action")
     research_parser.add_argument("target", nargs="?", default=None)
@@ -245,20 +295,121 @@ def build_parser() -> argparse.ArgumentParser:
 def doctor(
     config: ExtractionConfig | None = None,
     provider: TextGenerator | None = None,
+    *,
+    semantic: bool = False,
 ) -> int:
-    """Run the provider capability check. Returns 0 on success, 1 on failure."""
+    """Run the provider capability check. Returns 0 on success, 1 on failure.
+
+    The semantic block is added when the caller asks for it: the command
+    reports the whole stack, and the check of the text provider alone costs
+    no call to a Qdrant server.
+    """
+    stack = {"semantic": _semantic_diagnostics()} if semantic else {}
     try:
         config = config if config is not None else load_config()
         provider = provider if provider is not None else build_generator(config)
         info = provider.check()
     except ProviderError as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}))
+        print(json.dumps({"ok": False, "error": str(exc), **stack}))
         return 1
     except Exception as exc:
-        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    **stack,
+                }
+            )
+        )
         return 1
-    print(json.dumps({"ok": True, **info}))
+    print(json.dumps({"ok": True, **info, **stack}))
     return 0
+
+
+def _semantic_diagnostics(root: Path | None = None) -> dict[str, object]:
+    """What the semantic stack looks like, without loading the model.
+
+    The model is not loaded and nothing is downloaded: the provider answers
+    about its cache and its device, and the Qdrant probe is one call. A
+    probe that fails becomes a value, so the doctor answers on a machine
+    with no Qdrant and no ML stack.
+    """
+    try:
+        config = load_semantic_config()
+    except Exception as exc:
+        return {
+            "error": "the semantic config could not be read: "
+            f"{type(exc).__name__}: {exc}"
+        }
+    try:
+        provider = build_provider(config, root=_root(root))
+    except Exception as exc:
+        return {
+            "error": "the embedding provider could not be built: "
+            f"{type(exc).__name__}: {exc}"
+        }
+    info = provider.diagnostics()
+    space = provider.space
+    diagnostics: dict[str, object] = {
+        "provider": space.provider,
+        "model": space.model,
+        "revision": str(info.get("revision") or ""),
+        "dimensions": space.dimensions,
+        "space_id": space.space_id,
+        "cached": bool(info.get("cached")),
+        "cache_dir": str(info.get("cache_dir") or ""),
+        "device": _selected_device(info),
+        "device_requested": str(info.get("device_requested") or ""),
+        "cuda_available": bool(info.get("cuda_available")),
+        "qdrant_url": config.url,
+        "collection": config.collection,
+        "collection_exists": False,
+        "vector_size": None,
+        "collection_space_id": "",
+        "space_matches": False,
+    }
+    adapter = _qdrant_adapter(config)
+    try:
+        collection = adapter.collection_info(config.collection)
+    except Exception as exc:
+        diagnostics["qdrant_reachable"] = False
+        diagnostics["qdrant_error"] = f"{type(exc).__name__}: {exc}"
+    else:
+        diagnostics["qdrant_reachable"] = True
+        if collection is not None:
+            diagnostics["collection_exists"] = True
+            diagnostics["vector_size"] = vector_size(collection)
+            held = str((collection.get("metadata") or {}).get("space_id") or "")
+            diagnostics["collection_space_id"] = held
+            diagnostics["space_matches"] = held == space.space_id
+    finally:
+        adapter.close()
+    return diagnostics
+
+
+def _selected_device(info: dict[str, object]) -> str:
+    """The device the model would run on, without loading it."""
+    requested = str(info.get("device_requested") or "")
+    if requested in ("cpu", "cuda"):
+        return requested
+    return "cuda" if info.get("cuda_available") else "cpu"
+
+
+def _qdrant_adapter(config: SemanticConfig) -> QdrantAdapter:
+    """The adapter the config names.
+
+    The api key is read from the environment and is never printed: the
+    adapter takes it out of every message it builds.
+    """
+    api_key = os.environ.get(config.api_key_env) or None
+    return QdrantAdapter(
+        config.url,
+        api_key=api_key,
+        timeout=config.timeout_seconds,
+        max_attempts=config.max_attempts,
+        backoff_seconds=config.backoff_seconds,
+    )
 
 
 def sources_command(registry=None) -> int:
@@ -1328,6 +1479,135 @@ def project_command(
     return 0
 
 
+def index_command(
+    action: str,
+    *,
+    db_path: str | Path | None = None,
+    text: str | None = None,
+    limit: int = 10,
+    source_id: str | None = None,
+    community_id: str | None = None,
+    entity_type: str | None = None,
+    domain: str | None = None,
+    cluster_id: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    repo_root: Path | None = None,
+) -> int:
+    """Run one index command. Returns 0, or 1 on failure.
+
+    The index reads the store through a read-only connection, so a Qdrant
+    failure never touches the authoritative rows.
+    """
+    root = _root(repo_root)
+    path = _db_path(db_path, root)
+    if not _require_db(path):
+        return 1
+    try:
+        config = load_semantic_config()
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    adapter = _qdrant_adapter(config)
+    try:
+        provider = build_provider(config, root=root)
+    except Exception as exc:
+        adapter.close()
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "the embedding provider could not be built: "
+                    f"{type(exc).__name__}: {exc}",
+                }
+            )
+        )
+        return 1
+    try:
+        conn = connect(path, read_only=True)
+        try:
+            index = SemanticIndex(conn, adapter, provider, config=config)
+            return _run_index_action(
+                index,
+                action,
+                text=text,
+                limit=limit,
+                source_id=source_id,
+                community_id=community_id,
+                entity_type=entity_type,
+                domain=domain,
+                cluster_id=cluster_id,
+                since=since,
+                until=until,
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    finally:
+        adapter.close()
+
+
+def _run_index_action(
+    index: SemanticIndex,
+    action: str,
+    *,
+    text: str | None,
+    limit: int,
+    source_id: str | None,
+    community_id: str | None,
+    entity_type: str | None,
+    domain: str | None,
+    cluster_id: str | None,
+    since: str | None,
+    until: str | None,
+) -> int:
+    """The one action the command asked for."""
+    if action in ("sync", "rebuild"):
+        report = index.sync() if action == "sync" else index.rebuild()
+        print(json.dumps({"ok": report.failed == 0, **report.to_dict()}))
+        return 0 if report.failed == 0 else 1
+    if action == "search":
+        if not text:
+            print(json.dumps({"ok": False, "error": "a search needs a text"}))
+            return 1
+        filters = SearchFilter(
+            entity_type=entity_type or "",
+            source_id=source_id or "",
+            community_id=community_id or "",
+            domain=domain or "",
+            cluster_id=cluster_id or "",
+            since=since or "",
+            until=until or "",
+        )
+        hits = index.search(text, filters=filters, limit=limit)
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "hits": [
+                        {
+                            "entity_id": hit.entity_id,
+                            "entity_type": hit.entity_type,
+                            "score": hit.score,
+                            "text": hit.text,
+                        }
+                        for hit in hits
+                    ],
+                }
+            )
+        )
+        return 0
+    if action == "status":
+        status = index.status()
+        errors = status.get("errors") or []
+        print(json.dumps({"ok": not errors, **status}))
+        return 0 if not errors else 1
+    print(json.dumps({"ok": False, "error": f"unknown index command: {action!r}"}))
+    return 1
+
+
 def _drain_outbox(conn, projector: Projector) -> int:
     """Run the pending obsidian tasks through the outbox.
 
@@ -1825,7 +2105,7 @@ def main(argv: list[str] | None = None) -> int:
         print(__version__)
         return 0
     if args.command == "doctor":
-        return doctor()
+        return doctor(semantic=True)
     if args.command == "sources":
         return sources_command()
     if args.command == "fetch":
@@ -1856,6 +2136,20 @@ def main(argv: list[str] | None = None) -> int:
             vault=args.vault,
             outbox=args.outbox,
             as_of=args.as_of,
+        )
+    if args.command == "index":
+        return index_command(
+            args.index_command,
+            db_path=args.db_path,
+            text=getattr(args, "text", None),
+            limit=getattr(args, "limit", 10),
+            source_id=getattr(args, "source_id", None),
+            community_id=getattr(args, "community_id", None),
+            entity_type=getattr(args, "entity_type", None),
+            domain=getattr(args, "domain", None),
+            cluster_id=getattr(args, "cluster_id", None),
+            since=getattr(args, "since", None),
+            until=getattr(args, "until", None),
         )
     if args.command == "research":
         # The import stays inside the branch, so this module loads the same

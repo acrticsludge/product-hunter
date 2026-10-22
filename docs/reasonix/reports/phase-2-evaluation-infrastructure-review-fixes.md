@@ -17,7 +17,7 @@ threshold file.
 
 ADAPTER: Product Hunter [.loop/adapter.json], 8 forbidden rules in force, 16
 files declared at stage 0. The radius was re-declared once, when the
-documentation tree moved from `docs/resonix/` to `docs/reasonix/` underneath
+documentation tree was renamed to `docs/reasonix/` underneath
 this run.
 
 STAGES: 11/11 complete, skipped: none.

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
@@ -83,6 +84,7 @@ class ImportSummary:
     rejects: int = 0
     artifacts: int = 0
     projections: int = 0
+    index_projections: int = 0
 
 
 @dataclass(frozen=True)
@@ -868,9 +870,14 @@ class Store:
             "rejects": 0,
             "artifacts": 0,
             "projections": 0,
+            "index_projections": 0,
         }
         self.conn.execute("BEGIN IMMEDIATE")
         try:
+            # The entities the run produced. The index task names them, so a
+            # projection of the run touches only what the run wrote.
+            span_ids: list[str] = []
+            pain_ids: list[str] = []
             self._upsert_run(manifest, run_id)
             counts["sources"] = self.sync_registry(registry)
             for document in documents:
@@ -899,6 +906,10 @@ class Store:
                 evidence_new, pain_new = self.import_candidate(candidate)
                 counts["evidence"] += int(evidence_new)
                 counts["pain_points"] += int(pain_new)
+                if candidate.span_id:
+                    span_ids.append(candidate.span_id)
+                if candidate.accepted and candidate.pain_id:
+                    pain_ids.append(candidate.pain_id)
                 if not candidate.accepted:
                     self._insert_event(
                         run_id,
@@ -938,6 +949,9 @@ class Store:
                 ),
             )
             counts["projections"] = int(self._enqueue_projection(run_id))
+            counts["index_projections"] = int(
+                self._enqueue_index_projection(run_id, span_ids, pain_ids)
+            )
             self.conn.execute("COMMIT")
         except sqlite3.IntegrityError as exc:
             # The database refused a row, most often because a trigger found a
@@ -1130,6 +1144,37 @@ class Store:
             entity_version=run_id,
             idempotency_key=key,
             payload={"run_id": run_id},
+        )
+        return True
+
+    def _enqueue_index_projection(
+        self, run_id: str, span_ids: Sequence[str], pain_ids: Sequence[str]
+    ) -> bool:
+        """The task that indexes what the run produced.
+
+        The key carries the entity ids, so a replay of the same run finds the
+        same task and a run with other content gets another key.
+        """
+        entity_ids = sorted({*span_ids, *pain_ids})
+        digest = hashlib.sha256(",".join(entity_ids).encode("utf-8")).hexdigest()
+        key = f"semantic_index:{run_id}:{digest}"
+        existing = self.conn.execute(
+            "SELECT 1 FROM projection_tasks WHERE idempotency_key = ?", (key,)
+        ).fetchone()
+        if existing is not None:
+            return False
+        enqueue_projection(
+            self.conn,
+            target="qdrant",
+            entity_type="run",
+            entity_id=run_id,
+            entity_version=digest,
+            idempotency_key=key,
+            payload={
+                "run_id": run_id,
+                "evidence": sorted(set(span_ids)),
+                "pain_points": sorted(set(pain_ids)),
+            },
         )
         return True
 

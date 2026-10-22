@@ -265,7 +265,8 @@ These are deliberate boundaries, documented in the spec's section 9.
 
 ## 9. A note on the report path
 
-The mission asked for `docs/resonix/reports/wave-2-investigation.md`. The repository
+The mission asked for the report under a misspelled docs root. The repository
 uses `docs/reasonix/`, and every other report lives there, so this file is at
-`docs/reasonix/reports/wave-2-investigation.md`. Writing to `docs/resonix/` would
+`docs/reasonix/reports/wave-2-investigation.md`. Writing to the misspelled root
+would
 have created a second, near-identical directory that no other tool reads.

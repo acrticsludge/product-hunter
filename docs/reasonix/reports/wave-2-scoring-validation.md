@@ -290,7 +290,7 @@ No Obsidian or dashboard output, and no way to consume the confidence band yet.
 
 ## The two path notes
 
-The mission named the deliverable `docs/resonix/reports/wave-2-scoring-validation.md`.
+The mission named the deliverable under a misspelled docs root.
 This repo's documentation tree is `docs/reasonix/`, so the report is at
 `docs/reasonix/reports/wave-2-scoring-validation.md`. A second tree with the
 misspelling would have been a parallel directory nothing reads.

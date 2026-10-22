@@ -13,6 +13,7 @@ from product_hunter.llm.routing import ModelRole, RouteCandidate
 CONFIG_NAME = Path("config") / "extraction.yaml"
 ROUTING_CONFIG_NAME = Path("config") / "model_routing.yaml"
 CLUSTERING_CONFIG_NAME = Path("config") / "clustering.yaml"
+SEMANTIC_CONFIG_NAME = Path("config") / "semantic.yaml"
 ENV_FILE = ".env"
 DEFAULT_DB_NAME = Path("db") / "product_hunter.db"
 
@@ -28,6 +29,15 @@ _ENV_OVERRIDES = {
     "timeout_seconds": "PH_TIMEOUT_SECONDS",
 }
 _INT_LIMITS = ("max_input_chars", "timeout_seconds")
+
+# Config field -> PH_ environment override for the semantic wave.
+_SEMANTIC_ENV_OVERRIDES = {
+    "url": "PH_QDRANT_URL",
+    "collection": "PH_QDRANT_COLLECTION",
+}
+
+# The devices an embedding provider may be asked for.
+EMBEDDING_DEVICES = ("auto", "cpu", "cuda")
 
 
 class Limits(BaseModel):
@@ -140,8 +150,23 @@ class ClusteringConfigError(ClusteringError, ValueError):
     reason_code = "clustering_config_invalid"
 
 
+class SemanticConfigError(ValueError):
+    """The semantic config file cannot be used."""
+
+    reason_code = "semantic_config_invalid"
+
+    def __init__(self, detail: str = "") -> None:
+        self.detail = detail
+        super().__init__(detail or self.reason_code)
+
+
 class EmbeddingConfig(BaseModel):
-    """The embedding model the wave embeds with."""
+    """The embedding model the wave embeds with.
+
+    The revision, the cache and the device are optional, so a config file
+    that only names a model still validates. A pinned revision is part of the
+    model's identity: a change of revision is a change of vector space.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -149,6 +174,21 @@ class EmbeddingConfig(BaseModel):
     model: str = Field(min_length=1)
     model_version: str = Field(min_length=1)
     dimensions: int = Field(gt=0)
+    revision: str = ""
+    cache_dir: str = ""
+    device: str = "auto"
+    batch_size: int = Field(default=16, ge=1)
+    normalize: bool = True
+
+    @model_validator(mode="after")
+    def _check_device(self) -> EmbeddingConfig:
+        """The device is one of the three a provider knows."""
+        if self.device not in EMBEDDING_DEVICES:
+            raise ValueError(
+                f"device must be one of {', '.join(EMBEDDING_DEVICES)}, "
+                f"not {self.device!r}"
+            )
+        return self
 
 
 class SimilarityConfig(BaseModel):
@@ -230,6 +270,43 @@ class ClusteringConfig(BaseModel):
         )
         digest = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:12]
         return f"clustering-v{self.version}-{digest}"
+
+
+class SemanticConfig(BaseModel):
+    """The operator-tunable values of the semantic wave.
+
+    The embedding block names the model, so the two waves agree on the shape
+    of a model identity. The api key is not here: the file names the
+    environment variable the key is read from, and the value never lands in
+    a config, a payload or a log line.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(gt=0)
+    index_version: str = Field(min_length=1)
+    collection: str = Field(min_length=1)
+    url: str = Field(min_length=1)
+    api_key_env: str = Field(min_length=1)
+    embedding: EmbeddingConfig
+    distance: str = Field(min_length=1)
+    timeout_seconds: int = Field(gt=0)
+    max_attempts: int = Field(gt=0)
+    backoff_seconds: int = Field(ge=0)
+    write_batch_size: int = Field(gt=0)
+
+    @property
+    def space_model_version(self) -> str:
+        """The model version the vector space is named after.
+
+        A pinned revision is part of it, so a change of revision changes the
+        space and a re-embedding is demanded. Without a revision the
+        configured version stands alone.
+        """
+        embedding = self.embedding
+        if embedding.revision:
+            return f"{embedding.model_version}@{embedding.revision}"
+        return embedding.model_version
 
 
 def repo_root() -> Path:
@@ -321,6 +398,43 @@ def load_clustering_config(path: Path | None = None) -> ClusteringConfig:
             f"the clustering config at {config_path} is not usable: "
             f"{_first_config_error(exc)}"
         ) from exc
+
+
+def load_semantic_config(path: Path | None = None) -> SemanticConfig:
+    """Load config/semantic.yaml and refuse a file that cannot be used.
+
+    A missing file, a file the parser cannot read and a file whose values
+    do not hold are the same refusal to the caller: a bad config never
+    reaches the index as a half-read config.
+    """
+    config_path = path if path is not None else repo_root() / SEMANTIC_CONFIG_NAME
+    try:
+        raw = _load_yaml(config_path)
+    except (OSError, ValueError) as exc:
+        raise SemanticConfigError(
+            f"the semantic config at {config_path} cannot be read: {exc}"
+        ) from exc
+    try:
+        return SemanticConfig.model_validate(_apply_semantic_env(raw))
+    except ValidationError as exc:
+        raise SemanticConfigError(
+            f"the semantic config at {config_path} is not usable: "
+            f"{_first_config_error(exc)}"
+        ) from exc
+
+
+def _apply_semantic_env(raw: dict) -> dict:
+    """The raw file with the environment overrides applied.
+
+    An empty value is ignored: an unset variable in the shell is not an
+    instruction to clear a setting the file already holds.
+    """
+    data = dict(raw)
+    for field_name, env_name in _SEMANTIC_ENV_OVERRIDES.items():
+        value = os.environ.get(env_name)
+        if value:
+            data[field_name] = value
+    return data
 
 
 def _first_config_error(exc: ValidationError) -> str:

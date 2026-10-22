@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -39,6 +41,7 @@ def test_import_run_populates_the_authoritative_store(tmp_path: Path) -> None:
         assert summary.rejects == 1
         assert summary.artifacts == 6
         assert summary.projections == 1
+        assert summary.index_projections == 1
 
         assert store.integrity_check() == "ok"
         assert store.foreign_key_violations() == []
@@ -57,7 +60,7 @@ def test_import_run_populates_the_authoritative_store(tmp_path: Path) -> None:
         assert count("research_runs") == 1
         assert count("research_artifacts") == 6
         assert count("research_events") == 4
-        assert count("projection_tasks") == 1
+        assert count("projection_tasks") == 2
 
         joined = store.conn.execute(
             """
@@ -101,6 +104,34 @@ def test_import_run_populates_the_authoritative_store(tmp_path: Path) -> None:
         assert projection["idempotency_key"] == "run_imported:run-test"
         assert projection["payload_json"] == '{"run_id": "run-test"}'
         assert projection["max_attempts"] == 5
+
+        index_projection = store.conn.execute(
+            "SELECT target, entity_type, entity_id, entity_version, status, "
+            "idempotency_key, payload_json FROM projection_tasks "
+            "WHERE target = 'qdrant'"
+        ).fetchone()
+        assert index_projection["target"] == "qdrant"
+        assert index_projection["entity_type"] == "run"
+        assert index_projection["entity_id"] == "run-test"
+        assert index_projection["status"] == "pending"
+        assert index_projection["idempotency_key"].startswith(
+            "semantic_index:run-test:"
+        )
+        payload = json.loads(index_projection["payload_json"])
+        assert payload["run_id"] == "run-test"
+        spans = sorted(
+            str(row["span_id"])
+            for row in store.conn.execute("SELECT span_id FROM evidence")
+        )
+        assert payload["evidence"] == spans
+        assert payload["pain_points"] == [accepted.pain_id]
+        digest = hashlib.sha256(
+            ",".join(sorted([*spans, accepted.pain_id])).encode("utf-8")
+        ).hexdigest()
+        assert index_projection["entity_version"] == digest
+        assert index_projection["idempotency_key"] == (
+            f"semantic_index:run-test:{digest}"
+        )
     finally:
         store.close()
 
@@ -123,8 +154,9 @@ def test_replaying_a_run_is_idempotent(tmp_path: Path) -> None:
         assert second.rejects == 0
         assert second.artifacts == 0
         assert second.projections == 0
+        assert second.index_projections == 0
         assert store.conn.execute("SELECT count(*) FROM pain_points").fetchone()[0] == 1
-        assert store.conn.execute("SELECT count(*) FROM projection_tasks").fetchone()[0] == 1
+        assert store.conn.execute("SELECT count(*) FROM projection_tasks").fetchone()[0] == 2
     finally:
         store.close()
 

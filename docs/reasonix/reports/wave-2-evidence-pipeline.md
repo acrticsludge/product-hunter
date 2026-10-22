@@ -470,7 +470,7 @@ same complaint does not inflate it.
 
 ## 10. Assumptions
 
-- The mission names the report path `docs/resonix/reports/...`. The
+- The mission misspells the docs root in the report path it names. The
   repository spells the directory `docs/reasonix`, so the report is written
   there. The same applies to the spec and the plan.
 - "Where supported" for the live or deleted state means the GitHub issue
