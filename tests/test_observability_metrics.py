@@ -623,6 +623,39 @@ def test_the_report_notes_the_missing_comparison_table(tmp_path) -> None:
     assert any("model_comparisons" in note for note in report.notes)
 
 
+def test_a_provider_named_by_both_sides_is_one_metric_with_the_summed_count(
+    tmp_path,
+) -> None:
+    conn = populated_store(tmp_path)
+    _two_comparisons_over_one_provider(conn)
+    report = collect_metrics(conn)
+
+    providers = [
+        item for item in report.metrics if item.name.startswith("model_comparison.provider.")
+    ]
+    assert len(providers) == 1, [item.name for item in providers]
+    assert providers[0].value == 2
+
+
+def _two_comparisons_over_one_provider(conn: sqlite3.Connection) -> None:
+    """Write two comparisons whose baseline and candidate share a provider."""
+    for index in (1, 2):
+        conn.execute(
+            """
+            INSERT INTO model_comparisons (
+                comparison_id, dataset_version, evaluator_version,
+                baseline_run_id, baseline_provider, baseline_model,
+                candidate_run_id, candidate_provider, candidate_model,
+                verdict, comparable, regressions, improvements,
+                tasks_json, created_at
+            ) VALUES (?, 'ds-v2', 'eval-v2', ?, 'one-provider', 'model-a', ?,
+                      'one-provider', 'model-b', 'regression', 1, 1, 0, '[]', ?)
+            """,
+            (f"cmp_{index}", f"base-{index}", f"cand-{index}", f"2026-10-2{index}"),
+        )
+    conn.commit()
+
+
 def test_a_failed_run_counts_its_failures(tmp_path) -> None:
     conn = populated_store(tmp_path)
     report = collect_metrics(conn, run_id="run-1")

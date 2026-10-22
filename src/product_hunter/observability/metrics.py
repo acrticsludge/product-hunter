@@ -2285,23 +2285,28 @@ def _model_comparison_family(conn: sqlite3.Connection, scope: _Scope) -> list[Me
             )
         )
     # A provider, a model and a dataset are named twice per comparison, once
-    # for the baseline and once for the candidate, so the counts of the two
-    # sides are added into one number.
-    for column, prefix in (
-        ("baseline_provider", "provider"),
-        ("candidate_provider", "provider"),
-        ("baseline_model", "model"),
-        ("candidate_model", "model"),
-        ("dataset_version", "dataset"),
+    # for the baseline and once for the candidate. The count is the number of
+    # comparisons that name the key, so a comparison between two models of the
+    # same provider counts once. One metric per key: two metrics with the
+    # same name would split one count in two and a reader indexing by name
+    # would see the count twice.
+    for prefix, columns in (
+        ("provider", ("baseline_provider", "candidate_provider")),
+        ("model", ("baseline_model", "candidate_model")),
+        ("dataset", ("dataset_version",)),
     ):
+        selects = " UNION ALL ".join(
+            f"SELECT comparison_id, {column} AS key FROM model_comparisons"
+            for column in columns
+        )
         counts: dict[str, int] = {}
         raw: dict[str, Any] = {}
         for row in conn.execute(
-            f"SELECT {column} AS key, count(*) AS n FROM model_comparisons "
+            f"SELECT key, count(DISTINCT comparison_id) AS n FROM ({selects}) "
             "GROUP BY key ORDER BY key"
         ).fetchall():
             key = str(row["key"])
-            counts[key] = counts.get(key, 0) + int(row["n"] or 0)
+            counts[key] = int(row["n"] or 0)
             raw[key] = row["key"]
         for key in sorted(counts):
             part = _name_part(key)
@@ -2312,7 +2317,7 @@ def _model_comparison_family(conn: sqlite3.Connection, scope: _Scope) -> list[Me
                     label,
                     counts[key],
                     "count",
-                    {column: raw[key]},
+                    {prefix: raw[key]},
                 )
             )
     return metrics

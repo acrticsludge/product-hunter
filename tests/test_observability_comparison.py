@@ -90,6 +90,49 @@ def _comparison() -> ComparisonReport:
     )
 
 
+def _label_free_run(run_id: str, model: str, prompt: str) -> EvalRun:
+    """A run of a family that needs no label: every case was scored.
+
+    Quote fidelity is checked against the source text, so its cases carry no
+    human answer and the run reports no unlabelled case. The number of
+    labelled cases is therefore zero, not the number of cases.
+    """
+    task = TaskResult(
+        task=TaskName.quote_fidelity,
+        prompt_version=prompt,
+        cases=3,
+        scored=3,
+        unlabeled=0,
+        errored=0,
+        metrics={"verbatim_rate": 1.0},
+        blocked=False,
+    )
+    return EvalRun(
+        run_id=run_id,
+        evaluator_version="eval-v2",
+        dataset_version="ds-v2",
+        provider="opencode-go",
+        model=model,
+        model_version="2026-10",
+        prompt_version=prompt,
+        tasks=[task],
+        label_status=LabelStatus(
+            dataset_version="ds-v2",
+            total_cases=3,
+            total_labeled=0,
+            tasks=[
+                TaskLabelStatus(
+                    task=TaskName.quote_fidelity,
+                    cases=3,
+                    labeled=0,
+                    unlabeled=3,
+                    blocked=False,
+                )
+            ],
+        ),
+    )
+
+
 def _store():
     conn = connect(":memory:")
     migrate(conn)
@@ -126,6 +169,25 @@ def test_the_row_is_written_and_read_back_with_every_field_intact() -> None:
     assert record.regressions == 0
     assert record.improvements == 0
     assert record.created_at == NOW.isoformat()
+
+
+def test_a_family_that_needs_no_label_records_no_labelled_case() -> None:
+    conn = _store()
+
+    record_comparison(
+        conn,
+        _label_free_run("base-1", "model-a", "quote-v1"),
+        _label_free_run("cand-1", "model-b", "quote-v1"),
+        _comparison(),
+        now=NOW,
+    )
+
+    task = list_comparisons(conn)[0].tasks[0]
+    assert task["task"] == "quote_fidelity"
+    assert task["cases"] == 3
+    assert task["scored"] == 3
+    # Every case was scored, and not one of them carries a human label.
+    assert task["labelled"] == 0
 
 
 def test_the_tasks_are_written_with_the_prompt_versions_and_the_metrics() -> None:

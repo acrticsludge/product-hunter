@@ -194,7 +194,7 @@ def _tasks(
         after = _task_result(candidate, name)
         cases = (before.cases if before else 0) or (after.cases if after else 0)
         scored = (before.scored if before else 0) or (after.scored if after else 0)
-        labelled = _labelled(before, after)
+        labelled = _labelled(baseline, candidate, name)
         blocked = bool(after.blocked if after else before.blocked if before else False)
         entries.append(
             {
@@ -239,19 +239,23 @@ def _task_result(run: EvalRun, name: str) -> Any:
     return None
 
 
-def _labelled(before: Any, after: Any) -> int:
+def _labelled(baseline: EvalRun, candidate: EvalRun, name: str) -> int:
     """How many cases of a task carry a human label.
 
-    A run reports how many of its cases carry no label, so the number that
-    does is the rest of the cases. The two runs are asked in turn, and the
-    larger number wins, because a label added between the two runs is a
-    label the task holds.
+    The label status of the run is the authority. It counts a case as
+    labelled only when the case carries an ``expected`` block, so a family
+    that needs no label holds zero labelled cases: quote fidelity is scored
+    against the source text, and its cases carry no human answer.
+
+    The two runs are asked in turn, and the larger number wins, because a
+    label added between the two runs is a label the task holds.
     """
-    counts = []
-    for result in (before, after):
-        if result is None:
-            continue
-        counts.append(int(result.cases) - int(result.unlabeled))
+    counts = [
+        int(status.labeled)
+        for run in (baseline, candidate)
+        for status in run.label_status.tasks
+        if status.task.value == name
+    ]
     return max(counts) if counts else 0
 
 
