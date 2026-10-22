@@ -978,36 +978,23 @@ def _run_bench_command(args: argparse.Namespace) -> int:
     return 1
 
 
-DB_STATUS_TABLES = (
-    "sources",
-    "fetches",
-    "documents",
-    "authors",
-    "communities",
-    "author_links",
-    "evidence",
-    "pain_points",
-    "evidence_pain_links",
-    "propagation_edges",
-    "research_runs",
-    "research_artifacts",
-    "research_events",
-    "research_checkpoints",
-    "tool_calls",
-    "research_stage_executions",
-    "research_stage_artifacts",
-    "research_claims",
-    "stage_gate_results",
-    "model_catalogs",
-    "model_inventory",
-    "model_role_bindings",
-    "model_executions",
-    "jobs",
-    "stage_attempts",
-    "projection_tasks",
-    "spend_ledger",
-    "human_decisions",
-)
+def _schema_tables(conn) -> list[str]:
+    """Every table in the schema, in name order.
+
+    The list is read from the database rather than written down here, so a
+    migration that adds a table shows up in ``ph db status`` without anyone
+    editing this file. A table name that is not a plain identifier is
+    skipped: the name is interpolated into the count query below.
+    """
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' "
+        "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    ).fetchall()
+    return [
+        row["name"]
+        for row in rows
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", row["name"] or "")
+    ]
 
 
 def db_init_command(
@@ -1053,7 +1040,7 @@ def db_status_command(
                 table: int(
                     conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
                 )
-                for table in DB_STATUS_TABLES
+                for table in _schema_tables(conn)
             }
             jobs = {
                 row["status"]: int(row["n"])
