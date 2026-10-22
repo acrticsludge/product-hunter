@@ -230,10 +230,16 @@ waiver.
   candidate model's `status` field is always `proposed`; the decision lives
   in `SourceCandidate.decision`.
 
-## Commit
+## Commits
 
-`bd33b9ad9c53b9b5fd0be697414f933979521d00` —
-`wave3: source registry and community expansion`
+- `bd33b9ad9c53b9b5fd0be697414f933979521d00` —
+  `wave3: source registry and community expansion`
+- `f7a8641b9247a29ee717c5a151c025b4e226e63a` —
+  `docs: record review verdict and commit hash for wave-3 source expansion`
+
+The first commit holds all of the code, tests, config and docs. The second
+is a doc-only follow-up that records the review verdict and the commit hash,
+added after the review returned `ship`. Nothing was pushed.
 
 Committed per the user's explicit request after the review returned `ship`.
 All staged paths are inside the declared radius of 23 files. The commit was
