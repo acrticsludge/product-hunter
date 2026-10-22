@@ -6,12 +6,13 @@ from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from product_hunter.llm.routing import ModelRole, RouteCandidate
 
 CONFIG_NAME = Path("config") / "extraction.yaml"
 ROUTING_CONFIG_NAME = Path("config") / "model_routing.yaml"
+CLUSTERING_CONFIG_NAME = Path("config") / "clustering.yaml"
 ENV_FILE = ".env"
 DEFAULT_DB_NAME = Path("db") / "product_hunter.db"
 
@@ -118,6 +119,119 @@ class RoutingConfig(BaseModel):
         return f"routing-v{self.version}-{digest}"
 
 
+class ClusteringError(Exception):
+    """Base for clustering failures; every subclass carries a reason code.
+
+    The base lives here because the clustering package imports this module.
+    A base defined in the package would close a cycle: the loader raises it,
+    and the loader is here.
+    """
+
+    reason_code = "clustering_error"
+
+    def __init__(self, detail: str = "") -> None:
+        self.detail = detail
+        super().__init__(detail or self.reason_code)
+
+
+class ClusteringConfigError(ClusteringError, ValueError):
+    """The clustering config file cannot be used."""
+
+    reason_code = "clustering_config_invalid"
+
+
+class EmbeddingConfig(BaseModel):
+    """The embedding model the wave embeds with."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    model_version: str = Field(min_length=1)
+    dimensions: int = Field(gt=0)
+
+
+class SimilarityConfig(BaseModel):
+    """The bands a similarity score is read against."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    merge_threshold: float = Field(ge=0, le=1)
+    ambiguous_threshold: float = Field(ge=0, le=1)
+    domain_mismatch_penalty: float = Field(ge=0, le=1)
+    max_candidates: int = Field(ge=1)
+    min_neighbors_checked: int = Field(ge=1)
+
+
+class AdjudicationConfig(BaseModel):
+    """The adjudicator the wave calls when a score lands between the bands."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: str = Field(min_length=1)
+    enabled: bool = True
+    max_calls: int = Field(ge=0)
+
+
+class ClusteringConfig(BaseModel):
+    """The operator-tunable values of the clustering wave.
+
+    No model and no threshold is written in the code. The model comes from
+    the embedding block, the thresholds from the similarity block, and the
+    adjudication role names the routing entry the caller wires.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(gt=0)
+    algorithm_version: str = Field(min_length=1)
+    prompt_version: str = Field(min_length=1)
+    embedding: EmbeddingConfig
+    similarity: SimilarityConfig
+    adjudication: AdjudicationConfig
+
+    @model_validator(mode="after")
+    def _check_bands(self) -> ClusteringConfig:
+        """Refuse bands that cannot be read.
+
+        The ambiguous band sits between the merge band and the noise. A file
+        that puts the two thresholds on top of each other has no ambiguous
+        band, and a file that puts the ambiguous one above the merge one
+        would send every pair to the adjudicator.
+        """
+        if self.similarity.ambiguous_threshold >= self.similarity.merge_threshold:
+            raise ValueError(
+                "ambiguous_threshold must be below merge_threshold, got "
+                f"{self.similarity.ambiguous_threshold} and "
+                f"{self.similarity.merge_threshold}"
+            )
+        return self
+
+    @property
+    def config_version(self) -> str:
+        """The version plus a digest of the values, so a change shows."""
+        embedding = self.embedding
+        similarity = self.similarity
+        adjudication = self.adjudication
+        lines = sorted(
+            [
+                f"algorithm_version|{self.algorithm_version}",
+                f"prompt_version|{self.prompt_version}",
+                "embedding|"
+                f"{embedding.provider}|{embedding.model}|"
+                f"{embedding.model_version}|{embedding.dimensions}",
+                "similarity|"
+                f"{similarity.merge_threshold}|{similarity.ambiguous_threshold}|"
+                f"{similarity.domain_mismatch_penalty}|{similarity.max_candidates}|"
+                f"{similarity.min_neighbors_checked}",
+                f"adjudication|{adjudication.role}|{adjudication.enabled}|"
+                f"{adjudication.max_calls}",
+            ]
+        )
+        digest = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:12]
+        return f"clustering-v{self.version}-{digest}"
+
+
 def repo_root() -> Path:
     """Return the repository root by walking up from this file to pyproject.toml."""
     for parent in Path(__file__).resolve().parents:
@@ -184,3 +298,36 @@ def load_routing_config(path: Path | None = None) -> RoutingConfig:
     config_path = path if path is not None else repo_root() / ROUTING_CONFIG_NAME
     raw = _load_yaml(config_path)
     return RoutingConfig.model_validate(raw)
+
+
+def load_clustering_config(path: Path | None = None) -> ClusteringConfig:
+    """Load config/clustering.yaml and refuse a file that cannot be used.
+
+    A missing file, a file the parser cannot read and a file whose values
+    do not hold are all the same refusal to the caller: a bad config never
+    reaches the engine as a half-read config.
+    """
+    config_path = path if path is not None else repo_root() / CLUSTERING_CONFIG_NAME
+    try:
+        raw = _load_yaml(config_path)
+    except (OSError, ValueError) as exc:
+        raise ClusteringConfigError(
+            f"the clustering config at {config_path} cannot be read: {exc}"
+        ) from exc
+    try:
+        return ClusteringConfig.model_validate(raw)
+    except ValidationError as exc:
+        raise ClusteringConfigError(
+            f"the clustering config at {config_path} is not usable: "
+            f"{_first_config_error(exc)}"
+        ) from exc
+
+
+def _first_config_error(exc: ValidationError) -> str:
+    """The first refusal of a config file, naming the field it names."""
+    errors = exc.errors()
+    if not errors:
+        return "the file does not match the clustering config schema"
+    first = errors[0]
+    location = ".".join(str(part) for part in first.get("loc", ()))
+    return f"{location}: {first.get('msg', 'invalid value')}"
