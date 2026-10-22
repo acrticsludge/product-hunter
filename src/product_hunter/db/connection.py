@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import sqlite3
+import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TypeVar
 
 from product_hunter.fetch import utcnow
 
 _MEMORY = ":memory:"
+
+# Another writer can hold the file for a moment. A busy file is a transient
+# condition, so a write waits it out instead of failing.
+BUSY_ATTEMPTS = 3
+BUSY_DELAY_SECONDS = 0.25
+
+_T = TypeVar("_T")
 
 
 def utc_now(value: datetime | None = None) -> datetime:
@@ -66,3 +76,24 @@ def _apply_pragmas(conn: sqlite3.Connection, *, wal: bool) -> None:
     if wal:
         # An in-memory database has no journal to switch; WAL applies to files.
         conn.execute("PRAGMA journal_mode = WAL")
+
+
+def is_busy(exc: sqlite3.Error) -> bool:
+    """True when the error is another writer holding the file, not a real fault."""
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
+
+
+def with_busy_retry(operation: Callable[[], _T]) -> _T:
+    """Run a database write, waiting out another writer that holds the file.
+
+    A busy file is a transient condition, not a failure. Anything else, and the
+    last attempt, is raised to the caller.
+    """
+    for attempt in range(BUSY_ATTEMPTS):
+        try:
+            return operation()
+        except sqlite3.OperationalError as exc:
+            if not is_busy(exc) or attempt == BUSY_ATTEMPTS - 1:
+                raise
+            time.sleep(BUSY_DELAY_SECONDS)

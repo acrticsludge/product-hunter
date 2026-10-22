@@ -8,18 +8,23 @@ writes a job whose lease it no longer holds.
 
 from __future__ import annotations
 
-import re
 import signal
 import sqlite3
 import sys
-import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from threading import Event, Thread
-from typing import Any, TypeVar
+from typing import Any
 
-from product_hunter.db.connection import connect
+from product_hunter import redaction
+from product_hunter.db.connection import (
+    BUSY_ATTEMPTS,
+    BUSY_DELAY_SECONDS,
+    connect,
+    is_busy,
+    with_busy_retry,
+)
 from product_hunter.db.jobs import (
     Job,
     JobContext,
@@ -37,26 +42,15 @@ from product_hunter.runtime.identity import WorkerIdentity
 
 Handler = Callable[[JobContext], dict[str, object] | None]
 
-_T = TypeVar("_T")
-
 # A renewal that is still running when the outcome is written would race the
 # completion, so the heartbeat is joined with a bound and the job is left
 # alone when the bound is reached.
 _HEARTBEAT_JOIN_TIMEOUT = 30.0
 
-# Another writer can hold the file for a moment. A busy file is a transient
-# condition, so a write waits it out instead of failing the job.
-_BUSY_ATTEMPTS = 3
-_BUSY_DELAY_SECONDS = 0.25
-
 # A handler can raise an exception whose message carries page text, model
 # output or a credential, so the failure text is masked and cut before it
-# reaches the job row or the event stream.
-_MAX_ERROR_CHARS = 300
-_LABELLED_SECRET = re.compile(
-    r"(?i)\b(bearer)\b\s+\S+"
-    r"|\b(bearer|basic|api[_-]?key|apikey|token|secret|password|passwd)\b\s*[=:]\s*\S+"
-)
+# reaches the job row or the event stream. The rule lives in one place:
+# product_hunter.redaction, which the control plane uses as well.
 
 
 @dataclass(frozen=True)
@@ -140,7 +134,7 @@ class WorkerRuntime:
         """
         if not self.handlers:
             return None
-        job = _with_busy_retry(
+        job = with_busy_retry(
             lambda: claim_job(
                 self.conn,
                 self.identity.worker_id,
@@ -192,7 +186,7 @@ class WorkerRuntime:
         if not self._stop_heartbeat() or self._heartbeat_lost.is_set():
             return self._lease_lost(job)
         try:
-            completed = _with_busy_retry(
+            completed = with_busy_retry(
                 lambda: complete_job(
                     self.conn,
                     job,
@@ -261,7 +255,7 @@ class WorkerRuntime:
     def _record_failure(self, job: Job, error: str) -> JobOutcome:
         """Record a failed attempt. The database decides requeue or dead."""
         try:
-            failed = _with_busy_retry(
+            failed = with_busy_retry(
                 lambda: fail_job(
                     self.conn,
                     job,
@@ -361,7 +355,7 @@ class WorkerRuntime:
         failed attempt is reported. A renewal that keeps failing means the
         lease is no longer safe to keep, so the runtime refuses the outcome.
         """
-        for attempt in range(_BUSY_ATTEMPTS):
+        for attempt in range(BUSY_ATTEMPTS):
             try:
                 renew_lease(
                     conn,
@@ -392,10 +386,10 @@ class WorkerRuntime:
                     lease_epoch=job.lease_epoch,
                     error=_safe_error(exc),
                 )
-                if not _is_busy(exc) or attempt == _BUSY_ATTEMPTS - 1:
+                if not is_busy(exc) or attempt == BUSY_ATTEMPTS - 1:
                     self._heartbeat_lost.set()
                     return False
-                if stop.wait(_BUSY_DELAY_SECONDS):
+                if stop.wait(BUSY_DELAY_SECONDS):
                     return False
         return False
 
@@ -477,37 +471,7 @@ def _safe_error(exc: BaseException) -> str:
     credential. The type always stays. The message is masked where it names a
     secret and cut where it runs long. The mask is best effort.
     """
-    message = _LABELLED_SECRET.sub(_redact, str(exc))
-    if len(message) > _MAX_ERROR_CHARS:
-        message = message[:_MAX_ERROR_CHARS] + "..."
-    return f"{type(exc).__name__}: {message}"
-
-
-def _redact(match: re.Match[str]) -> str:
-    """The masked form of one labelled secret."""
-    label = match.group(1) or match.group(2)
-    return f"{label}=[redacted]"
-
-
-def _is_busy(exc: sqlite3.Error) -> bool:
-    """True when the error is another writer holding the file, not a real fault."""
-    message = str(exc).lower()
-    return "locked" in message or "busy" in message
-
-
-def _with_busy_retry(operation: Callable[[], _T]) -> _T:
-    """Run a database write, waiting out another writer that holds the file.
-
-    A busy file is a transient condition, not a failure. Anything else, and the
-    last attempt, is raised to the caller.
-    """
-    for attempt in range(_BUSY_ATTEMPTS):
-        try:
-            return operation()
-        except sqlite3.OperationalError as exc:
-            if not _is_busy(exc) or attempt == _BUSY_ATTEMPTS - 1:
-                raise
-            time.sleep(_BUSY_DELAY_SECONDS)
+    return redaction.safe_error(exc)
 
 
 def _is_set(event: Event | None) -> bool:
