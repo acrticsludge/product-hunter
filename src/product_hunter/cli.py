@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import secrets
 from collections.abc import Iterable
 from dataclasses import asdict
@@ -96,6 +97,14 @@ from product_hunter.llm.routing import (
     ModelRouter,
     ModelSelection,
     SelectionSource,
+)
+from product_hunter.observability import (
+    ComparisonError,
+    collect_metrics,
+    collect_trace,
+    record_comparison,
+    write_metrics_report,
+    write_trace_report,
 )
 from product_hunter.projection import Projector, SqliteProjectionSource
 from product_hunter.raw_store import RawStore
@@ -228,6 +237,12 @@ def build_parser() -> argparse.ArgumentParser:
     bench_compare.add_argument("--candidate", dest="candidate", required=True)
     bench_compare.add_argument("--out", dest="out", required=True)
     bench_compare.add_argument("--thresholds", dest="thresholds", default=None)
+    bench_compare.add_argument(
+        "--db",
+        dest="db_path",
+        default=None,
+        help="also record the comparison in the store; creates and migrates the database when it is absent",
+    )
     bench_report = bench_commands.add_parser(
         "report", help="write the benchmark report of one run"
     )
@@ -239,6 +254,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bench_labels.add_argument("--cases", dest="cases", required=True)
     bench_labels.add_argument("--out", dest="out", default=None)
+    observe_parser = commands.add_parser(
+        "observe", help="read the metrics and the trace of the store"
+    )
+    observe_commands = observe_parser.add_subparsers(
+        dest="observe_command", required=True
+    )
+    observe_metrics = observe_commands.add_parser(
+        "metrics", help="read the twenty metric families as JSON"
+    )
+    observe_metrics.add_argument("--run", dest="run_id", default=None)
+    observe_metrics.add_argument("--db", dest="db_path", default=None)
+    observe_metrics.add_argument("--out", dest="out", default=None)
+    observe_trace = observe_commands.add_parser(
+        "trace", help="read the chain of one run as JSON"
+    )
+    observe_trace.add_argument("--run", dest="run_id", required=True)
+    observe_trace.add_argument("--stage", dest="stage", default=None)
+    observe_trace.add_argument("--db", dest="db_path", default=None)
+    observe_trace.add_argument("--out", dest="out", default=None)
     return parser
 
 
@@ -297,7 +331,7 @@ def models_command(
         routing_config = (
             routing_config if routing_config is not None else load_routing_config()
         )
-    except (OSError, ValueError) as exc:
+    except Exception as exc:
         print(json.dumps({"ok": False, "error": f"config: {exc}"}))
         return 1
     try:
@@ -454,7 +488,7 @@ def extract_command(
     root = _root(repo_root)
     try:
         config = config if config is not None else load_config()
-    except (OSError, ValueError) as exc:
+    except Exception as exc:
         print(json.dumps({"ok": False, "error": f"config: {exc}"}))
         return 1
     try:
@@ -464,7 +498,7 @@ def extract_command(
         return 1
     try:
         registry = load_registry()
-    except (OSError, ValueError) as exc:
+    except Exception as exc:
         print(json.dumps({"ok": False, "error": f"sources: {exc}"}))
         return 1
 
@@ -705,7 +739,7 @@ def eval_command(
     root = _root(repo_root)
     try:
         rows = read_review_sheet(_resolve_path(labels, root))
-    except (OSError, ValueError) as exc:
+    except Exception as exc:
         print(json.dumps({"ok": False, "error": str(exc)}))
         return 1
     report = evaluate(rows, quote_failures=quote_failures)
@@ -803,11 +837,18 @@ def bench_compare_command(
     out: Path,
     thresholds: Path | None = None,
     *,
+    db_path: str | Path | None = None,
     repo_root: Path | None = None,
 ) -> int:
     """Compare two run results and report a regression.
 
     Returns 1 when the verdict is a regression, and 0 otherwise.
+
+    A database path adds one thing: the comparison is written to the store
+    as well, so the answer survives the session that produced it. Without a
+    database path the command does exactly what it did before. When the database
+    does not exist, it is created and migrated to the current schema first, so
+    the --db flag works on a fresh machine.
     """
     root = _root(repo_root)
     threshold_path = (
@@ -831,9 +872,24 @@ def bench_compare_command(
     except OSError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}))
         return 1
+    comparison_id = None
+    if db_path is not None:
+        try:
+            store = Store.open(_db_path(db_path, root))
+            try:
+                comparison_id = record_comparison(
+                    store.conn, before, after, comparison
+                )
+            finally:
+                store.close()
+        except (OSError, ValueError, EvalError, ComparisonError) as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+            return 1
     payload = comparison.model_dump()
     payload["ok"] = comparison.verdict != "regression"
     payload["reason"] = _compare_reason(comparison)
+    if comparison_id is not None:
+        payload["comparison_id"] = comparison_id
     print(json.dumps(payload))
     return 1 if comparison.verdict == "regression" else 0
 
@@ -905,6 +961,83 @@ def bench_labels_command(
     return 0
 
 
+def observe_metrics_command(
+    *,
+    run_id: str | None = None,
+    db_path: str | Path | None = None,
+    out: str | Path | None = None,
+    repo_root: Path | None = None,
+) -> int:
+    """Read the metric families of the store. Returns 0, or 1 on failure.
+
+    The database has to exist: this command reads a store, it never creates
+    one. The report is printed as JSON and, when a path is given, written as
+    markdown beside it.
+    """
+    root = _root(repo_root)
+    path = _db_path(db_path, root)
+    if not _require_db(path):
+        return 1
+    try:
+        conn = connect(path, read_only=True)
+        try:
+            report = collect_metrics(conn, run_id=run_id)
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    if out is not None:
+        try:
+            write_metrics_report(report, _resolve_path(Path(out), root))
+        except OSError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+            return 1
+    payload = report.model_dump(mode="json")
+    payload["ok"] = True
+    print(json.dumps(payload))
+    return 0
+
+
+def observe_trace_command(
+    *,
+    run_id: str,
+    stage: str | None = None,
+    db_path: str | Path | None = None,
+    out: str | Path | None = None,
+    repo_root: Path | None = None,
+) -> int:
+    """Read the chain of one run. Returns 0, or 1 on failure.
+
+    The database has to exist: this command reads a store, it never creates
+    one. The trace is printed as JSON and, when a path is given, written as
+    markdown beside it.
+    """
+    root = _root(repo_root)
+    path = _db_path(db_path, root)
+    if not _require_db(path):
+        return 1
+    try:
+        conn = connect(path, read_only=True)
+        try:
+            report = collect_trace(conn, run_id=run_id, stage=stage)
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    if out is not None:
+        try:
+            write_trace_report(report, _resolve_path(Path(out), root))
+        except OSError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+            return 1
+    payload = report.model_dump(mode="json")
+    payload["ok"] = True
+    print(json.dumps(payload))
+    return 0
+
+
 def _run_reason(run) -> str:
     """Why a run passed, failed, or measured nothing."""
     if run.passed is True:
@@ -962,6 +1095,7 @@ def _run_bench_command(args: argparse.Namespace) -> int:
             Path(args.candidate),
             Path(args.out),
             Path(args.thresholds) if args.thresholds else None,
+            db_path=args.db_path,
         )
     if args.bench_command == "report":
         return bench_report_command(
@@ -972,6 +1106,23 @@ def _run_bench_command(args: argparse.Namespace) -> int:
     if args.bench_command == "labels":
         return bench_labels_command(
             Path(args.cases), Path(args.out) if args.out else None
+        )
+    return 1
+
+
+def _run_observe_command(args: argparse.Namespace) -> int:
+    if args.observe_command == "metrics":
+        return observe_metrics_command(
+            run_id=args.run_id,
+            db_path=args.db_path,
+            out=args.out,
+        )
+    if args.observe_command == "trace":
+        return observe_trace_command(
+            run_id=args.run_id,
+            stage=args.stage,
+            db_path=args.db_path,
+            out=args.out,
         )
     return 1
 
@@ -1103,7 +1254,7 @@ def db_import_run_command(
         registry = registry if registry is not None else load_registry()
         try:
             provenance = _run_provenance(run_dir)
-        except (OSError, ValueError) as exc:
+        except Exception as exc:
             # The provenance is refused on its own: the run is not imported,
             # because a run without the provenance it recorded is a lie. The
             # message names the file and what to do about it.
@@ -1519,7 +1670,7 @@ def _read_model_catalog(path: Path) -> ModelCatalog | None:
         return None
     try:
         return ModelCatalog.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+    except Exception as exc:
         raise ValueError(f"{path}: not a model catalog: {exc}") from exc
 
 
@@ -1850,6 +2001,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_bench_command(args)
     if args.command == "db":
         return _run_db_command(args)
+    if args.command == "observe":
+        return _run_observe_command(args)
     if args.command == "project":
         return project_command(
             db_path=args.db_path,
@@ -1873,3 +2026,7 @@ def main(argv: list[str] | None = None) -> int:
         return registry_main(argv)
     parser.print_help()
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

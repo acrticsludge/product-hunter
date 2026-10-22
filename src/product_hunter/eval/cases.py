@@ -17,7 +17,11 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 # The version of the scoring code. A run records the value it was scored with,
 # so a number can always be traced to the code that produced it.
-EVALUATOR_VERSION = "eval-v1"
+#
+# It moved to eval-v2 when the entity resolution and scoring consistency
+# families joined the benchmark. The metric set changed with them, so a v1
+# number and a v2 number are not the same measurement.
+EVALUATOR_VERSION = "eval-v2"
 
 
 class TaskName(str, Enum):
@@ -33,6 +37,8 @@ class TaskName(str, Enum):
     clustering = "clustering"
     competitor_identification = "competitor_identification"
     counter_evidence_classification = "counter_evidence_classification"
+    entity_resolution = "entity_resolution"
+    scoring_consistency = "scoring_consistency"
 
 
 class EvalError(Exception):

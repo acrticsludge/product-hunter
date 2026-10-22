@@ -138,7 +138,7 @@ def test_bench_run_scores_a_dataset_and_writes_the_result(tmp_path, capsys):
     assert payload["ok"] is True
     assert payload["run_id"] == "run-1"
     assert payload["dataset_version"] == "ds-v1"
-    assert payload["evaluator_version"] == "eval-v1"
+    assert payload["evaluator_version"] == "eval-v2"
     assert payload["provider"] == "opencode-go"
     assert payload["model"] == "deepseek-v4.1-flash"
     assert out.is_file()
@@ -425,7 +425,7 @@ def test_bench_report_writes_the_markdown(tmp_path, capsys):
     written = out.read_text(encoding="utf-8")
     assert "# Benchmark report" in written
     assert "opencode-go" in written
-    assert "eval-v1" in written
+    assert "eval-v2" in written
     assert "quote_fidelity" in written
 
 

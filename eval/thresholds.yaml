@@ -33,3 +33,8 @@ tasks:
     min_recall: 0.60
   counter_evidence_classification:
     min_accuracy: 0.70
+  entity_resolution:
+    min_f1: 0.80
+  scoring_consistency:
+    min_potential_within_rate: 0.70
+    min_confidence_within_rate: 0.70

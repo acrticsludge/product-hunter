@@ -138,6 +138,44 @@ def family_case(task: TaskName) -> tuple[EvalCase, dict]:
             {"competitors": ["QuickBooks"], "not_competitors": ["Wave"]},
         )
         return case, {"competitors": ["QuickBooks", "FreshBooks"]}
+    if task is TaskName.entity_resolution:
+        case = make_case(
+            "entity_resolution",
+            {
+                "accounts": [
+                    {
+                        "account_id": "a1",
+                        "handle": "one",
+                        "display_name": "One",
+                        "source_id": "s1",
+                    },
+                    {
+                        "account_id": "a2",
+                        "handle": "two",
+                        "display_name": "Two",
+                        "source_id": "s1",
+                    },
+                    {
+                        "account_id": "a3",
+                        "handle": "three",
+                        "display_name": "Three",
+                        "source_id": "s2",
+                    },
+                ]
+            },
+            {"groups": [["a1", "a2"], ["a3"]]},
+        )
+        return case, {"groups": [["a1", "a2"], ["a3"]]}
+    if task is TaskName.scoring_consistency:
+        case = make_case(
+            "scoring_consistency",
+            {
+                "opportunity": "the export covers one account at a time",
+                "tolerance": 10,
+            },
+            {"potential": 70, "confidence": 60},
+        )
+        return case, {"potential": 75, "confidence": 65}
     case = make_case(
         "counter_evidence_classification",
         {
@@ -153,7 +191,7 @@ def family_case(task: TaskName) -> tuple[EvalCase, dict]:
     return case, {"labels": ["supports", "refutes", "neutral"]}
 
 
-# --- the ten families -------------------------------------------------------
+# --- the twelve families ----------------------------------------------------
 
 
 def test_pain_extraction_scores_the_genuine_quotes():

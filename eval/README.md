@@ -14,8 +14,9 @@ runs, but the metrics that would need one stay `null`, the task is reported as
 `blocked`, and the run does not pass or fail on it. `quote_fidelity` is the
 one family that needs no label, because it is checked against the source text.
 
-The shipped dataset `datasets/ds-v1.json` holds real inputs and `null` in
-every `expected` block. The labels are a human job, and no code writes one.
+The shipped datasets `datasets/ds-v1.json` and `datasets/ds-v2.json` hold
+real inputs and `null` in every `expected` block. The labels are a human job,
+and no code writes one.
 
 ## The dataset
 
@@ -46,13 +47,28 @@ One JSON document.
 | `cases` | the cases, in the order they are scored |
 
 A case carries a `case_id` that is unique inside the dataset and stable
-across dataset versions, a `task` from the ten families, a `case_version`
+across dataset versions, a `task` from the twelve families, a `case_version`
 that starts at 1, an `input`, and an `expected` block that holds the human
 label or `null`.
 
 A file that is not valid JSON, a case with an unknown task, a duplicate case
 id, or a case whose `input` is not an object is refused. The loader never
 guesses and never skips a case.
+
+### The two datasets
+
+| File | Version | Holds |
+|---|---|---|
+| `datasets/ds-v1.json` | `ds-v1` | the thirty seed cases of the ten families that existed when it was written |
+| `datasets/ds-v2.json` | `ds-v2` | the same thirty cases, plus three seed cases for each of the two new families |
+
+Both files stay. A dataset is a versioned artefact, so the version that was
+scored can be scored again, and a run over `ds-v1` is still reproducible after
+`ds-v2` ships.
+
+The `case_id` of a case is stable across the two files, so a case added in
+`ds-v2` never renames one that was already there. The `case_version` of a case
+is the version of that case, and it moves when the case itself changes.
 
 ### The input of each family
 
@@ -68,6 +84,8 @@ guesses and never skips a case.
 | `clustering` | `items[]` with `item_id` and `text` |
 | `competitor_identification` | `product` with a name and a description, `candidates[]` with a name and a description each |
 | `counter_evidence_classification` | `claim`, `items[]` with `item_id` and `text` |
+| `entity_resolution` | `accounts[]` with `account_id`, `handle`, `display_name`, `source_id`, and an optional `identity_key` |
+| `scoring_consistency` | `opportunity` in free text, `tolerance` in points |
 
 The `expected` block of each family holds the human answer:
 
@@ -83,11 +101,23 @@ The `expected` block of each family holds the human answer:
 | `clustering` | `groups[]` |
 | `competitor_identification` | `competitors[]`, `not_competitors[]` |
 | `counter_evidence_classification` | `labels[]` of `supports`, `refutes`, `neutral` |
+| `entity_resolution` | `groups[]` of `account_id` values |
+| `scoring_consistency` | `potential` and `confidence`, both from 0 to 100 |
 
 A group is a list of identifiers: document ids for the duplicate family,
-mention ids for the independence family, item ids for the clustering family.
+mention ids for the independence family, item ids for the clustering family,
+account ids for the identity family.
 A label the model gives outside the fixed set is a case error, not a wrong
 answer.
+
+The tolerance of the scoring consistency family is the number of points two
+scores may differ by and still count as the same answer. It belongs to the
+case, so a family that fixed it in the code would make the number a property
+of the scorer instead of a property of the case.
+
+The entity resolution family groups accounts into identity groups, which is
+the step the identity resolver takes. The independence family groups mentions
+into authors, one step earlier.
 
 ## The run spec
 
@@ -144,7 +174,7 @@ and a result file can be committed and diffed.
 ```json
 {
   "run_id": "ds-v1-deepseek-2026-10-21",
-  "evaluator_version": "eval-v1",
+  "evaluator_version": "eval-v2",
   "dataset_version": "ds-v1",
   "provider": "opencode-go",
   "model": "deepseek-v4.1-flash",
@@ -158,6 +188,27 @@ and a result file can be committed and diffed.
 
 `passed` is `null` when no threshold could be evaluated. A run with nothing
 measurable has not passed; it has not been measured.
+
+## The two versions a number carries
+
+A result file names the dataset it scored and the evaluator that scored it.
+Both travel with the number, so a reader can always tell what produced it.
+
+| Version | Where it comes from | What it changes |
+|---|---|---|
+| `dataset_version` | the dataset file | the cases, and the labels they carry |
+| `evaluator_version` | the scoring code | the set of metrics |
+
+Two runs are comparable only when both versions match. A comparison across two
+dataset versions is not comparable, and so is a comparison across two
+evaluator versions: the verdict reads `not_comparable`, no delta is reported,
+and a note names the versions that differ. The two rules are independent, so a
+run that differs in both is still not comparable, and both notes are written.
+
+`EVALUATOR_VERSION` is `eval-v2`. It was `eval-v1` before the entity
+resolution and the scoring consistency families joined the benchmark, and the
+metric set changed with them. A v1 number and a v2 number are not the same
+measurement, which is the reason the two are never compared.
 
 ## The threshold file
 
@@ -184,9 +235,10 @@ it.
 
 Only a metric that is better when it is higher may carry a threshold. The
 check is a floor, and a floor on a rate that is better when it is lower would
-pass the worse model. `false_accept_rate`, `false_reject_rate` and
-`mean_absolute_error` are better when they are lower, so they cannot carry a
-floor, and the file is rejected when it names one.
+pass the worse model. `false_accept_rate`, `false_reject_rate`,
+`mean_absolute_error`, `potential_mean_absolute_error` and
+`confidence_mean_absolute_error` are better when they are lower, so they
+cannot carry a floor, and the file is rejected when it names one.
 
 The `defaults` block applies to every task that does not name the metric
 itself, and a task's own entry wins.
@@ -208,7 +260,7 @@ a regression. It defaults to zero.
 | Command | What it does |
 |---|---|
 | `ph bench run --cases PATH --spec PATH --out PATH [--thresholds PATH]` | score one model's answers against a dataset |
-| `ph bench compare --baseline PATH --candidate PATH --out PATH [--thresholds PATH]` | compare two results and detect regressions |
+| `ph bench compare --baseline PATH --candidate PATH --out PATH [--thresholds PATH] [--db PATH]` | compare two results, detect regressions, and record the comparison in the store |
 | `ph bench report --run PATH --out PATH [--compare PATH]` | write the benchmark report |
 | `ph bench labels --cases PATH [--out PATH]` | print the label status of a dataset |
 
@@ -218,6 +270,10 @@ the file named by `--out`, so a script reading the output always reads JSON.
 `--thresholds` defaults to `eval/thresholds.yaml` under the repository root.
 When that file is absent the run still happens, and the result says in its
 warnings that no threshold was checked.
+
+`--db` names a database. The comparison is written to it as well, so the
+answer survives the session that produced it. It changes nothing else: the
+exit code stays 1 on a regression and 0 otherwise.
 
 `bench run` exits 1 when a threshold failed and 0 otherwise, including when
 nothing could be measured. `bench compare` exits 1 when the verdict is a

@@ -63,7 +63,7 @@ def test_a_valid_dataset_loads_and_keeps_its_version(tmp_path):
 
 
 def test_the_evaluator_version_is_a_constant():
-    assert EVALUATOR_VERSION == "eval-v1"
+    assert EVALUATOR_VERSION == "eval-v2"
 
 
 def test_a_missing_file_raises(tmp_path):

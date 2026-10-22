@@ -54,10 +54,20 @@ _HIGHER_IS_BETTER = frozenset(
         "action_agreement",
         "object_agreement",
         "consequence_agreement",
+        "potential_exact_rate",
+        "confidence_exact_rate",
+        "potential_within_rate",
+        "confidence_within_rate",
     }
 )
 _LOWER_IS_BETTER = frozenset(
-    {"false_accept_rate", "false_reject_rate", "mean_absolute_error"}
+    {
+        "false_accept_rate",
+        "false_reject_rate",
+        "mean_absolute_error",
+        "potential_mean_absolute_error",
+        "confidence_mean_absolute_error",
+    }
 )
 
 
@@ -435,11 +445,15 @@ def compare_runs(
 ) -> ComparisonReport:
     """Compare two runs and say whether the candidate regressed.
 
-    Two runs are comparable only when they scored the same dataset version.
-    Across different datasets the deltas mean nothing, so no delta is
-    reported.
+    Two runs are comparable only when they scored the same dataset version
+    under the same evaluator. Across different datasets, or under different
+    evaluators, the deltas mean nothing, so no delta is reported.
+
+    The two rules are independent. A run that differs in both is still not
+    comparable, and both notes are written.
     """
-    comparable = baseline.dataset_version == candidate.dataset_version
+    dataset_match = baseline.dataset_version == candidate.dataset_version
+    evaluator_match = baseline.evaluator_version == candidate.evaluator_version
     report = ComparisonReport(
         baseline_run_id=baseline.run_id,
         candidate_run_id=candidate.run_id,
@@ -447,15 +461,25 @@ def compare_runs(
         candidate_model=candidate.model,
         baseline_provider=baseline.provider,
         candidate_provider=candidate.provider,
-        dataset_version_match=comparable,
-        verdict="no_change" if comparable else "not_comparable",
+        dataset_version_match=dataset_match,
+        verdict=(
+            "no_change" if dataset_match and evaluator_match else "not_comparable"
+        ),
     )
-    if not comparable:
+    if not dataset_match:
         report.notes.append(
             f"the baseline scored the dataset {baseline.dataset_version!r} and the "
             f"candidate scored {candidate.dataset_version!r}; the deltas would "
             "mean nothing"
         )
+    if not evaluator_match:
+        report.notes.append(
+            f"the baseline was scored by the evaluator "
+            f"{baseline.evaluator_version!r} and the candidate by "
+            f"{candidate.evaluator_version!r}; the metric set changed, so the "
+            "deltas would mean nothing"
+        )
+    if not dataset_match or not evaluator_match:
         return report
 
     tolerance = thresholds.tolerance
