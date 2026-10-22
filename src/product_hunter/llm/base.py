@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 
 class GenerationRequest(BaseModel):
@@ -62,3 +62,17 @@ class ProviderUnavailable(ProviderError):
 
 class InputTooLarge(ProviderError):
     """The prompt exceeds the configured input limit."""
+
+
+def first_error(exc: ValidationError) -> str:
+    """The first refusal of a body, naming the field it names.
+
+    Every provider parses an external body in the same way, so the message
+    a malformed body produces is built in one place rather than copied.
+    """
+    errors = exc.errors()
+    if not errors:
+        return "the body does not match the schema"
+    first = errors[0]
+    location = ".".join(str(part) for part in first.get("loc", ()))
+    return f"{location}: {first.get('msg', 'invalid value')}"

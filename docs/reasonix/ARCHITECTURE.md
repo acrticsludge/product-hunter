@@ -504,6 +504,24 @@ dataset, `bench compare` compares two results and detects regressions,
 much of a dataset a human has labelled. `ph eval` still scores the Phase 1
 review sheet, which is a different thing.
 
+**The SubQ Snap decision provider.** `IMPLEMENTED`
+(`src/product_hunter/llm/decision.py`, `src/product_hunter/llm/subq.py`,
+`config/decision_routing.yaml`). It answers structured questions about text:
+a yes/no gate, a label out of a set, a number on a scale. `decision.py` owns
+the shapes, the health states, the provenance and the chain;
+`build_decision_router()` reads `config/decision_routing.yaml` and puts the
+providers in the order the file lists. The first provider that answers wins, a
+provider that is disabled or unavailable is skipped, and a provider that
+cannot answer hands the work to the next one, so the text model is the
+fallback and SubQ is never a dependency. `subq.py` owns the HTTP client, with
+the timeout, the retry, the rate limit, the request hash and a bounded answer
+cache, and the provider, with the capability report, the circuit, the spend
+ledger and the budget. The credential is read from the environment, held in a
+`SecretStr`, and never reaches a record. The Decisions API decides over one
+state and has no batch endpoint, so a batch is one request per item and the
+capability report says so. Nothing calls it yet, and the benchmark gate of
+spec §38A is what would promote it.
+
 ## Evidence provenance
 
 `IMPLEMENTED` (the chain through `src/product_hunter/raw_store.py`,

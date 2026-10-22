@@ -44,8 +44,11 @@ spec §4 do not: there is no `.opencode/agents/` directory.
 Fast-model routing is implemented and role-driven
 (`llm/routing.py`, `llm/catalog.py`, `llm/discovery.py`,
 `db/model_routing.py`, `config/model_routing.yaml`). All thirteen roles of
-§3 are configured chains. SubQ Snap is Phase 7 and absent. The chain for a
-role is a list of patterns, resolved against a catalogue discovered from
+§3 are configured chains. SubQ Snap is Phase 7 and not promoted: the optional
+decision provider exists (`llm/decision.py`, `llm/subq.py`,
+`config/decision_routing.yaml`) and is selectable through the decision
+routing, but nothing calls it and the benchmark gate has not run. The chain
+for a role is a list of patterns, resolved against a catalogue discovered from
 OpenCode at runtime, and no model is named in the business logic.
 
 ### 4. OpenCode agents — NOT DONE
@@ -460,8 +463,8 @@ The interactive picker of spec §43 is text, not a UI.
 
 ### 44. Definition of done — PARTIALLY DONE
 
-Of the thirty-two items, twelve are met, seventeen are partly met, one is
-deferred and two are not met. The list is at the end of this document.
+Of the thirty-two items, eleven are met, nineteen are partly met and two are
+not met. The list is at the end of this document.
 
 ## Phase 38A status
 
@@ -473,7 +476,7 @@ deferred and two are not met. The list is at the end of this document.
 | 4 — research gate and adversarial validation | PARTIALLY MET | The contract, the gate, the budget, the persistence, the fail-closed `require_promotable()`, the scoring, the competitor search and the counter-evidence all exist and are tested. No stage handler calls any of it |
 | 5 — OpenCode interface | MET | The plugin, the ten commands, the registry actions and the cross-chat resume from persistent state |
 | 6 — controlled scale and projections | PARTIALLY MET | The Obsidian projection with its outbox handler, the model routing and the source budgets exist. No Qdrant or DuckDB adapter, and the crawler, browser and managed rungs are not installed |
-| 7 — optional heavy infrastructure | DEFERRED BY DESIGN | §38A gates it behind a measured need |
+| 7 — optional heavy infrastructure | DEFERRED BY DESIGN | §38A gates it behind a measured need. The SubQ Snap decision provider is built and optional (`llm/subq.py`); the benchmark that would promote it, and the rest of the phase, are not here |
 | 8 — operational hardening | NOT MET | No backup, restore, retention, disk watermark, parser canary, or migration rollback notes |
 
 ## The definition of done (spec §44)
@@ -489,7 +492,7 @@ deferred and two are not met. The list is at the end of this document.
 | 7 | Extract and normalize pain points | MET | `extraction.py`, `normalization.py` |
 | 8 | Semantically cluster problems | PARTIALLY MET | `clustering/` with the lineage; the embedding path never ran |
 | 9 | Score opportunities with separate potential and confidence | PARTIALLY MET | `opportunity/scoring.py`; no `opportunities` table and no caller |
-| 10 | Use SubQ for high-volume structured decisions | DEFERRED | Deferred to Phase 7 |
+| 10 | Use SubQ for high-volume structured decisions | PARTIALLY MET | The provider is built and selectable through `config/decision_routing.yaml`, with the text model as the fallback. Nothing calls it, the Decisions API has no batch endpoint, and the §38A benchmark has not run |
 | 11 | Route simple tasks to fast models | MET | `llm/routing.py`, `config/model_routing.yaml` |
 | 12 | Route hard tasks to a reasoning model | PARTIALLY MET | The chain leads with the reasoning family; only the extraction role is bound to a call path |
 | 13 | Research competitors and alternatives | PARTIALLY MET | `research/investigation/competitors.py`; no caller |
@@ -517,7 +520,7 @@ deferred and two are not met. The list is at the end of this document.
 
 | Integration | State | Reason |
 |---|---|---|
-| SubQ Snap | Absent | Spec §38A Phase 7, behind a benchmark gate on schema validity, classification accuracy, duplicate and propagation decisions, latency, cost, and failure rate. The pipeline never reads the key; `.env.example` names it empty. |
+| SubQ Snap | Built, not promoted | The optional decision provider is in `llm/subq.py` and is selected through the decision routing, with the text model as the fallback. Spec §38A Phase 7 still gates the promotion: the benchmark on schema validity, classification accuracy, duplicate and propagation decisions, latency, cost, and failure rate has not run, so nothing in the research pipeline calls it. The research pipeline never reads the key; `.env.example` names it empty. |
 | Apify | Absent from the product | Spec §38A Phase 7. The MCP server is configured in `opencode.json` and the worker does not use it. |
 | Crawl4AI | Absent | Spec §8 and §38A Phase 7, for larger-scale crawling. The ladder refuses the rung. |
 | Large-scale Playwright collection | Absent | Spec §8 and §37A, for JavaScript-heavy sites, and §37A requires browser isolation first. |
