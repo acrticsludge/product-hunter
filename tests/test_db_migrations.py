@@ -67,6 +67,11 @@ EXPECTED_TABLES = {
     "source_candidates",
     "source_reviews",
     "model_comparisons",
+    "worker_health",
+    "operation_runs",
+    "operation_events",
+    "operation_budget",
+    "source_pacing",
 }
 
 

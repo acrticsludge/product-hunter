@@ -44,6 +44,14 @@ def test_db_status_reports_every_table_in_the_schema(tmp_path: Path, capsys) -> 
         "source_reviews",
         "model_comparisons",
     } <= set(tables)
+    # The tables the wave 3 migration shipped.
+    assert {
+        "worker_health",
+        "operation_runs",
+        "operation_events",
+        "operation_budget",
+        "source_pacing",
+    } <= set(tables)
     assert all(count == 0 for count in tables.values())
 
 

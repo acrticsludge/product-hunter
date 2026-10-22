@@ -8,6 +8,7 @@ writes a job whose lease it no longer holds.
 
 from __future__ import annotations
 
+import importlib
 import re
 import signal
 import sqlite3
@@ -85,6 +86,8 @@ class WorkerRuntime:
         lease_seconds: int = 60,
         heartbeat_seconds: float = 15.0,
         poll_seconds: float = 1.0,
+        aging_seconds: int = 0,
+        aging_cap: int = 0,
         retry_policy: RetryPolicy | None = None,
         events: EventSink | None = None,
         connection_factory: Callable[[], sqlite3.Connection] | None = None,
@@ -102,12 +105,18 @@ class WorkerRuntime:
             )
         if poll_seconds <= 0:
             raise ValueError("poll_seconds must be positive")
+        if aging_seconds < 0:
+            raise ValueError("aging_seconds must not be negative")
+        if aging_cap < 0:
+            raise ValueError("aging_cap must not be negative")
         self.conn = conn
         self.identity = identity
         self.handlers = dict(handlers)
         self.lease_seconds = lease_seconds
         self.heartbeat_seconds = heartbeat_seconds
         self.poll_seconds = poll_seconds
+        self.aging_seconds = aging_seconds
+        self.aging_cap = aging_cap
         self.retry_policy = retry_policy if retry_policy is not None else RetryPolicy()
         self.events = events if events is not None else JsonlEventSink(sys.stderr)
         self.clock = clock if clock is not None else utcnow
@@ -146,6 +155,8 @@ class WorkerRuntime:
                 self.identity.worker_id,
                 lease_seconds=self.lease_seconds,
                 now=self.clock(),
+                aging_seconds=self.aging_seconds,
+                aging_cap=self.aging_cap,
             )
         )
         if job is None:
@@ -439,6 +450,24 @@ class WorkerRuntime:
                 count=count,
             )
         )
+
+
+def load_handlers(spec: str | None) -> dict[str, Handler]:
+    """The handler mapping a ``module:attribute`` spec names.
+
+    The spec is operator configuration: it names a module the operator chose
+    and the attribute that builds the mapping. Both entry points read the same
+    environment variable, so the parsing lives with the worker that runs the
+    handlers.
+    """
+    if not spec or not spec.strip():
+        return {}
+    module_name, _, attribute = spec.strip().partition(":")
+    if not module_name or not attribute:
+        raise ValueError("PH_WORKER_HANDLERS must be 'module:attribute'")
+    module = importlib.import_module(module_name)
+    factory = getattr(module, attribute)
+    return dict(factory())
 
 
 def install_shutdown_handlers(runtime: WorkerRuntime) -> Callable[[], None]:
