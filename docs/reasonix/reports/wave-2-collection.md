@@ -170,9 +170,10 @@ The findings that mattered, and what happened to them:
   attempt.
 - An unexpected exception left no trace at all. Every attempt is now recorded.
 - A checkpoint failure rolled back the attempt record. The checkpoint is
-  written after the commit and a broken one is logged, not raised.
-- The contract's overrun was swallowed in silence. It is logged now, with the
-  dimension, the scope and the limit.
+  written after the commit and a broken one is reported to the caller, not
+  raised.
+- The contract's overrun was swallowed in silence. It is reported to the
+  caller now, with the dimension, the scope and the limit.
 - The minimum gap was not restored after a restart, so a restarted process
   asked the source again at once. The floor comes back with the ledger now.
 - The per-source budget check read a different scope than the charge. Both

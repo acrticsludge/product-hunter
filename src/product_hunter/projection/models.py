@@ -19,6 +19,7 @@ class EvidenceRef(BaseModel):
     span_id: str
     quote: str
     stance: str
+    live_status: str = "live"
     source_id: str
     source_type: str
     url: str

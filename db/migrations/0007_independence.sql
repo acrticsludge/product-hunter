@@ -9,7 +9,9 @@
 --
 -- documents.live_status is not added here. The evidence pipeline migration
 -- already adds that column, with the same definition, and a migration may
--- not add it twice.
+-- not add it twice. The same holds for documents.deleted_at, which the
+-- evidence pipeline migration owns because the code that writes it lives
+-- with that migration.
 --
 -- Recovery: the migration is additive, so it is undone by restoring the
 -- pre-migration backup. To reverse it in place, drop the five new tables and
@@ -78,7 +80,9 @@ ALTER TABLE authors ADD COLUMN deletion_status TEXT NOT NULL DEFAULT 'active';
 ALTER TABLE authors ADD COLUMN deleted_at TEXT;
 ALTER TABLE authors ADD COLUMN cluster_id TEXT;
 
-ALTER TABLE documents ADD COLUMN deleted_at TEXT;
+-- documents.deleted_at is not added here. The evidence pipeline migration
+-- owns the document lifecycle and adds that column, because the code that
+-- writes it lives with that migration.
 
 ALTER TABLE propagation_edges ADD COLUMN detection_method TEXT NOT NULL DEFAULT 'unknown';
 ALTER TABLE propagation_edges ADD COLUMN provenance_json TEXT NOT NULL DEFAULT '{}';

@@ -40,11 +40,13 @@ def _evidence(
     stance: str = "supporting",
     url: str = "https://news.ycombinator.com/item?id=1",
     author: str = "alice",
+    live_status: str = "live",
 ) -> EvidenceRef:
     return EvidenceRef(
         span_id=span_id,
         quote=quote,
         stance=stance,
+        live_status=live_status,
         source_id="hn_algolia",
         source_type="forum",
         url=url,
@@ -271,6 +273,18 @@ def test_the_counter_evidence_links_each_quote_to_its_span() -> None:
 def test_an_opportunity_without_counter_evidence_says_so() -> None:
     body = render_opportunity(_opportunity())
     assert "## Counter-evidence\n\nnot recorded\n" in body
+
+
+def test_a_quote_that_is_no_longer_live_says_so() -> None:
+    body = render_opportunity(_opportunity(evidence=[_evidence("ev_1")]))
+    # A live quote carries no status line, so the note reads the same as it
+    # always did.
+    assert "Source status" not in body
+
+    body = render_opportunity(
+        _opportunity(evidence=[_evidence("ev_1", live_status="deleted")])
+    )
+    assert "- Source status: deleted" in body
 
 
 def test_the_claims_name_the_spans_behind_them() -> None:

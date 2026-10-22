@@ -348,6 +348,10 @@ def _evidence_entries(refs: list[EvidenceRef]) -> list[str]:
         lines.append(f"- Source: {_code(ref.source_id)}")
         lines.append(f"- Captured: {_prose(ref.captured_at)}")
         lines.append(f"- Stance: {_prose(ref.stance)}")
+        if ref.live_status != "live":
+            # A quote the source has taken down is still evidence, and the
+            # reader is told that it is no longer live.
+            lines.append(f"- Source status: {_prose(ref.live_status)}")
         lines.append("")
         lines.append("```text")
         lines.append(neutralize(ref.quote))

@@ -441,11 +441,20 @@ class SqliteProjectionSource:
                 # The best link counts: an author who is identified on one
                 # document is identified, however weak the other link is.
                 confidences[author_id] = max(confidences.get(author_id, 0.0), confidence)
+            # The span carries its own liveness. A store that does not know
+            # it falls back to the document's, and a store that knows
+            # neither says live.
+            live_status = _text(row.get("live_status"))
+            if not live_status and document is not None:
+                live_status = _text(document.get("live_status"))
+            if not live_status:
+                live_status = "live"
             refs.append(
                 EvidenceRef(
                     span_id=span_id,
                     quote=_quote(row.get("quote")),
                     stance=draft.stances.get(span_id, "supporting"),
+                    live_status=live_status,
                     source_id=source_id,
                     source_type=_text(source.get("source_type")) if source else "",
                     url=_text(document.get("url")) if document else "",

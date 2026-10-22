@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import time
@@ -26,8 +27,10 @@ from product_hunter.db.evidence import (
     EvidenceSpan,
     document_versions,
     load_span,
+    set_document_status,
     write_evidence_span,
 )
+from product_hunter.db.migrations import MIGRATIONS_DIR, migrate
 from product_hunter.documents import Document, parse_documents
 from product_hunter.evidence import (
     EvidencePipeline,
@@ -1050,6 +1053,50 @@ def test_a_recapture_that_changes_the_text_keeps_the_liveness_in_step(
         "SELECT live_status FROM evidence WHERE span_id = ?", (candidate.span_id,)
     ).fetchone()
     assert span["live_status"] == "deleted"
+
+
+def test_the_evidence_module_runs_against_its_own_migration(tmp_path: Path) -> None:
+    # The evidence module owns the document lifecycle, so the columns it
+    # writes have to exist at the version of the schema that carries its own
+    # migration. A column owned by a later migration would break here.
+    old = tmp_path / "migrations"
+    old.mkdir()
+    for name in (
+        "0001_initial.sql",
+        "0002_model_routing.sql",
+        "0003_research_gate.sql",
+        "0004_collection.sql",
+        "0005_evidence_pipeline.sql",
+    ):
+        shutil.copy(MIGRATIONS_DIR / name, old / name)
+    conn = connect(":memory:")
+    try:
+        assert migrate(conn, migrations_dir=old) == 5
+        conn.execute(
+            "INSERT INTO sources (source_id, source_type, terms_status) "
+            "VALUES ('hn_algolia', 'community', 'permitted')"
+        )
+        conn.execute(
+            "INSERT INTO fetches (fetch_id, source_id, requested_url) VALUES"
+            " ('fetch_1', 'hn_algolia', 'https://example.invalid/1')"
+        )
+        conn.execute(
+            "INSERT INTO documents (doc_id, fetch_id, source_id, url, text_sha256,"
+            " text_path, raw_path, raw_sha256, parser_version) VALUES"
+            " ('doc_1', 'fetch_1', 'hn_algolia', 'https://example.invalid/1',"
+            " 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',"
+            " 'p', 'r', 'b', 'v1')"
+        )
+        changed = set_document_status(conn, "doc_1", "deleted")
+        assert changed == 0
+        row = conn.execute(
+            "SELECT live_status, deleted_at FROM documents WHERE doc_id = ?",
+            ("doc_1",),
+        ).fetchone()
+        assert row["live_status"] == "deleted"
+        assert row["deleted_at"] is not None
+    finally:
+        conn.close()
 
 
 def test_derive_strength_ranks_the_candidates() -> None:

@@ -14,6 +14,7 @@
 
 ALTER TABLE documents ADD COLUMN content_version INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE documents ADD COLUMN live_status TEXT NOT NULL DEFAULT 'live';
+ALTER TABLE documents ADD COLUMN deleted_at TEXT;
 ALTER TABLE documents ADD COLUMN first_seen_at TEXT;
 ALTER TABLE documents ADD COLUMN last_seen_at TEXT;
 ALTER TABLE documents ADD COLUMN superseded_by_doc_id TEXT REFERENCES documents(doc_id);

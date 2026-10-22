@@ -27,13 +27,14 @@ RISK: declared=high, adapter floor=medium (schema, fetch path)
 ADAPTER: Product Hunter [repo] 8 forbidden rules in force
 STAGES: 11/11 complete, skipped: none. Stage 5b visual was not required; the
   adapter sets visualRequired to never and no UI file is in the radius.
-GATES: uv run pytest -> 2134 passed, exit 0
-CHANGES: 202 files, 57281 insertions, 134 deletions, one integration commit
+GATES: uv run pytest -> 2138 passed, exit 0
+CHANGES: 202 files, 58259 insertions, 273 deletions, one integration commit
 HARDEN: two findings, one fixed and one corrected. The collection package no
   longer logs an untrusted URL. The extraction prompt finding was wrong and
   says so.
-REVIEW: fix-then-ship. 2 Must-fix, 6 Should-fix, 4 Nice-to-have. All closed.
-  Lean: -40 lines possible, 15 taken.
+REVIEW: fix-then-ship, twice. Round 1: 2 Must-fix, 6 Should-fix, 4 Nice-to-have.
+  Round 2: 1 Must-fix, and the load limits put in numbers. All closed.
+  Lean: -65 lines possible, 23 taken.
 WAIVERS: none
 STOPPED BECAUSE: all pass and review ship
 NEXT: the wave 2 stage handler is the next wave's work
@@ -386,6 +387,43 @@ a real non-empty vault, every branch of the four largest new packages, the
 `config/sources.yaml`, the Windows reserved device names in the vault, and
 the §44 table line by line.
 
+### The second round
+
+A second review node ran against the tree after the first round's fixes. It
+found one Must-fix that the first round's fixes had introduced, and it put
+numbers on the load limits.
+
+**The evidence module wrote a column that belongs to a later migration.** The
+first round's fix made `set_document_status` write `documents.deleted_at`, so
+that the column the independence analysis reads would hold data instead of a
+null. But `documents.deleted_at` is created by the independence migration,
+and the code that writes it lives with the evidence migration. Against a
+database at version 5 the evidence package raised
+`sqlite3.OperationalError: no such column: deleted_at`. The column has moved
+to the evidence migration, which owns the document lifecycle and the code
+that writes it, and the independence migration no longer adds it. The
+regression test migrates to version 5 alone and calls `set_document_status`,
+and it was checked by mutation: with the column moved back, it fails with the
+reviewer's exact error.
+
+The second round's other findings:
+
+| Finding | State |
+|---|---|
+| The projection never read liveness, so the vault showed a deleted document's quote as ordinary live evidence | **Fixed.** The reader takes `live_status` from the span, falls back to the document, and the rendered entry carries a status line when the quote is no longer live. A live quote renders exactly as it did before, so every existing note is unchanged. |
+| The checkpoint failure event carried the error class but not the message, so "database is locked" and "disk I/O error" looked the same | **Fixed.** The event carries a bounded detail with the target URL taken out of it. |
+| The `shortcut:` marker for the silent default was in the type's docstring, where a reader of the method would not find it | Moved to the method that drops the event. |
+| The decision record and the clustering spec named the old migration number and described the old splitter | Corrected. |
+| The collection report still said a broken checkpoint "is logged" | Corrected. |
+| The clustering duplicate review is O(P²) with one decision per pair, and the independence resolver is O(A²) with no cap | **Not fixed, and recorded.** The numbers are in section 16. A cap is new behaviour and new configuration, and this is an integration. |
+| `authors.deleted_at` has no writer, and `documents.deleted_at` had none | `documents.deleted_at` has a writer now. `authors.deleted_at` still has none; only `authors.deletion_status` is written, and it is recorded in section 16. |
+| The `evidence_lineage` query joins through `evidence_pain_links` to reach the evidence, which the trigger makes equivalent to the pain point's own span | Left as it is. The join is one more table to scan per cluster, and it is the shape the store has always had. |
+| The five copies of `_hash_id` in the independence package | Left as they are. The two reviews disagreed on this: one called it the house pattern, one called it churn. It is a one-line helper repeated, and consolidating it buys nothing at runtime. |
+
+The second round named the behaviours that have no test. The two that matter
+for trust are covered now: the evidence module against its own migration, and
+the projection's liveness. The rest are recorded in section 16.
+
 ## 13. Security review
 
 The hardening pass ran over the whole integrated tree against spec §37 and
@@ -429,14 +467,15 @@ migrations beyond the diff it reviewed.
 | `uv run pytest` after the `ph db status` fix | 2131 passed |
 | `uv run pytest` after the security fixes | 2133 passed |
 | `uv run pytest` after the documentation pass | 2133 passed |
-| `uv run pytest` after the review fixes | 2135 passed |
-| `uv run pytest` from the committed state | **2135 passed, exit 0** |
+| `uv run pytest` after the first review round | 2135 passed |
+| `uv run pytest` after the second review round | 2138 passed |
+| `uv run pytest` from the committed state | **2138 passed, exit 0** |
 
 The verify node observed the gate independently and reported
-`2131 passed in 77.89s (0:01:17)`, exit 0, 72 test files, no skips. The four
+`2131 passed in 77.89s (0:01:17)`, exit 0, 72 test files, no skips. The seven
 tests that came after it are the two the security fixes added, the one the
-liveness regression needed, and the one that replaced the extraction test that
-asserted nothing.
+liveness regression needed, the one that replaced the extraction test that
+asserted nothing, and the three the second review round needed.
 
 Every number in the table above was measured. The counts at each merge were
 re-derived by collecting the tests at each merge commit in a throwaway
@@ -532,9 +571,19 @@ specification says so itself.
    exercised against fixtures.
 5. **The clustering comparison is quadratic.** Every pain point is compared
    with every other one. It is labelled in the code, and the nearest-neighbour
-   index is the fix.
+   index is the fix. The second review measured it: 200 pain points take 2.9
+   seconds, 400 take 12, and 800 take 53. The duplicate review is a second
+   quadratic sweep, and it holds one decision per pair, so at 8,000 pain
+   points it would hold 3.16 million decisions in memory and write 3.16
+   million rows before the first one lands. A cap on the decisions a run
+   records is the fix, and it is a configuration this wave did not add.
 6. **The identity resolver is quadratic**, and the identity key is an
-   unsalted hash.
+   unsalted hash. The second review measured it: 500 authors take 0.7
+   seconds, 1,000 take 2.7, 2,000 take 13, and 4,000 take 54. At 40,000
+   authors one resolve is about ninety minutes, and the community resolver is
+   quadratic on top. Bucketing the comparison by the normalised handle, and
+   refusing a scope above a configured size the way the propagation detector
+   already does, is the fix.
 7. **Seven of the twelve budget dimensions have no writer.** The spend
    ledger has one writer, the discovery store. The gate reports the
    unmeasured dimensions per run rather than pretending they are zero.
@@ -546,6 +595,16 @@ specification says so itself.
 10. **The lint and type gates are not configured.** Ruff and mypy are not
     project dependencies and there is no configuration for either.
 11. **The `network` pytest marker is inert.** No test carries it.
+12. **`authors.deleted_at` has no writer.** Only `authors.deletion_status` is
+    written. The independence analysis reads the author record, not the
+    timestamp, so nothing depends on the column holding data.
+13. **A few behaviours have no test.** The second review named them: the
+    collection duplicate branch that reuses an earlier attempt, the live path
+    of the contract-overrun report, the experiment and research-request
+    renderers, the projector's own path guard, the clustering store's
+    redundant lineage join, the sentence-transformers embedder, which has
+    never run because the model is not installed, and the naive timestamp
+    fallbacks in the independence store.
 
 ## 17. Deferred functionality
 

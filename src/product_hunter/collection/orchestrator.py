@@ -108,11 +108,6 @@ The layer does not log. It hands a structured event to the caller, and the
 caller decides what to do with it, so the observability policy stays with the
 application layer. An event carries identifiers the worker owns. It never
 carries a URL, a page title or any other text that came from the network.
-
-shortcut: a caller that passes no sink hears nothing, so a budget overrun or
-a broken checkpoint is silent; the worker wires a sink that logs the events
-when it runs the COLLECT stage, and until then the spend is still recorded in
-the collection ledger even though the report of it is not.
 """
 
 
@@ -705,6 +700,12 @@ class CollectionOrchestrator:
         The library does not log, and an event never carries a URL or any
         other text that came from the network. The caller owns the
         observability policy, so the event is handed over as data.
+
+        shortcut: a caller that passes no sink hears nothing, so a budget
+        overrun and a broken checkpoint are silent; the worker wires a sink
+        that logs the events when it runs the COLLECT stage. Until then the
+        spend is still recorded in the collection ledger, so only the report
+        of it is missing.
         """
         if self._events is None:
             return

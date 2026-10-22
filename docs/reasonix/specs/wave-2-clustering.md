@@ -222,7 +222,10 @@ The independence wave can read the decisions with relation `repost` and write th
 
 ## 10. Persistence
 
-One migration, `db/migrations/0003_clustering.sql`, adds six tables. The migration runner splits on `;` and drops full-line `--` comments, so the file avoids semicolons inside string literals.
+One migration, `db/migrations/0006_clustering.sql`, adds six tables. The
+migration runner splits a statement where `sqlite3.complete_statement` says
+one ends, so a trigger body keeps the semicolon it needs, and it drops
+full-line `--` comments.
 
 `clustering_runs`
 

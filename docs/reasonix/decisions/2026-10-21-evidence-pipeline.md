@@ -16,7 +16,7 @@ accident, and because two of them exist only to stop a specific mistake.
 
 A pain point cannot be inserted without a verified evidence span, and an
 evidence link cannot point at a pain point backed by another span. Three
-triggers in `db/migrations/0003_evidence_pipeline.sql` enforce it: one on
+triggers in `db/migrations/0005_evidence_pipeline.sql` enforce it: one on
 `pain_points`, and two on `evidence_pain_links`, one for the insert path and
 one for the update path.
 

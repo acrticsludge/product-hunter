@@ -653,6 +653,48 @@ def test_a_quote_that_is_not_valid_utf8_is_read(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_a_quote_from_a_deleted_document_carries_the_liveness(
+    tmp_path: Path,
+) -> None:
+    # The store knows a document is gone. The vault has to be able to say so,
+    # or a reader cannot tell a live quote from a taken-down one.
+    conn = _database(tmp_path)
+    try:
+        conn.execute(
+            "INSERT INTO evidence (span_id, doc_id, quote, char_start, char_end,"
+            " match_mode, live_status, created_at) VALUES ('ev_gone', 'doc_1', ?,"
+            " 0, 3, 'exact', 'deleted', '2026-10-20T10:00:00Z')",
+            ("a dead quote",),
+        )
+        conn.execute(
+            "INSERT INTO pain_points (pain_id, span_id, doc_id, accepted,"
+            " created_at) VALUES ('pp_gone', 'ev_gone', 'doc_1', 1,"
+            " '2026-10-20T10:00:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO evidence_pain_links (pain_id, span_id, created_at) VALUES"
+            " ('pp_gone', 'ev_gone', '2026-10-20T10:00:00Z')"
+        )
+        conn.commit()
+        snapshot = _snapshot(conn)
+        ref = next(
+            ref
+            for opportunity in snapshot.opportunities
+            for ref in opportunity.evidence
+            if ref.span_id == "ev_gone"
+        )
+        assert ref.live_status == "deleted"
+        live = next(
+            ref
+            for opportunity in snapshot.opportunities
+            for ref in opportunity.evidence
+            if ref.span_id == "ev_1"
+        )
+        assert live.live_status == "live"
+    finally:
+        conn.close()
+
+
 def test_a_quote_with_a_control_character_is_read(tmp_path: Path) -> None:
     conn = _database(tmp_path)
     try:
