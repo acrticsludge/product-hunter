@@ -47,7 +47,10 @@ def _leased_job(
     run_id: str = "run-1",
     stage: str = "DISCOVERY",
     worker_id: str = "worker-a",
-    lease_seconds: int = 60,
+    # leases.assert_live_lease reads the store's wall clock and cannot be
+    # handed another one, so a one-minute lease dies if the suite takes a
+    # minute to reach the test. The expired-lease cases pass their own length.
+    lease_seconds: int = 3600,
     now: datetime = NOW,
 ) -> Job:
     """A job for a run and stage, leased to one worker."""
