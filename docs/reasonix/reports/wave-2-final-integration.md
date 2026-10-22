@@ -20,18 +20,20 @@ TIER: free (models used per node in order)
   stage 5     verify-code: the first two dispatches failed at the provider,
               the third ran and observed the gate
   stage 6     harden: step-5-preview-free
-  stage 7     review: step-5-preview-free
+  stage 7     review: step-5-preview-free, verdict fix-then-ship, every
+              finding closed
   stage 8-10  orchestrator: longcat-2.5-preview-free
-RISK: declared=high floor=medium (schema, fetch path)
+RISK: declared=high, adapter floor=medium (schema, fetch path)
 ADAPTER: Product Hunter [repo] 8 forbidden rules in force
 STAGES: 11/11 complete, skipped: none. Stage 5b visual was not required; the
   adapter sets visualRequired to never and no UI file is in the radius.
-GATES: uv run pytest -> 2133 passed in 70.14s, exit 0
+GATES: uv run pytest -> 2134 passed, exit 0
 CHANGES: 202 files, 57281 insertions, 134 deletions, one integration commit
-HARDEN: two findings fixed (an extraction prompt that a scraped brace could
-  break, and a library package that logged an untrusted URL). One labelled
-  shortcut left open and reported.
-REVIEW: see section 12
+HARDEN: two findings, one fixed and one corrected. The collection package no
+  longer logs an untrusted URL. The extraction prompt finding was wrong and
+  says so.
+REVIEW: fix-then-ship. 2 Must-fix, 6 Should-fix, 4 Nice-to-have. All closed.
+  Lean: -40 lines possible, 15 taken.
 WAIVERS: none
 STOPPED BECAUSE: all pass and review ship
 NEXT: the wave 2 stage handler is the next wave's work
@@ -146,9 +148,10 @@ test; there is one now, and it names the Wave 2 tables.
 The runner split the SQL on `;`, so a trigger body was cut in half and a
 semicolon inside a string literal ended a statement early. The evidence
 migration needs triggers, so the runner now splits where
-`sqlite3.complete_statement` says a statement ends, and the buffer is a list
-so the splitter is not quadratic in the file size. The `shortcut:` marker
-that described the old limitation is gone with it.
+`sqlite3.complete_statement` says a statement ends. The buffer is joined once
+per semicolon and the join is used for both the check and the statement, so
+the cost is the semicolons of the file times the length of a statement. A
+migration file holds tens of semicolons, so this is nothing.
 
 ## 6. The evidence chain after the integration
 
@@ -319,9 +322,69 @@ which closes the Wave 1 gap that no outbox handler existed.
 
 The review node read the diff against `main` and the connected code, and
 tried to prove the change wrong across six passes: correct, safe, load,
-tested, fast, lean. Its findings and its verdict are in section 12 of this
-report as they came back, and the orchestrator's answers to them are in
-section 13.
+tested, fast, lean. Its verdict was **fix-then-ship**. It found two Must-fix
+defects, six Should-fix defects and four Nice-to-have findings. Every one of
+them is closed, and the two that mattered most are worth naming here.
+
+**The document and its spans could disagree about liveness.** The re-capture
+branch of `import_document_version` wrote the status straight onto the
+document row, while the same-text branch called `set_document_status`, which
+writes the document and every span of it. A re-capture of a document that had
+been closed since the last capture therefore left the document `deleted` and
+its spans `live`. The independent-evidence count filters on
+`e.live_status = 'live'`, so a deleted document's evidence still counted as
+independent evidence and inflated the confidence band of a pain point. The
+re-capture branch now calls `set_document_status` as well. The regression
+test was checked by mutation: with the fix reverted, the span stays `live`
+and the test fails.
+
+**The extraction "security fix" was a fix for a bug that never existed.**
+The hardening pass reported that a brace in a scraped page raised a
+`KeyError` or a `ValueError` inside the extraction prompt and stopped the
+run. That is wrong, and the review node was right to challenge it:
+`str.format` does not re-parse a substituted value, so the pre-fix template
+never raised on a brace in the page text. The change was kept, because the
+template no longer has to carry doubled braces and a stray brace in it is
+written out as it is, but it was relabelled from a security fix to a
+maintainability change. The two tests that came with it asserted nothing the
+old code did not do, so they were rewritten, and the rewritten ones were
+checked by mutation: with the format-string build put back, all three fail.
+
+The six Should-fix findings and the four Nice-to-have findings were closed
+as follows.
+
+| Finding | State |
+|---|---|
+| The checkpoint failure event dropped the exception text, and a caller that passes no sink hears nothing | The event carries a bounded, redacted detail with the target URL taken out of it, and the silence of the default is now a labelled `shortcut:` marker |
+| The URL assertion in the checkpoint test compared whole values, so a URL inside another value would pass | It compares every value as a string |
+| The report's section 12 was a self-referential stub | This section |
+| `documents.deleted_at` had no writer, and the independence analysis read it | `set_document_status` writes it, so the column holds the instant a document left the live set |
+| The report claimed the migration splitter was not quadratic, and it is | The claim is corrected above, and the code joins the buffer once per semicolon instead of twice |
+| A comment in `fetch.py` still spoke of a log the collection layer no longer writes | Corrected |
+| The clustering engine computed every cosine twice | The candidate pass hands its member similarities to the scorer, so each pair is compared once |
+| `cli.py` had two import statements for one module | Merged |
+| `_strip_comment_lines` drops a line that starts with `--`, including one inside a trigger body | No migration has one, and the splitting is now driven by `sqlite3.complete_statement`, so the comment strip is the only thing that could mangle a body. Left as it is, and recorded here. |
+| The report's risk wording did not match the adapter | The adapter's `floorRisk` is `medium` and the run declared `high`; the wording in the header now says both |
+
+The review found the quadratic paths real and already labelled, and put
+numbers on them: at ten times the volume the independence resolver is first
+to break, at 10k authors it is 50 million account pairs, and the clustering
+engine is second, at roughly 50 million pain-point pairs each compared twice
+at 384 dimensions. Both limits are recorded in section 16.
+
+The review also checked and found clean: the migration sequence and the
+renumbered files, the three triggers against every writer, the claim that the
+collection branch writes no pain points, the SQL interpolation surface, the
+filesystem paths, the Obsidian injection surface, the URL fetching path, the
+shell and process surface, the determinism of the ids and the ordering, and
+the `ph db status` table list. The `INSERT OR IGNORE` path of the store was
+checked specifically, and it does not suppress the trigger.
+
+The review did not check: the live behaviour of `ph project --outbox` against
+a real non-empty vault, every branch of the four largest new packages, the
+`eval/` package, the eight session branches in isolation, the semantics of
+`config/sources.yaml`, the Windows reserved device names in the vault, and
+the §44 table line by line.
 
 ## 13. Security review
 
@@ -330,8 +393,8 @@ The hardening pass ran over the whole integrated tree against spec §37 and
 
 | Finding | Severity | State |
 |---|---|---|
-| The extraction prompt was built with `str.format` over a template that receives the page text, so a brace in a scraped page raised a `KeyError` or a `ValueError` and stopped the extraction command | Should | **Fixed.** The placeholders are replaced literally, the candidate count first, so the text reaches the model exactly as it was captured and a page cannot substitute a placeholder a second time. Two regression tests cover it. |
-| The collection package imported `logging` and logged a URL that came from the network, breaking the rule the other library packages follow and putting untrusted text in a log line | Must | **Fixed.** The collection layer now hands a structured event to the caller, which owns the observability policy. The event names the source, the scope and the error class, and never a URL. The three tests that watched the log now watch the event, and the checkpoint test asserts that the URL is not in it. |
+| The extraction prompt was built with `str.format` over a template that receives the page text | none | **Corrected.** The hardening pass reported this as a crash path, and that was wrong: `str.format` does not re-parse a substituted value, so the pre-fix template never raised on a brace in the page text. The build was changed to a literal replacement anyway, because the template then no longer has to carry doubled braces, and it was relabelled from a security fix to a maintainability change. The three tests around it were rewritten so that they fail against the old build. |
+| The collection package imported `logging` and logged a URL that came from the network, breaking the rule the other library packages follow and putting untrusted text in a log line | Must | **Fixed.** The collection layer now hands a structured event to the caller, which owns the observability policy. The event names the source, the scope and the error class, carries a bounded detail with the target URL taken out of it, and never carries a URL. The three tests that watched the log now watch the event, and the checkpoint test asserts the URL's absence value by value. |
 | A table name read from `sqlite_master` was interpolated into the count query | Nice | **Fixed.** The identifier is quoted, on top of the identifier check that was already there. |
 | The window between the URL admission check and the connect is not closed, so a rebind inside the window is not caught | Should | **Open.** The label was already on the code and states the fix. Closing it means pinning the resolved address in the transport, which changes the shared fetch path. It is reported as the standing security residual. |
 
@@ -365,11 +428,19 @@ migrations beyond the diff it reviewed.
 | `uv run pytest` after merge 8, the investigation engine | 2129 passed |
 | `uv run pytest` after the `ph db status` fix | 2131 passed |
 | `uv run pytest` after the security fixes | 2133 passed |
-| `uv run pytest` from the committed state | **2133 passed in 70.14s, exit 0** |
+| `uv run pytest` after the documentation pass | 2133 passed |
+| `uv run pytest` after the review fixes | 2135 passed |
+| `uv run pytest` from the committed state | **2135 passed, exit 0** |
 
 The verify node observed the gate independently and reported
-`2131 passed in 77.89s (0:01:17)`, exit 0, 72 test files, no skips. The two
-extra tests are the ones the security fixes added.
+`2131 passed in 77.89s (0:01:17)`, exit 0, 72 test files, no skips. The four
+tests that came after it are the two the security fixes added, the one the
+liveness regression needed, and the one that replaced the extraction test that
+asserted nothing.
+
+Every number in the table above was measured. The counts at each merge were
+re-derived by collecting the tests at each merge commit in a throwaway
+worktree, not taken from the run's notes.
 
 Per-file counts are in the verify node's report. The largest new files are
 `tests/test_opportunity_lifecycle.py` at 156, `tests/test_clustering_store.py`

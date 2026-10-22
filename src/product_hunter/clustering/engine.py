@@ -347,10 +347,15 @@ class ClusteringEngine:
             best_score: float | None = None
             best_member: CanonicalProblem | None = None
             same_fingerprint = False
+            # The similarity of every member is computed once here and handed
+            # to the scorer, which would otherwise compute the same pair a
+            # second time.
+            scores: list[tuple[CanonicalProblem, float]] = []
             for member, member_vector in zip(cluster.members, cluster.vectors):
                 if member.fingerprint == problem.fingerprint:
                     same_fingerprint = True
                 score = cosine_similarity(vector, member_vector)
+                scores.append((member, score))
                 if best_score is None or score > best_score:
                     best_score = score
                     best_member = member
@@ -358,7 +363,7 @@ class ClusteringEngine:
                 best_score is None or best_score < similarity.ambiguous_threshold
             ):
                 continue
-            score, basis, member = self._score(problem, vector, cluster)
+            score, basis, member = self._score(problem, vector, cluster, scores)
             scored.append(
                 (
                     score,
@@ -376,6 +381,7 @@ class ClusteringEngine:
         problem: CanonicalProblem,
         vector: tuple[float, ...],
         cluster: _WorkingCluster,
+        scores: list[tuple[CanonicalProblem, float]],
     ) -> tuple[float, str, CanonicalProblem | None]:
         """The score of one candidate, its basis and the member behind it.
 
@@ -385,15 +391,16 @@ class ClusteringEngine:
         way, so a penalty cannot be walked around through the centroid. The
         centroid carries the penalty when any member sits in another domain:
         the penalty must not depend on which member has the smallest id.
+
+        The member similarities are the ones the candidate pass computed.
         """
         similarity = self.config.similarity
         penalty = similarity.domain_mismatch_penalty
         best: tuple[float, CanonicalProblem, bool] | None = None
         same_fingerprint = False
-        for member, member_vector in zip(cluster.members, cluster.vectors):
+        for member, score in scores:
             if member.fingerprint == problem.fingerprint:
                 same_fingerprint = True
-            score = cosine_similarity(vector, member_vector)
             penalized = member.domain != problem.domain
             if penalized:
                 score -= penalty

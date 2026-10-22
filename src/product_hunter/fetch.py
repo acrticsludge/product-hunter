@@ -31,9 +31,9 @@ from product_hunter.sources import (
 _REDIRECT_STATUS = {301, 302, 303, 307, 308}
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
-# The bound on a failure detail. The log and the collection layer's rows
-# share it: the bound is generous enough that a real reason is not truncated
-# into meaninglessness, and tight enough that no unbounded string is kept.
+# The bound on a failure detail. The collection layer's rows share it: the
+# bound is generous enough that a real reason is not truncated into
+# meaninglessness, and tight enough that no unbounded string is kept.
 MAX_DETAIL_CHARS = 1000
 
 

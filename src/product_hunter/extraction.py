@@ -420,11 +420,11 @@ def build_prompt(
 ) -> str:
     """Build the extraction prompt for one chunk, or refuse to build it."""
     limit = _default_max_input_chars() if max_input_chars is None else max_input_chars
-    # The source text is data, not a template. The placeholders are replaced
-    # literally, so a brace in a scraped page cannot break the prompt's
-    # structure, and the text reaches the model exactly as it was captured.
-    # The candidate count is replaced first, so a page that holds the
-    # placeholder text cannot have it substituted a second time.
+    # The template is not a format string. The placeholders are replaced
+    # literally, so the braces the template holds are written out as they are
+    # and the text reaches the model exactly as it was captured. The
+    # candidate count is replaced first, so a page that holds the placeholder
+    # text cannot have it substituted a second time.
     prompt = _PROMPT.replace("{max_candidates}", str(max_candidates)).replace(
         "{text}", chunk.text
     )

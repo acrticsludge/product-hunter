@@ -909,9 +909,11 @@ def test_a_broken_checkpoint_does_not_erase_the_attempt(tmp_path):
     assert len(events) == 1
     assert events[0]["source_id"] == "hn_algolia"
     assert events[0]["scope"] == "run-1"
-    # The event names the source and the error class. It does not name the
-    # URL, because the URL came from the network.
-    assert URL not in events[0].values()
+    # The event names the source, the scope and the error class. It does not
+    # name the URL, because the URL came from the network.
+    assert all(URL not in str(value) for value in events[0].values())
+    assert events[0]["error"] == "CheckpointConflict"
+    assert events[0]["detail"]
 
 
 # --- the ladder ----------------------------------------------------------

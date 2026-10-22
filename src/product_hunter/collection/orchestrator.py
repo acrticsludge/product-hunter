@@ -108,7 +108,27 @@ The layer does not log. It hands a structured event to the caller, and the
 caller decides what to do with it, so the observability policy stays with the
 application layer. An event carries identifiers the worker owns. It never
 carries a URL, a page title or any other text that came from the network.
+
+shortcut: a caller that passes no sink hears nothing, so a budget overrun or
+a broken checkpoint is silent; the worker wires a sink that logs the events
+when it runs the COLLECT stage, and until then the spend is still recorded in
+the collection ledger even though the report of it is not.
 """
+
+
+def _bounded_detail(exc: Exception, *, secret: str = "", limit: int = 200) -> str:
+    """The error text, bounded, with the network text taken out of it.
+
+    The detail is what a caller would log. The URL came from the network, so
+    it is replaced before the detail leaves this module, and the text is
+    bounded so a long error cannot ride along in it.
+    """
+    text = f"{type(exc).__name__}: {exc}"
+    if secret:
+        text = text.replace(secret, "<url>")
+    if len(text) > limit:
+        text = text[:limit] + "..."
+    return text
 
 
 @dataclass(frozen=True)
@@ -772,14 +792,17 @@ class CollectionOrchestrator:
                 checkpoint_version=1,
             )
         except Exception as exc:
-            # The event names the source and the error class. It does not name
-            # the URL: the URL came from the network, and the caller decides
-            # what may be logged.
+            # The event names the source, the scope and the error class. It
+            # does not name the URL: the URL came from the network, and the
+            # caller decides what may be logged. The message is the error
+            # class and its text, bounded, because a database error carries
+            # the values that failed and one of them is the URL.
             self._emit(
                 "checkpoint_write_failed",
                 source_id=target.source_id,
                 scope=scope,
                 error=type(exc).__name__,
+                detail=_bounded_detail(exc, secret=target.url),
             )
 
     def _run_exists(self, run_id: str) -> bool:

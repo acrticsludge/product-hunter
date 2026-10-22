@@ -102,8 +102,6 @@ from product_hunter.raw_store import RawStore
 from product_hunter.reporting import (
     ReportError,
     build_run_report,
-)
-from product_hunter.reporting import (
     write_report as write_run_report,
 )
 from product_hunter.safety import UrlBlocked

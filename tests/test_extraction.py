@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
+from product_hunter import extraction
 from product_hunter.config import ExtractionConfig, Limits, load_config
 from product_hunter.documents import (
     Document,
@@ -1315,9 +1316,9 @@ def test_prompt_fits_the_shipped_config_limit():
     assert len(prompt) <= config.limits.max_input_chars
 
 
-def test_a_brace_in_the_source_text_cannot_break_the_prompt():
-    # A scraped page is data. A brace in it is data too, and it must not be
-    # able to break the prompt's structure or stop the run.
+def test_a_brace_in_the_source_text_reaches_the_prompt_unchanged():
+    # A scraped page is data. A brace in it is data too, and it has to reach
+    # the model exactly as it was captured.
     text = 'the team pastes {every} total by hand, and {max_candidates} is odd'
     chunk = DocumentChunk(
         doc_id="doc_test",
@@ -1329,7 +1330,6 @@ def test_a_brace_in_the_source_text_cannot_break_the_prompt():
 
     prompt = build_prompt(chunk, max_candidates=3)
 
-    # The text arrives verbatim, braces and all.
     assert text in prompt
     # The candidate count is the real one, and the text did not get a second
     # substitution.
@@ -1338,6 +1338,31 @@ def test_a_brace_in_the_source_text_cannot_break_the_prompt():
     # The json example still shows single braces, so the model reads the
     # shape it is asked to return.
     assert '{"candidates": []}' in prompt
+
+
+def test_a_stray_brace_in_the_template_does_not_break_the_prompt(monkeypatch):
+    # The prompt is assembled by literal replacement, so the template is not
+    # a format string. A brace the template holds is written out as it is.
+    # This is the property the old template did not have: it was a format
+    # string, so one stray brace in it raised when the prompt was built.
+    monkeypatch.setattr(
+        extraction,
+        "_PROMPT",
+        "Return at most {max_candidates} candidates.\n{unbalanced\n{text}\n",
+    )
+    chunk = DocumentChunk(
+        doc_id="doc_test",
+        chunk_index=0,
+        char_start=0,
+        char_end=5,
+        text="hello",
+    )
+
+    prompt = build_prompt(chunk, max_candidates=3)
+
+    assert "Return at most 3 candidates." in prompt
+    assert "{unbalanced" in prompt
+    assert "hello" in prompt
 
 
 def test_a_source_text_with_a_placeholder_is_not_substituted_again():

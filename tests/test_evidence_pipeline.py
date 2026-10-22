@@ -1015,6 +1015,43 @@ def test_the_wave_1_path_updates_a_documents_liveness_and_last_seen(
     assert second["last_seen_at"] > first["last_seen_at"]
 
 
+def test_a_recapture_that_changes_the_text_keeps_the_liveness_in_step(
+    tmp_path: Path,
+) -> None:
+    # A re-capture moves the document to its next content version. The
+    # document and its spans must still agree about liveness, or a deleted
+    # document keeps counting as independent evidence.
+    store = evidence_store(tmp_path)
+    document, fetch = evidence_document(tmp_path)
+    store.import_fetch(fetch)
+    store.import_document(document)
+    candidate = _candidate(document, quote=QUOTE, accepted=True)
+    store.import_candidate(candidate)
+
+    # The text changed, and the source now says the content is gone.
+    later_fetch = fetch.model_copy(update={"fetch_id": "fetch_hn_later"})
+    store.import_fetch(later_fetch)
+    recaptured = document.model_copy(
+        update={
+            "fetch_id": later_fetch.fetch_id,
+            "live_status": "deleted",
+            "text": "Every month I export the invoices to CSV and paste them.",
+            "text_sha256": "c" * 64,
+        }
+    )
+    result = store.import_document_version(recaptured, reason="recapture")
+
+    assert result.version_changed is True
+    row = store.conn.execute(
+        "SELECT live_status FROM documents WHERE doc_id = ?", (document.doc_id,)
+    ).fetchone()
+    assert row["live_status"] == "deleted"
+    span = store.conn.execute(
+        "SELECT live_status FROM evidence WHERE span_id = ?", (candidate.span_id,)
+    ).fetchone()
+    assert span["live_status"] == "deleted"
+
+
 def test_derive_strength_ranks_the_candidates() -> None:
     assert derive_strength("genuine", True) == ("direct", 0.8)
     assert derive_strength("genuine", False) == ("single", 0.4)

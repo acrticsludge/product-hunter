@@ -441,7 +441,7 @@ class Store:
             UPDATE documents
             SET content_version = ?, text_sha256 = ?, text_path = ?, raw_path = ?,
                 raw_sha256 = ?, title = ?, published_at = ?, url = ?, fetch_id = ?,
-                live_status = ?, last_seen_at = ?
+                last_seen_at = ?
             WHERE doc_id = ?
             """,
             (
@@ -454,11 +454,18 @@ class Store:
                 document.published_at,
                 document.url,
                 fetch_id,
-                document.live_status,
                 now,
                 document.doc_id,
             ),
         )
+        # The liveness of the document and of its spans never disagree. The
+        # status is not written on the row above, because a status that only
+        # reached the document would leave the spans of the same document
+        # saying something else.
+        if document.live_status != str(existing["live_status"] or "live"):
+            set_document_status(
+                self.conn, document.doc_id, document.live_status, now=utcnow()
+            )
         # The version the document leaves behind stays in the history.
         write_document_version(
             self.conn,

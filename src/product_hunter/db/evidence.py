@@ -521,15 +521,34 @@ def document_versions(
 
 
 def set_document_status(
-    conn: sqlite3.Connection, doc_id: str, status: str
+    conn: sqlite3.Connection,
+    doc_id: str,
+    status: str,
+    *,
+    now: datetime | None = None,
 ) -> int:
     """Set the status of a document and of every span of it.
 
+    The document and its spans never disagree about liveness, so both are
+    written here. The deletion timestamp is written with the status, so the
+    ``deleted_at`` column the independence analysis reads holds the instant a
+    document went out of the live set and not a null.
+
     Returns the number of spans that changed.
     """
+    moment = _now(now).isoformat()
     conn.execute(
         "UPDATE documents SET live_status = ? WHERE doc_id = ?", (status, doc_id)
     )
+    if status == "live":
+        conn.execute(
+            "UPDATE documents SET deleted_at = NULL WHERE doc_id = ?", (doc_id,)
+        )
+    else:
+        conn.execute(
+            "UPDATE documents SET deleted_at = ? WHERE doc_id = ? AND deleted_at IS NULL",
+            (moment, doc_id),
+        )
     return conn.execute(
         "UPDATE evidence SET live_status = ? WHERE doc_id = ?", (status, doc_id)
     ).rowcount
