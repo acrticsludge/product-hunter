@@ -383,6 +383,27 @@ configuration that would let a weak or model-supplied signal reach a merge
 threshold, so the count is computed by code and not declared by a model.
 Nothing writes a propagation edge yet, and nothing calls the package.
 
+**The DuckDB analytical layer.** `IMPLEMENTED`
+(`src/product_hunter/analytics/`). SQLite stays the authoritative transactional
+store; DuckDB is a derived analytical surface, rebuilt from SQLite on demand.
+The layer opens SQLite read-only through `product_hunter.db.connection.connect`,
+so it has no write path to the authoritative store at all. The mirrored tables
+are discovered from the SQLite schema (`PRAGMA table_info`), and every mirrored
+row carries a `_ph_hash`, the SHA-256 of its canonical form, computed on the
+SQLite side only. `snapshot()`, `refresh()`, `rebuild()` and `reconcile()` are
+the four operations; SQLite wins on any disagreement, and `reconcile()` names
+the added, removed and changed keys per table. The views answer the analytical
+questions: evidence mentions, pain point evidence and trend, source yield,
+community evidence, independence summary, source concentration, opportunity
+evidence trend, score history, run analytics and run budget, collection health,
+discovery yield, query family performance, temporal persistence. A view over a
+table that does not exist yet (the canonical `opportunity_scores`,
+`opportunities`, `opportunity_claims`, `opportunity_evidence`, `experiments`
+and `research_requests` tables arrive with a later wave) is skipped and
+reported, not faked. The DuckDB file is `db/product_hunter.duckdb` and is not
+committed. Nothing calls the package yet, and no worker or CLI command drives
+it.
+
 **The opportunity scoring.** `IMPLEMENTED` (`src/product_hunter/opportunity/`).
 Potential and Confidence are two separate scales and never share a term.
 Potential considers severity, frequency, the willingness-to-pay tier, the
