@@ -39,6 +39,7 @@ class Collector(str, Enum):
     api = "api"
     rss = "rss"
     http = "http"
+    crawler = "crawler"
     browser = "browser"
     managed = "managed"
 
@@ -75,6 +76,11 @@ class SourceConfig(BaseModel):
     review_basis: str = ""
     robots_or_api_notes: str = ""
     collector: Collector
+    # The rungs below the preferred one that may be tried when it cannot
+    # deliver. The list is empty by default, and a source with an empty
+    # list has exactly one candidate: a refusal never escalates and a
+    # tool failure only escalates when the source says where to.
+    fallbacks: list[Collector] = Field(default_factory=list)
     rate_limit: RateLimit = Field(alias="rate_limit_policy")
     domains: list[str] = Field(default_factory=list)
     schemes: list[str] = Field(default_factory=lambda: ["https"])

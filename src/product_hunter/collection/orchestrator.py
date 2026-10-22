@@ -19,6 +19,12 @@ from datetime import datetime, timedelta
 
 import httpx
 
+from product_hunter.collection.adapters.adapters import build_adapters
+from product_hunter.collection.adapters.base import (
+    CollectionResult,
+    Driver,
+    ToolError,
+)
 from product_hunter.collection.ladder import CollectorUnavailable, Ladder
 from product_hunter.collection.state import CollectionItem, CollectionState, SourceState
 from product_hunter.db.checkpoints import save_checkpoint
@@ -27,7 +33,6 @@ from product_hunter.db.store import Store
 from product_hunter.fetch import (
     Fetcher,
     FetchError,
-    FetchRecord,
     JsonlLog,
     RequestBudget,
     Validators,
@@ -79,8 +84,9 @@ TERMINAL_REASONS = frozenset(
 )
 
 # The reasons that mean the request did not complete, rather than being
-# refused before it went out.
-FAILED_REASONS = frozenset({"http_error", "network_error"})
+# refused before it went out. An empty body is one of them: the request
+# went out and the page answered with nothing.
+FAILED_REASONS = frozenset({"http_error", "network_error", "timeout", "empty_body"})
 
 # The reasons that mean no capture was produced. The contract's fetch
 # budget pays for the captures, so an attempt with one of these reasons is
@@ -98,6 +104,7 @@ NO_CAPTURE_REASONS = frozenset(
         "use_not_allowed",
         "missing_use",
         "no_domains",
+        "collector_unavailable",
     }
 )
 
@@ -350,6 +357,7 @@ class CollectionOrchestrator:
         now=utcnow,
         contract: ResearchContract | None = None,
         events: EventSink | None = None,
+        tools: dict[str, Driver | None] | None = None,
     ) -> None:
         self._registry = registry
         self._store = store
@@ -357,6 +365,7 @@ class CollectionOrchestrator:
         self._now = now
         self._resolver = resolver
         self._events = events
+        self._log = log
         self._state = CollectionState(self._conn)
         self._contract = contract or load_research_contract()
         self._tracker = BudgetTracker(self._contract.budgets)
@@ -379,7 +388,23 @@ class CollectionOrchestrator:
             now=now,
             budget=self._budget,
         )
-        self._ladder = Ladder(self._fetcher)
+        self._ladder = Ladder(
+            self._fetcher,
+            adapters=build_adapters(
+                registry,
+                raw_store,
+                self._budget,
+                self._fetcher,
+                # The tools are injected rather than found. A browser in an
+                # unattended worker is a deliberate decision, so the rung
+                # is refused by name until a caller hands the driver over.
+                drivers=tools if tools is not None else {},
+                clock=clock,
+                sleeper=sleeper,
+                now=now,
+                resolver=resolver,
+            ),
+        )
         self._planner = self._make_planner()
         self._bound_scope: str | None = None
         # The collection tables carry a foreign key to sources, so the registry
@@ -471,10 +496,8 @@ class CollectionOrchestrator:
             )
         state = self._state.source_state(target.source_id, target.url)
         validators = _validators(state)
-        collector = None
         try:
-            collector = self._ladder.collector_for(source)
-            record = collector.collect(target, validators=validators)
+            result = self._ladder.collect(source, target, validators=validators)
         except CollectorUnavailable as exc:
             return self._record(
                 scope,
@@ -482,18 +505,23 @@ class CollectionOrchestrator:
                 outcome="skipped",
                 reason_code="collector_unavailable",
                 detail=str(exc),
+                rung=source.collector.value,
+                source=source,
             )
-        except (FetchError, SourceBlocked, UrlBlocked) as exc:
+        except (FetchError, SourceBlocked, UrlBlocked, ToolError) as exc:
             reason = getattr(exc, "reason_code", "fetch_failed")
-            outcome = "failed" if reason in FAILED_REASONS else "rejected"
+            outcome = _outcome_for(reason)
             return self._record(
                 scope,
                 target,
                 outcome=outcome,
                 reason_code=reason,
                 detail=str(exc),
-                rung=collector.name if collector is not None else "",
+                rung=source.collector.value,
                 source=source,
+                # Every tool that ran is a fetch the run spent, and a rung
+                # that was refused because its tool is missing never ran.
+                charges=_charges(getattr(exc, "attempts", [])),
                 # A refusal that stopped the request before it went out is
                 # an attempt, not a fetch: the contract's fetch budget pays
                 # for the requests that were sent.
@@ -503,29 +531,31 @@ class CollectionOrchestrator:
             # The collection layer's promise is that every attempt leaves a
             # record, so an unexpected failure is recorded rather than
             # raised: a worker that dies on one bad target loses the rest of
-            # the batch. The class name is in the detail, and the detail is
-            # bounded, so a page cannot ride along in it. KeyboardInterrupt
-            # and SystemExit are not Exception and keep propagating.
+            # the batch. The class name is in the detail, the detail is
+            # bounded and the URL is taken out of it, so a page cannot ride
+            # along in it. KeyboardInterrupt and SystemExit are not
+            # Exception and keep propagating.
             return self._record(
                 scope,
                 target,
                 outcome="failed",
                 reason_code="fetch_failed",
-                detail=f"{type(exc).__name__}: {exc}",
-                rung=collector.name if collector is not None else "",
+                detail=_bounded_detail(exc, secret=target.url),
+                rung=source.collector.value,
                 source=source,
                 attempted=True,
             )
         return self._record(
             scope,
             target,
-            outcome="not_modified" if record.not_modified else "fetched",
+            outcome="not_modified" if result.not_modified else "fetched",
             reason_code="",
             detail="",
-            rung=collector.name,
+            rung=result.rung or source.collector.value,
             source=source,
-            record=record,
+            result=result,
             attempted=True,
+            charges=_charges(result.attempts),
             cursor=state.cursor if state is not None else None,
             previous_sha256=state.content_sha256 if state is not None else None,
         )
@@ -566,15 +596,21 @@ class CollectionOrchestrator:
         detail: str,
         rung: str = "",
         source: SourceConfig | None = None,
-        record: FetchRecord | None = None,
+        result: CollectionResult | None = None,
         attempted: bool = False,
+        charges: int = 1,
         cursor: str | None = None,
         previous_sha256: str | None = None,
     ) -> CollectionOutcome:
         at = self._now().isoformat()
         if attempted:
-            self._charge(target.source_id)
+            # A fallback that ran two tools spent two fetches, and the
+            # contract's caps are counted per tool attempt. A rung that
+            # was refused because its tool is not installed never ran, so
+            # it is not charged.
+            self._charge(target.source_id, count=max(1, charges))
         provenance = source if source is not None else self._known_source(target.source_id)
+        record = result.fetch_record() if result is not None else None
         with self._transaction():
             # The collection tables carry a foreign key to sources, so a
             # source the registry does not know has nowhere to be recorded.
@@ -629,6 +665,13 @@ class CollectionOrchestrator:
         # the checkpoint is written after the attempt is committed: a broken
         # checkpoint must not roll the attempt back.
         self._write_checkpoint(scope, target)
+        if result is not None and result.tool != "http":
+            # The shared path logs its own captures. A capture taken by
+            # another tool is logged here, so the fetch log holds every
+            # capture and the line still parses as a fetch record. The
+            # write is outside the transaction: a broken log must not roll
+            # the attempt back either.
+            self._log.append(result)
         return CollectionOutcome(
             scope=scope,
             source_id=target.source_id,
@@ -646,13 +689,16 @@ class CollectionOrchestrator:
             retry_count=record.retry_count if record is not None else 0,
         )
 
-    def _charge(self, source_id: str) -> None:
+    def _charge(self, source_id: str, *, count: int = 1) -> None:
         """Charge one fetch to the contract's budget.
 
         The tracker records the spend before it reports an overrun, so the
         ledger is right either way and the overrun is not raised over a
         capture that already happened. The overrun is logged instead, because
         the run has gone over its contract and nothing else would say so.
+
+        The count is the number of tool attempts the collection spent, so a
+        fallback that ran two tools is charged two fetches.
         """
         for dimension in (
             BudgetDimension.fetch_requests,
@@ -660,7 +706,7 @@ class CollectionOrchestrator:
         ):
             try:
                 self._tracker.record(
-                    dimension, 1, stage=STAGE, source_id=source_id
+                    dimension, count, stage=STAGE, source_id=source_id
                 )
             except BudgetExceeded as exc:
                 # The spend is recorded before the tracker refuses it, so the
@@ -942,6 +988,29 @@ def _rotate(targets: list[CollectionTarget]) -> list[CollectionTarget]:
             if bucket:
                 rotated.append(bucket.pop(0))
     return rotated
+
+
+def _outcome_for(reason: str) -> str:
+    """The outcome a reason code means.
+
+    A tool that is not installed is a skip, not a failure: nothing was
+    tried and nothing was spent. A reason that means the request did not
+    complete is a failure. Everything else was refused before it went
+    out.
+    """
+    if reason == "collector_unavailable":
+        return "skipped"
+    return "failed" if reason in FAILED_REASONS else "rejected"
+
+
+def _charges(attempts) -> int:
+    """The tool attempts that actually ran.
+
+    A rung that was refused because its tool is not installed never ran,
+    so it is not a fetch the run spent. Every tool that did run is one
+    fetch, whatever it produced.
+    """
+    return sum(1 for attempt in attempts if attempt.outcome != "unavailable")
 
 
 def _validators(state: SourceState | None) -> Validators | None:
