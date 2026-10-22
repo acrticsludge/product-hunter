@@ -9,6 +9,7 @@ operating system lock, not the file content, says who holds it now.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import IO
@@ -19,6 +20,22 @@ if sys.platform == "win32":
     import msvcrt
 else:
     import fcntl
+
+# The lock file under the repository root, when the environment names none.
+LOCK_NAME = Path("runtime") / "worker.lock"
+
+
+def lock_path(root: Path) -> Path:
+    """The lock file: PH_WORKER_LOCK, else runtime/worker.lock under the root.
+
+    Both entry points take the same path, so the supervised worker and the
+    operation cannot run against one database at the same time.
+    """
+    raw = os.environ.get("PH_WORKER_LOCK")
+    if raw and raw.strip():
+        path = Path(raw.strip()).expanduser()
+        return path if path.is_absolute() else root / path
+    return root / LOCK_NAME
 
 
 class LockError(Exception):

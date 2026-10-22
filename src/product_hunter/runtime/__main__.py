@@ -9,22 +9,23 @@ delayed, never corrupted.
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import sys
 import threading
-from pathlib import Path
 
 from product_hunter.config import database_path, repo_root
 from product_hunter.db import Store
 from product_hunter.fetch import utcnow
 from product_hunter.runtime.events import JsonlEventSink, WorkerEvent
 from product_hunter.runtime.identity import WorkerIdentity
-from product_hunter.runtime.lock import SingleInstanceLock
-from product_hunter.runtime.worker import Handler, WorkerRuntime, install_shutdown_handlers
+from product_hunter.runtime.lock import SingleInstanceLock, lock_path
+from product_hunter.runtime.worker import (
+    WorkerRuntime,
+    install_shutdown_handlers,
+    load_handlers,
+)
 
-LOCK_NAME = Path("runtime") / "worker.lock"
 GRACE_SECONDS = 30.0
 
 EXIT_OK = 0
@@ -38,14 +39,14 @@ def main() -> int:
     identity = WorkerIdentity.create()
     sink = JsonlEventSink(sys.stderr)
     try:
-        handlers = _load_handlers(os.environ.get("PH_WORKER_HANDLERS"))
+        handlers = load_handlers(os.environ.get("PH_WORKER_HANDLERS"))
     except (ImportError, AttributeError, TypeError, ValueError) as exc:
         print(
             json.dumps({"ok": False, "error": f"handlers: {exc}"}),
             file=sys.stderr,
         )
         return EXIT_ERROR
-    lock = SingleInstanceLock(_lock_path(root), identity=identity)
+    lock = SingleInstanceLock(lock_path(root), identity=identity)
     if not lock.acquire():
         sink.emit(
             WorkerEvent(
@@ -99,27 +100,6 @@ def watch_shutdown(
         )
     )
     os._exit(EXIT_TIMEOUT)
-
-
-def _load_handlers(spec: str | None) -> dict[str, Handler]:
-    """The handler mapping named by PH_WORKER_HANDLERS as module:attribute."""
-    if not spec or not spec.strip():
-        return {}
-    module_name, _, attribute = spec.strip().partition(":")
-    if not module_name or not attribute:
-        raise ValueError("PH_WORKER_HANDLERS must be 'module:attribute'")
-    module = importlib.import_module(module_name)
-    factory = getattr(module, attribute)
-    return dict(factory())
-
-
-def _lock_path(root: Path) -> Path:
-    """The lock file: PH_WORKER_LOCK, else runtime/worker.lock under the root."""
-    raw = os.environ.get("PH_WORKER_LOCK")
-    if raw and raw.strip():
-        path = Path(raw.strip()).expanduser()
-        return path if path.is_absolute() else root / path
-    return root / LOCK_NAME
 
 
 if __name__ == "__main__":

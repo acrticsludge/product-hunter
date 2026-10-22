@@ -513,50 +513,21 @@ class Scheduler:
 
 
 def default_schedules() -> list[Schedule]:
-    """The spec's cadence as data. Nothing runs it yet.
+    """The cadence of config/cadence.yaml, as schedules.
 
-    Every schedule caps its catch-up at two rounds, so a fresh install
-    backfills two occurrences per schedule instead of a whole day of them.
+    The file is the only place the intervals live, so an operator changes the
+    cadence without touching the code. A file that is missing or unusable is
+    a configuration fault: the refusal names the file, and nothing falls back
+    to hard-coded numbers.
+
+    The reader lives in the autonomy package, which sits above this module,
+    so the import is made here and not at the top of the file. That keeps the
+    dependency one way: the autonomy package imports this module, and this
+    module imports the autonomy package only when it is called.
     """
-    return [
-        Schedule(
-            name="source_collection",
-            stage="COLLECT",
-            interval_seconds=900,
-            priority=int(Priority.P3),
-            catchup_limit=2,
-        ),
-        Schedule(
-            name="evidence_processing",
-            stage="PROCESS",
-            interval_seconds=3600,
-            priority=int(Priority.P2),
-            catchup_limit=2,
-        ),
-        Schedule(
-            name="reclustering",
-            stage="CLUSTER",
-            interval_seconds=21600,
-            priority=int(Priority.P3),
-            catchup_limit=2,
-        ),
-        Schedule(
-            name="deep_investigation",
-            stage="INVESTIGATE",
-            interval_seconds=86400,
-            offset_seconds=7200,
-            priority=int(Priority.P1),
-            catchup_limit=2,
-        ),
-        Schedule(
-            name="morning_brief",
-            stage="BRIEF",
-            interval_seconds=86400,
-            offset_seconds=25200,
-            priority=int(Priority.P2),
-            catchup_limit=2,
-        ),
-    ]
+    from product_hunter.autonomy.cadence import load_cadence_schedules
+
+    return load_cadence_schedules()
 
 
 def _check_datetime_span(label: str, seconds: int) -> None:

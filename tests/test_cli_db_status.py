@@ -14,7 +14,7 @@ def test_db_status_reports_every_table_in_the_schema(tmp_path: Path, capsys) -> 
     assert db_status_command(db_path=db_path, repo_root=tmp_path) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
-    assert payload["version"] == 7
+    assert payload["version"] == 8
 
     tables = payload["tables"]
     # The tables the wave 1 schema shipped.
@@ -40,6 +40,14 @@ def test_db_status_reports_every_table_in_the_schema(tmp_path: Path, capsys) -> 
         "author_clusters",
         "author_cluster_members",
         "independence_reports",
+    } <= set(tables)
+    # The tables the wave 3 migration shipped.
+    assert {
+        "worker_health",
+        "operation_runs",
+        "operation_events",
+        "operation_budget",
+        "source_pacing",
     } <= set(tables)
     assert all(count == 0 for count in tables.values())
 

@@ -18,6 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from product_hunter.config import load_config, repo_root as default_repo_root
+from product_hunter.db.connection import transaction
 from product_hunter.db.evidence import (
     EvidenceConflict,
     EvidenceSpan,
@@ -196,19 +197,8 @@ def _status_detail(previous: str, status: str, sequence: int, detail: str) -> st
     return f"{text}:{detail}" if detail else text
 
 
-@contextmanager
-def _transaction(conn: sqlite3.Connection):
-    """Run the body in one transaction, or join the one that is open."""
-    if conn.in_transaction:
-        yield
-        return
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        yield
-    except BaseException:
-        conn.execute("ROLLBACK")
-        raise
-    conn.execute("COMMIT")
+# The transaction helper moved to product_hunter.db.connection, which sits below
+# this module and avoids the cycle that the old local copy existed to dodge.
 
 
 @contextmanager
@@ -275,7 +265,7 @@ class EvidencePipeline:
                     f"{document.raw_sha256!r}, but its fetch {fetch.fetch_id!r} "
                     f"has {fetch.raw_sha256!r}"
                 )
-        with _store_errors(), _transaction(self.conn):
+        with _store_errors(), transaction(self.conn):
             if fetch is not None:
                 self.store.import_fetch(fetch)
             imported = self.store.import_document_version(document, reason=reason)
@@ -317,7 +307,7 @@ class EvidencePipeline:
         alone: a pain point was a real observation of a real quote even when
         the page around it has since changed.
         """
-        with _store_errors(), _transaction(self.conn):
+        with _store_errors(), transaction(self.conn):
             document = load_document(self.conn, doc_id)
             if document is None:
                 raise EvidenceRejected(
@@ -472,7 +462,7 @@ class EvidencePipeline:
             canonical_span_id=canonical,
         )
         try:
-            with _transaction(self.conn):
+            with transaction(self.conn):
                 write = write_evidence_span(self.conn, span, now=self._now())
                 record_observation(self.conn, span, now=self._now())
                 append_lineage(
@@ -655,7 +645,7 @@ class EvidencePipeline:
         there. The status of the document and of its spans move together, in
         one transaction.
         """
-        with _store_errors(), _transaction(self.conn):
+        with _store_errors(), transaction(self.conn):
             document = load_document(self.conn, doc_id)
             if document is None:
                 raise EvidenceRejected(
@@ -703,7 +693,7 @@ class EvidencePipeline:
         the lineage row names the span, and the database would refuse a
         lineage row that names a span that is not there.
         """
-        with _store_errors(), _transaction(self.conn):
+        with _store_errors(), transaction(self.conn):
             span = load_span(self.conn, span_id)
             if span is None:
                 raise EvidenceRejected(

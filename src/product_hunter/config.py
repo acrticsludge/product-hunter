@@ -6,13 +6,21 @@ from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from product_hunter.llm.routing import ModelRole, RouteCandidate
 
 CONFIG_NAME = Path("config") / "extraction.yaml"
 ROUTING_CONFIG_NAME = Path("config") / "model_routing.yaml"
 CLUSTERING_CONFIG_NAME = Path("config") / "clustering.yaml"
+AUTONOMY_CONFIG_NAME = Path("config") / "autonomy.yaml"
 ENV_FILE = ".env"
 DEFAULT_DB_NAME = Path("db") / "product_hunter.db"
 
@@ -232,6 +240,112 @@ class ClusteringConfig(BaseModel):
         return f"clustering-v{self.version}-{digest}"
 
 
+class PriorityAging(BaseModel):
+    """How fast a queued job's priority grows while it waits.
+
+    The queue ages a job that has been due and unclaimed, so a low band
+    cannot starve behind a steady stream of high band work.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    interval_seconds: int = Field(ge=0)
+    max_boost: int = Field(ge=0)
+
+
+class OperationBudgetLimits(BaseModel):
+    """The budget of one operation, in the scopes the contract names.
+
+    The scopes are the operation itself, a stage and a source. A dimension the
+    budget model does not know is refused by name, because a limit that is
+    never checked is a limit nobody has.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    per_operation: dict[str, float] = Field(default_factory=dict)
+    per_stage: dict[str, dict[str, float]] = Field(default_factory=dict)
+    per_source: dict[str, dict[str, float]] = Field(default_factory=dict)
+
+    @field_validator("per_operation")
+    @classmethod
+    def _operation_dimensions(cls, value: dict[str, float]) -> dict[str, float]:
+        for name in value:
+            _check_dimension(name)
+        return value
+
+    @field_validator("per_stage")
+    @classmethod
+    def _stage_dimensions(
+        cls, value: dict[str, dict[str, float]]
+    ) -> dict[str, dict[str, float]]:
+        for limits in value.values():
+            for name in limits:
+                _check_dimension(name)
+        return value
+
+    @field_validator("per_source")
+    @classmethod
+    def _source_dimensions(
+        cls, value: dict[str, dict[str, float]]
+    ) -> dict[str, dict[str, float]]:
+        from product_hunter.research.budget import BudgetDimension
+
+        for limits in value.values():
+            for name in limits:
+                _check_dimension(name)
+                if name != BudgetDimension.source_requests_per_source.value:
+                    # The per source scope of the budget model binds one
+                    # dimension only, so a limit on another one there would
+                    # never be checked.
+                    raise ValueError(
+                        f"the per source limit names {name!r}; the per source "
+                        "scope binds "
+                        f"{BudgetDimension.source_requests_per_source.value!r} only"
+                    )
+        return value
+
+
+class SourcePacingSettings(BaseModel):
+    """The interval each source may be contacted at.
+
+    A source that is not due is put back to the queue with a later time, so
+    the interval is what keeps a source from being fetched too often.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    default_min_interval_seconds: int = Field(default=0, ge=0)
+    per_source: dict[str, int] = Field(default_factory=dict)
+
+
+class AutonomyConfig(BaseModel):
+    """The operation layer's settings.
+
+    The timings, the concurrency limit, the priority aging, the budget and the
+    source pacing all live in the file, so an operator changes how the
+    operation runs without touching the code.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(gt=0)
+    poll_seconds: float = Field(gt=0)
+    lease_seconds: int = Field(gt=0)
+    heartbeat_seconds: float = Field(gt=0)
+    scheduler_interval_seconds: float = Field(gt=0)
+    recovery_interval_seconds: float = Field(gt=0)
+    max_concurrent_jobs: int = Field(gt=0)
+    # How many cycles may fault in a row before the operation ends with a
+    # permanent failure. One fault is a hiccup; a run of them is a broken
+    # operation, and it ends where an operator can read it.
+    max_consecutive_errors: int = Field(default=5, ge=1)
+    unhandled_stage_delay_seconds: int = Field(default=300, ge=0)
+    priority_aging: PriorityAging
+    budget: OperationBudgetLimits
+    source_pacing: SourcePacingSettings
+
+
 def repo_root() -> Path:
     """Return the repository root by walking up from this file to pyproject.toml."""
     for parent in Path(__file__).resolve().parents:
@@ -319,15 +433,55 @@ def load_clustering_config(path: Path | None = None) -> ClusteringConfig:
     except ValidationError as exc:
         raise ClusteringConfigError(
             f"the clustering config at {config_path} is not usable: "
-            f"{_first_config_error(exc)}"
+            f"{_first_config_error(exc, 'clustering config')}"
         ) from exc
 
 
-def _first_config_error(exc: ValidationError) -> str:
-    """The first refusal of a config file, naming the field it names."""
+def load_autonomy_config(path: Path | None = None) -> AutonomyConfig:
+    """Load config/autonomy.yaml and refuse a file that cannot be used.
+
+    A missing file, a file the parser cannot read and a file whose values do
+    not hold are one refusal to the caller: a bad config never reaches the
+    engine as a half-read config.
+    """
+    config_path = path if path is not None else repo_root() / AUTONOMY_CONFIG_NAME
+    try:
+        raw = _load_yaml(config_path)
+    except (OSError, ValueError) as exc:
+        raise ValueError(
+            f"the autonomy config at {config_path} cannot be read: {exc}"
+        ) from exc
+    try:
+        return AutonomyConfig.model_validate(raw)
+    except ValidationError as exc:
+        raise ValueError(
+            f"the autonomy config at {config_path} is not usable: "
+            f"{_first_config_error(exc, 'autonomy config')}"
+        ) from exc
+
+
+def _check_dimension(name: str) -> None:
+    """A budget dimension the model does not know is refused by name.
+
+    The budget model is imported here and not at the top of the file: the
+    research package imports this module, so a module level import would be a
+    cycle.
+    """
+    from product_hunter.research.budget import BUDGET_DIMENSION_NAMES
+
+    if name not in BUDGET_DIMENSION_NAMES:
+        raise ValueError(f"unknown budget dimension {name!r}")
+
+
+def _first_config_error(exc: ValidationError, label: str) -> str:
+    """The first refusal of a config file, naming the field it names.
+
+    The label says which schema the file was measured against, so a reader
+    knows which file to fix.
+    """
     errors = exc.errors()
     if not errors:
-        return "the file does not match the clustering config schema"
+        return f"the file does not match the {label} schema"
     first = errors[0]
     location = ".".join(str(part) for part in first.get("loc", ()))
     return f"{location}: {first.get('msg', 'invalid value')}"

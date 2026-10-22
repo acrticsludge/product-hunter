@@ -66,3 +66,35 @@ def _apply_pragmas(conn: sqlite3.Connection, *, wal: bool) -> None:
     if wal:
         # An in-memory database has no journal to switch; WAL applies to files.
         conn.execute("PRAGMA journal_mode = WAL")
+
+from contextlib import contextmanager
+from typing import Iterator
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """One transaction, or one savepoint inside a transaction the caller owns.
+
+    A connection the caller already opened a transaction on is joined with a
+    savepoint, so a failure here rolls back only the work done here, and never
+    the caller's. A connection in autocommit opens its own transaction and
+    commits it on the way out. The savepoint keeps the join branch honest: the
+    scheduler's joined tick uses the same pattern, so the two cannot diverge.
+    """
+    if conn.in_transaction:
+        conn.execute("SAVEPOINT ph_transaction")
+        try:
+            yield conn
+        except BaseException:
+            conn.execute("ROLLBACK TO SAVEPOINT ph_transaction")
+            conn.execute("RELEASE SAVEPOINT ph_transaction")
+            raise
+        conn.execute("RELEASE SAVEPOINT ph_transaction")
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield conn
+    except BaseException:
+        rollback(conn)
+        raise
+    conn.execute("COMMIT")

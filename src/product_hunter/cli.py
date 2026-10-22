@@ -15,6 +15,8 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from product_hunter import __version__
+from product_hunter.autonomy.engine import DEFAULT_OPERATION_ID, operation_status
+from product_hunter.autonomy.states import FAILED_STATES
 from product_hunter.config import (
     ExtractionConfig,
     RoutingConfig,
@@ -184,6 +186,17 @@ def build_parser() -> argparse.ArgumentParser:
     db_outbox.add_argument("--path", dest="db_path", default=None)
     db_check = db_commands.add_parser("check", help="run SQLite integrity checks")
     db_check.add_argument("--path", dest="db_path", default=None)
+    autonomy_parser = commands.add_parser(
+        "autonomy", help="inspect the autonomous operation"
+    )
+    autonomy_commands = autonomy_parser.add_subparsers(
+        dest="autonomy_command", required=True
+    )
+    autonomy_status = autonomy_commands.add_parser(
+        "status", help="show the operation state as JSON"
+    )
+    autonomy_status.add_argument("--path", dest="db_path", default=None)
+    autonomy_status.add_argument("--operation", dest="operation_id", default=None)
     project_parser = commands.add_parser(
         "project", help="build the Obsidian projection of the store"
     )
@@ -1260,6 +1273,48 @@ def _run_db_command(args: argparse.Namespace) -> int:
     return 1
 
 
+def autonomy_status_command(
+    *,
+    db_path: str | Path | None = None,
+    operation_id: str | None = None,
+    repo_root: Path | None = None,
+) -> int:
+    """Print the state of the operation as one JSON object.
+
+    It returns 0 when the operation is running, paused, finished or out of
+    budget, and 1 when the operation is in a failed state. The store is read
+    through a read-only connection, so the command never changes the
+    database it reports on.
+    """
+    root = _root(repo_root)
+    path = _db_path(db_path, root)
+    if not _require_db(path):
+        return 1
+    try:
+        conn = connect(path, read_only=True)
+        try:
+            payload = operation_status(
+                conn, operation_id=operation_id or DEFAULT_OPERATION_ID
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    state = str(payload["operation"].get("state") or "running")
+    failed = state in {value.value for value in FAILED_STATES}
+    print(json.dumps({"ok": not failed, **payload}, sort_keys=True))
+    return 1 if failed else 0
+
+
+def _run_autonomy_command(args: argparse.Namespace) -> int:
+    if args.autonomy_command == "status":
+        return autonomy_status_command(
+            db_path=args.db_path, operation_id=args.operation_id
+        )
+    return 1
+
+
 def project_command(
     *,
     db_path: str | Path | None = None,
@@ -1850,6 +1905,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_bench_command(args)
     if args.command == "db":
         return _run_db_command(args)
+    if args.command == "autonomy":
+        return _run_autonomy_command(args)
     if args.command == "project":
         return project_command(
             db_path=args.db_path,

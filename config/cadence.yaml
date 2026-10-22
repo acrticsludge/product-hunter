@@ -1,0 +1,58 @@
+version: 1
+cadence:
+  - name: source_collection
+    kind: frequent
+    stage: COLLECT
+    interval_seconds: 900
+    offset_seconds: 0
+    priority: P3
+    catchup_limit: 2
+    max_attempts: 3
+    enabled: true
+  - name: evidence_processing
+    kind: periodic
+    stage: PROCESS
+    interval_seconds: 3600
+    offset_seconds: 0
+    priority: P2
+    catchup_limit: 2
+    max_attempts: 3
+    enabled: true
+  - name: reclustering
+    kind: periodic
+    stage: CLUSTER
+    interval_seconds: 21600
+    offset_seconds: 0
+    priority: P3
+    catchup_limit: 2
+    max_attempts: 3
+    enabled: true
+  - name: deep_investigation
+    kind: periodic
+    stage: INVESTIGATE
+    interval_seconds: 86400
+    offset_seconds: 7200
+    priority: P1
+    catchup_limit: 2
+    max_attempts: 3
+    enabled: true
+  - name: morning_brief
+    kind: daily
+    stage: BRIEF
+    interval_seconds: 86400
+    offset_seconds: 25200
+    priority: P2
+    catchup_limit: 2
+    max_attempts: 3
+    enabled: true
+  # The operation layer runs the upkeep on this interval itself, so the beat
+  # is not queued as a job.
+  - name: maintenance
+    kind: periodic
+    stage: MAINTENANCE
+    interval_seconds: 3600
+    offset_seconds: 0
+    priority: P4
+    catchup_limit: 1
+    max_attempts: 3
+    enabled: true

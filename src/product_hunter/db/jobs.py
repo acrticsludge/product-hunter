@@ -132,10 +132,18 @@ def claim_job(
     *,
     lease_seconds: int = 60,
     now: datetime | None = None,
+    aging_seconds: int = 0,
+    aging_cap: int = 0,
 ) -> Job | None:
-    """Recover expired leases, then claim the highest-priority queued job."""
+    """Recover expired leases, then claim the highest-priority queued job.
+
+    Aging is off unless both settings are positive, so the queue behaves the
+    way it always has. With aging on, a job that has been due for a while
+    outranks a newer job of a higher band, so no band starves another.
+    """
     if lease_seconds < 1:
         raise JobError("lease_seconds must be at least 1")
+    _check_aging(aging_seconds, aging_cap)
     now_dt = utc_now(now)
     recover_expired_leases(conn, now=now_dt)
     now_iso = now_dt.isoformat()
@@ -143,13 +151,10 @@ def claim_job(
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            """
-            SELECT id FROM jobs
-            WHERE status = 'queued' AND scheduled_for <= ?
-            ORDER BY priority DESC, scheduled_for ASC, created_at ASC, id ASC
-            LIMIT 1
-            """,
-            (now_iso,),
+            "SELECT id FROM jobs "
+            "WHERE status = 'queued' AND scheduled_for <= :now "
+            f"ORDER BY {_due_order(aging_seconds, aging_cap)} LIMIT 1",
+            _due_params(now_iso, aging_seconds, aging_cap),
         ).fetchone()
         if row is None:
             conn.execute("COMMIT")
@@ -195,6 +200,62 @@ def claim_job(
     except BaseException:
         rollback(conn)
         raise
+
+
+def peek_job(
+    conn: sqlite3.Connection,
+    *,
+    now: datetime | None = None,
+    aging_seconds: int = 0,
+    aging_cap: int = 0,
+) -> Job | None:
+    """The job a claim would pick, without claiming it.
+
+    The expired leases are recovered first, so the peek and the claim agree on
+    which job comes next. The caller gets the job to look at, not a claim.
+    """
+    _check_aging(aging_seconds, aging_cap)
+    now_dt = utc_now(now)
+    recover_expired_leases(conn, now=now_dt)
+    row = conn.execute(
+        "SELECT * FROM jobs "
+        "WHERE status = 'queued' AND scheduled_for <= :now "
+        f"ORDER BY {_due_order(aging_seconds, aging_cap)} LIMIT 1",
+        _due_params(now_dt.isoformat(), aging_seconds, aging_cap),
+    ).fetchone()
+    return _row_to_job(row) if row is not None else None
+
+
+def defer_queued_job(
+    conn: sqlite3.Connection,
+    job_id: str,
+    *,
+    delay_seconds: int,
+    now: datetime | None = None,
+) -> Job:
+    """Push a queued job's scheduled time into the future.
+
+    A deferral is not a failure. The attempt counter is untouched and no error
+    is written, because the job did not run and must not burn an attempt.
+    """
+    if delay_seconds < 0:
+        raise JobError("delay_seconds must not be negative")
+    scheduled = _after(utc_now(now), delay_seconds)
+    changed = conn.execute(
+        "UPDATE jobs SET scheduled_for = ? WHERE id = ? AND status = 'queued'",
+        (scheduled, job_id),
+    ).rowcount
+    if changed != 1:
+        row = conn.execute(
+            "SELECT status FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        if row is None:
+            raise JobError(f"job {job_id!r} does not exist")
+        raise JobError(f"job {job_id!r} is {row['status']!r}, not queued")
+    job = get_job(conn, job_id)
+    if job is None:  # pragma: no cover - the row was just written
+        raise JobError("deferred job disappeared")
+    return job
 
 
 def renew_lease(
@@ -464,6 +525,44 @@ class JobContext:
         except BaseException:
             rollback(self.conn)
             raise
+
+
+def _check_aging(aging_seconds: int, aging_cap: int) -> None:
+    """A negative aging setting is a mistake, not a way to turn aging off."""
+    if aging_seconds < 0:
+        raise JobError("aging_seconds must not be negative")
+    if aging_cap < 0:
+        raise JobError("aging_cap must not be negative")
+
+
+def _due_order(aging_seconds: int, aging_cap: int) -> str:
+    """The order a claim or a peek reads the queue in.
+
+    Without aging the order is the one the queue has always used. With aging
+    the effective priority of a job grows by one for every aging interval it
+    has been due, up to the cap, and the tiebreak stays the same, so the
+    order is still total.
+    """
+    if aging_seconds <= 0 or aging_cap <= 0:
+        return "priority DESC, scheduled_for ASC, created_at ASC, id ASC"
+    return (
+        "priority + MIN(:aging_cap, MAX(0, COALESCE("
+        "CAST((julianday(:aging_now) - julianday(scheduled_for)) * 86400.0"
+        " / :aging_seconds AS INTEGER), 0))) DESC, "
+        "scheduled_for ASC, created_at ASC, id ASC"
+    )
+
+
+def _due_params(
+    now_iso: str, aging_seconds: int, aging_cap: int
+) -> dict[str, object]:
+    """The parameters the order needs. The aging ones are left out when off."""
+    params: dict[str, object] = {"now": now_iso}
+    if aging_seconds > 0 and aging_cap > 0:
+        params["aging_now"] = now_iso
+        params["aging_seconds"] = aging_seconds
+        params["aging_cap"] = aging_cap
+    return params
 
 
 def _owns(row: sqlite3.Row, worker_id: str, lease_epoch: int) -> bool:

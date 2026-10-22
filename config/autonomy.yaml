@@ -1,0 +1,34 @@
+version: 1
+poll_seconds: 1.0
+lease_seconds: 60
+heartbeat_seconds: 15.0
+scheduler_interval_seconds: 30.0
+recovery_interval_seconds: 30.0
+max_concurrent_jobs: 4
+# How many cycles may fault in a row before the operation ends with a
+# permanent failure.
+max_consecutive_errors: 5
+# A job whose stage has no handler waits this long before it is offered
+# again. It is waiting for a handler, so it is not a failure.
+unhandled_stage_delay_seconds: 300
+priority_aging:
+  interval_seconds: 300
+  max_boost: 50
+budget:
+  # The engine charges the wall time of every cycle. A handler charges the
+  # dimensions it knows about.
+  per_operation:
+    wall_time_seconds: 3600
+    tool_calls_total: 500
+    fetch_requests: 200
+    model_calls: 200
+  per_stage:
+    COLLECT:
+      fetch_requests: 100
+  per_source:
+    hn_algolia:
+      source_requests_per_source: 100
+source_pacing:
+  default_min_interval_seconds: 60
+  per_source:
+    hn_algolia: 30

@@ -154,7 +154,16 @@ class SourceRegistry:
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> SourceRegistry:
-        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        try:
+            raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        except OSError as exc:
+            raise ValueError(
+                f"the sources file {path} cannot be read: {exc}"
+            ) from exc
+        except yaml.YAMLError as exc:
+            raise ValueError(
+                f"the sources file {path} is not valid YAML: {exc}"
+            ) from exc
         parsed = SourcesFile.model_validate(raw)
         return cls({source.source_id: source for source in parsed.sources})
 
