@@ -88,14 +88,25 @@ def _apply(conn: sqlite3.Connection, number: int, path: Path) -> None:
 
 
 def _split_statements(sql: str) -> list[str]:
-    # shortcut: statements are split on ';' and full-line '--' comments dropped,
-    # so a semicolon inside a string literal is not supported.
+    # A statement ends where sqlite3 says it ends, so a trigger body keeps
+    # the semicolon it needs and a semicolon inside a string literal does
+    # not cut a statement in half. The buffer is joined once per semicolon
+    # and used for both the check and the statement, so the cost is the
+    # semicolons of the file times the length of a statement. A migration
+    # file holds tens of semicolons, so this is nothing.
     body = _strip_comment_lines(sql)
     statements: list[str] = []
-    for chunk in body.split(";"):
-        statement = _strip_comment_lines(chunk).strip()
-        if statement:
-            statements.append(statement)
+    buffer: list[str] = []
+    for character in body:
+        buffer.append(character)
+        if character == ";":
+            statement = "".join(buffer)
+            if sqlite3.complete_statement(statement):
+                statements.append(statement.strip())
+                buffer = []
+    tail = "".join(buffer).strip()
+    if tail:
+        statements.append(tail)
     return statements
 
 

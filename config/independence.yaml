@@ -1,0 +1,38 @@
+version: independence-v1
+
+identity:
+  standalone_handle_confidence: 0.7   # a stable platform handle, nothing else
+  identity_key_bonus: 0.2             # an identity key raises the confidence
+  profile_url_bonus: 0.1              # a profile URL raises it a little
+  confident_threshold: 0.6            # at or above this, a group is a person
+  merge_threshold: 0.85               # at or above this, a pair is one person
+  suspect_threshold: 0.5              # at or above this, a pair is a suspect edge
+  conflict_score_cap: 0.5             # a contradicted pair never scores higher
+  cross_source_name_weight: 0.6       # same community name on two platforms
+  signal_weights:
+    identity_key: 0.95
+    same_platform_handle: 0.9
+    cross_linking: 0.55
+    model_signal: 0.35
+    signature_reuse: 0.3
+    community_overlap: 0.25
+    display_name: 0.2
+  negative_signal_weights:
+    identity_key_conflict: 1.0
+    explicit_disavow: 1.0
+
+propagation:
+  repost_similarity_threshold: 0.9    # token-set similarity
+  syndication_similarity_threshold: 0.75
+  quote_min_overlap: 0.6              # longest verbatim block / shorter text
+  min_comparable_chars: 40            # below this, no comparison is made
+  max_text_chars: 20000               # longer documents are compared on their head
+  max_scope_mentions: 2000            # a bigger scope is refused; split it
+
+concentration:
+  max_single_source_share: 0.8
+  max_single_community_share: 0.6
+  max_single_author_cluster_share: 0.4
+  max_single_propagation_chain_share: 0.3
+  min_independent_authors: 10
+  min_independent_communities: 3

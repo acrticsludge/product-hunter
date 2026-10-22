@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -23,11 +24,17 @@ from product_hunter.sources import (
     AllowedUse,
     RobotsPolicy,
     SourceBlocked,
+    SourceConfig,
     SourceRegistry,
 )
 
 _REDIRECT_STATUS = {301, 302, 303, 307, 308}
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+# The bound on a failure detail. The collection layer's rows share it: the
+# bound is generous enough that a real reason is not truncated into
+# meaninglessness, and tight enough that no unbounded string is kept.
+MAX_DETAIL_CHARS = 1000
 
 
 def utcnow() -> datetime:
@@ -39,6 +46,20 @@ def _content_type(response: httpx.Response) -> str:
     if not raw:
         return ""
     return raw.split(";", 1)[0].strip().lower()
+
+
+def bounded_detail(text: str, limit: int = MAX_DETAIL_CHARS) -> str:
+    """Bound a detail, so no log or row carries an unbounded string."""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "..."
+
+
+def _as_utc(value: datetime) -> datetime:
+    """A datetime that compares with any other: a naive one is read as UTC."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 @dataclass(frozen=True)
@@ -136,6 +157,111 @@ class NetworkError(FetchError):
     reason_code = "network_error"
 
 
+class RequestBudget:
+    """The per-source request counters and the interval gate for one run.
+
+    The counters live in an object of their own so a collection run can
+    persist them and restore them: a crashed run must not come back with a
+    fresh allowance. The ``Fetcher`` without a budget owns one of these
+    exactly as it owned the counter it replaced.
+
+    A source also has a floor: the wall-clock instant before which it may
+    not be asked. A restarted process learns the floor from the ledger, so
+    the gap a run left behind is waited out instead of being skipped.
+
+    The budget can be told what the ledger already holds for a source. It
+    then checks the cap against the larger of its own count and the stored
+    one, so two workers on one scope cannot both spend the allowance. A
+    budget without that hook counts exactly as it always did.
+    """
+
+    def __init__(
+        self,
+        *,
+        counts: dict[str, int] | None = None,
+        floors: dict[str, datetime] | None = None,
+        clock=time.monotonic,
+        wall_clock=utcnow,
+        sleeper=time.sleep,
+        stored_count: Callable[[str], int] | None = None,
+        on_change: Callable[[str], None] | None = None,
+    ) -> None:
+        self._counts: dict[str, int] = dict(counts or {})
+        self._floors: dict[str, datetime] = dict(floors or {})
+        self._clock = clock
+        self._wall_clock = wall_clock
+        self._sleeper = sleeper
+        self._stored_count = stored_count
+        self._on_change = on_change
+        self._next_at: dict[str, float] = {}
+
+    def acquire(self, source: SourceConfig) -> None:
+        """Take one request slot for the source, or refuse the request."""
+        source_id = source.source_id
+        count = self._counts.get(source_id, 0)
+        if self._stored_count is not None:
+            # The stored count is what every worker on the scope has spent
+            # against the source, so the cap is not spent twice.
+            count = max(count, self._stored_count(source_id))
+        # shortcut: the stored count is read here and the ledger is
+        # incremented later, and the two are not one transaction, so N
+        # workers on one scope can overshoot the cap by at most N-1
+        # requests; reserve the slot in the store in one transaction to
+        # close it.
+        cap = source.rate_limit.max_requests_per_run
+        if count >= cap:
+            raise BudgetExceeded(
+                f"source {source_id!r} exceeded its per-run cap of {cap} requests"
+            )
+        self._counts[source_id] = count + 1
+        # The counter is published before the request goes out, so a crash
+        # between the two cannot hand the run a fresh allowance.
+        self._notify(source_id)
+        now = self._clock()
+        wait = self._next_at.get(source_id, 0.0) - now
+        if wait > 0:
+            self._sleeper(wait)
+            now = self._clock()
+        self._next_at[source_id] = now + source.rate_limit.min_interval_seconds
+        # The floor is wall time and the gap above is monotonic, so the floor
+        # is waited out against the wall clock.
+        floor = self._floors.get(source_id)
+        if floor is not None:
+            remaining = (
+                _as_utc(floor) - _as_utc(self._wall_clock())
+            ).total_seconds()
+            if remaining > 0:
+                self._sleeper(remaining)
+
+    def restore(
+        self,
+        counts: dict[str, int],
+        floors: dict[str, datetime] | None = None,
+    ) -> None:
+        """Replace the counters with a persisted ledger, and set the floors.
+
+        The ledger is the record of the same spend the counters hold, so
+        replacing is safe: every increment is published before the request
+        goes out, so the ledger is never behind the counters.
+        """
+        self._counts = {source_id: int(count) for source_id, count in counts.items()}
+        self._floors = {
+            source_id: floor for source_id, floor in (floors or {}).items()
+        }
+
+    def ready_at(self, source_id: str) -> float:
+        """The instant the source may be asked again."""
+        return self._next_at.get(source_id, 0.0)
+
+    def now(self) -> float:
+        """The budget's clock reading."""
+        return self._clock()
+
+    def _notify(self, source_id: str) -> None:
+        if self._on_change is not None:
+            self._on_change(source_id)
+
+
 class Fetcher:
     """Fetch one admitted URL per source, recording provenance and every failure."""
 
@@ -151,6 +277,7 @@ class Fetcher:
         sleeper=time.sleep,
         resolver=resolve_public_ips,
         now=utcnow,
+        budget: RequestBudget | None = None,
     ) -> None:
         self._registry = registry
         self._store = store
@@ -161,7 +288,11 @@ class Fetcher:
         self._sleeper = sleeper
         self._resolver = resolver
         self._now = now
-        self._rate: dict[str, dict[str, float]] = {}
+        # A fetcher without a budget owns one that counts exactly as the
+        # counter it replaced did, so nothing about its behaviour changes.
+        self._budget = budget if budget is not None else RequestBudget(
+            clock=clock, sleeper=sleeper
+        )
         self._robots: dict[str, str | bool] = {}
 
     def fetch(
@@ -188,9 +319,15 @@ class Fetcher:
         redirect_chain: list[str] = []
         redirects = 0
 
-        # shortcut: admit_url resolves the host before httpx connects, so a DNS
-        # rebind between the two is not caught; pin the resolved IP in the
-        # transport in Phase 4/6.
+        # shortcut: the byte ceiling is checked after the body is buffered, so
+        # it caps what is stored and not what is transferred; stream the body
+        # with a cap to close it, which changes the shared fetch path and the
+        # tests that own it.
+        # shortcut: the host is resolved and every address is checked before
+        # the request, and every redirect hop is resolved and checked again,
+        # but the window between that check and the connect is not closed, so
+        # a rebind inside the window is not caught; pin the resolved address
+        # in the transport to close it.
         while True:
             response, latency_ms, retry_count = self._send(source, current, headers)
             if response.status_code not in _REDIRECT_STATUS:
@@ -329,19 +466,7 @@ class Fetcher:
         return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
 
     def _acquire(self, source) -> None:
-        state = self._rate.setdefault(source.source_id, {"next_at": 0.0, "count": 0})
-        cap = source.rate_limit.max_requests_per_run
-        if state["count"] >= cap:
-            raise BudgetExceeded(
-                f"source {source.source_id!r} exceeded its per-run cap of {cap} requests"
-            )
-        state["count"] += 1
-        now = self._clock()
-        wait = state["next_at"] - now
-        if wait > 0:
-            self._sleeper(wait)
-            now = self._clock()
-        state["next_at"] = now + source.rate_limit.min_interval_seconds
+        self._budget.acquire(source)
 
     def _check_robots(self, source, page_url: str) -> None:
         if source.robots is not RobotsPolicy.required:
@@ -421,7 +546,7 @@ class Fetcher:
             source_id=source_id,
             url=url,
             reason_code=getattr(exc, "reason_code", "fetch_failed"),
-            detail=str(exc),
+            detail=bounded_detail(str(exc)),
             created_at=self._now().isoformat(),
             terms_status=source.terms_status.value if source else None,
             allowed_use=[use.value for use in source.allowed_use] if source else None,

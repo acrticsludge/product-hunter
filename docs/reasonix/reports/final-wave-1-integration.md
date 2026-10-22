@@ -513,6 +513,12 @@ Nothing blocks the commit. The following block the **next** phase:
    `main`. The loader refuses a duplicate number and refuses a gap, so the
    break fails loudly at `db init` rather than silently.
 
+> **Closed by the Wave 2 final integration.** Four sessions claimed the
+> number, not two: the collection, evidence, clustering and independence
+> migrations. They are now `0004` to `0007` in the pipeline order, and
+> `documents.live_status` has one owner. See
+> [wave-2-final-integration.md](wave-2-final-integration.md).
+
 ## 13. Honest assessment
 
 **The system is not production-ready, and the specification says so itself.**

@@ -7,7 +7,7 @@ import pytest
 
 from product_hunter.db.connection import connect
 from product_hunter.db.leases import LeaseRefused
-from product_hunter.db.migrations import current_version, migrate
+from product_hunter.db.migrations import MIGRATIONS_DIR, current_version, migrate
 from product_hunter.db.research_gate import (
     GateBlocked,
     GateConflict,
@@ -52,6 +52,16 @@ from product_hunter.research.query_plan import (
 
 FROZEN = datetime(2026, 10, 21, 12, 0, 0, tzinfo=timezone.utc)
 RUN_ID = "run-1"
+
+
+def _migration_count() -> int:
+    """How many migration files the repository ships.
+
+    The gate tests care that the gate tables exist, not what the schema
+    version happens to be, so the count is read from the directory instead of
+    pinned here and forgotten.
+    """
+    return len(list(MIGRATIONS_DIR.glob("*.sql")))
 
 ARTIFACT_KIND = {
     "discovery": "source_records",
@@ -216,8 +226,8 @@ def _seed_run(
 def test_the_migration_creates_the_gate_tables() -> None:
     connection = connect(":memory:")
     try:
-        assert migrate(connection) == 3
-        assert current_version(connection) == 3
+        assert migrate(connection) == _migration_count()
+        assert current_version(connection) == _migration_count()
         rows = connection.execute(
             "SELECT name FROM sqlite_master "
             "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
@@ -236,9 +246,9 @@ def test_the_migration_creates_the_gate_tables() -> None:
 def test_migrating_twice_is_a_noop() -> None:
     connection = connect(":memory:")
     try:
-        assert migrate(connection) == 3
-        assert migrate(connection) == 3
-        assert current_version(connection) == 3
+        assert migrate(connection) == _migration_count()
+        assert migrate(connection) == _migration_count()
+        assert current_version(connection) == _migration_count()
     finally:
         connection.close()
 

@@ -1,0 +1,28 @@
+# The operator-tunable values of the clustering wave.
+#
+# No model is named in the code: the embedding block names the one here, and
+# the adjudication role names the routing entry the caller wires. The
+# thresholds decide the bands a similarity score is read against, so a change
+# to one of them changes what a cluster means.
+
+version: 1
+algorithm_version: cluster-v1
+prompt_version: cluster-prompt-v1
+
+embedding:
+  provider: local
+  model: sentence-transformers/all-MiniLM-L6-v2
+  model_version: "1"
+  dimensions: 384
+
+similarity:
+  merge_threshold: 0.86
+  ambiguous_threshold: 0.72
+  domain_mismatch_penalty: 0.15
+  max_candidates: 5
+  min_neighbors_checked: 5
+
+adjudication:
+  role: clustering
+  enabled: true
+  max_calls: 50

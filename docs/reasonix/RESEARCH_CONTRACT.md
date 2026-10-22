@@ -179,8 +179,10 @@ not match, so a tampered key cannot be stored or read back.
 
 **The limit of the key.** The key is exact grouping only. Two phrases whose
 slugs share their first 48 characters collide, so the key is a grouping, not a
-unique identifier. Semantic clustering is a later phase. The 15 domain values
-are fixed until a deliberate vocabulary change and a new normalization version.
+unique identifier. Semantic clustering is built as a library
+(`src/product_hunter/clustering/`) and nothing calls it yet. The 15 domain
+values are fixed until a deliberate vocabulary change and a new normalization
+version.
 
 ## The honest limit
 
@@ -195,6 +197,12 @@ What is still missing is the caller. No worker handler records a tool call or
 an artifact, no CLI command evaluates a run, and there is no promotion path to
 refuse. The gate is enforced in a library, and the pipeline that would make it
 bite is the next wave's work.
+
+The Wave 2 sessions built the stage that would use it. The investigation
+engine bridges into the gate through `investigation_stage_execution()`, which
+produces the `StageExecution` the gate judges, and the discovery store writes a
+discovery record as a tool-call-shaped row. Neither is called by a worker, so
+the bridge exists and nothing walks it.
 
 Three of the six hard-requirement flags are enforced through the stage gate
 only. `require_provenance` is read by the stage check. `require_qdrant_check`

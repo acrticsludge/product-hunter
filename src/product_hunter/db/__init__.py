@@ -9,6 +9,11 @@ from product_hunter.db.checkpoints import (
     save_checkpoint,
 )
 from product_hunter.db.connection import connect, rollback, utc_now
+from product_hunter.db.independence import (
+    IndependenceConflict,
+    IndependenceError,
+    IndependenceStore,
+)
 from product_hunter.db.jobs import (
     Job,
     JobConflict,
@@ -112,6 +117,9 @@ __all__ = [
     "GateBlocked",
     "GateConflict",
     "ImportSummary",
+    "IndependenceConflict",
+    "IndependenceError",
+    "IndependenceStore",
     "InventoryRow",
     "Job",
     "JobConflict",

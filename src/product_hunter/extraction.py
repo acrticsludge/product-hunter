@@ -396,10 +396,10 @@ The quote must be an exact substring of the source text between the markers, at 
 
 pain_statement is a short neutral statement of the problem, in your own words. rationale explains the classification and uses only the source text.
 
-Return at most {max_candidates} candidates. If the text has no pain point, return {{"candidates": []}}.
+Return at most {max_candidates} candidates. If the text has no pain point, return {"candidates": []}.
 
 Return one json object shaped like this:
-{{"candidates": [{{"quote": "the exact sentence from the source", "pain_validity": "genuine", "reason": "time_cost", "pain_statement": "the team spends a Saturday pasting invoice totals by hand", "severity": 3, "frequency": "monthly", "confidence": 0.8, "rationale": "the text says the totals are pasted by hand and it takes a Saturday", "domain": "finance", "actor": "the bookkeeping team", "action": "paste invoice totals by hand", "object": "invoice totals", "consequence": "a Saturday of manual work every month"}}]}}
+{"candidates": [{"quote": "the exact sentence from the source", "pain_validity": "genuine", "reason": "time_cost", "pain_statement": "the team spends a Saturday pasting invoice totals by hand", "severity": 3, "frequency": "monthly", "confidence": 0.8, "rationale": "the text says the totals are pasted by hand and it takes a Saturday", "domain": "finance", "actor": "the bookkeeping team", "action": "paste invoice totals by hand", "object": "invoice totals", "consequence": "a Saturday of manual work every month"}]}
 """
 
 
@@ -420,7 +420,14 @@ def build_prompt(
 ) -> str:
     """Build the extraction prompt for one chunk, or refuse to build it."""
     limit = _default_max_input_chars() if max_input_chars is None else max_input_chars
-    prompt = _PROMPT.format(text=chunk.text, max_candidates=max_candidates)
+    # The template is not a format string. The placeholders are replaced
+    # literally, so the braces the template holds are written out as they are
+    # and the text reaches the model exactly as it was captured. The
+    # candidate count is replaced first, so a page that holds the placeholder
+    # text cannot have it substituted a second time.
+    prompt = _PROMPT.replace("{max_candidates}", str(max_candidates)).replace(
+        "{text}", chunk.text
+    )
     if len(prompt) > limit:
         raise PromptTooLarge(
             f"prompt is {len(prompt)} characters, the limit is {limit}"
@@ -758,6 +765,15 @@ def _failed_model(
     return config.provider_id, config.model_id
 
 
+def derive_span_id(doc_id: str, char_start: int, char_end: int, quote: str) -> str:
+    """The id of a span, derived from the fields of the span itself.
+
+    The id is the hash of the document, the offsets and the quote, so the
+    same span always has the same id and a different span never does.
+    """
+    return _hash_id("ev_", f"{doc_id}|{char_start}|{char_end}|{quote}")
+
+
 def _candidate(
     *,
     document: Document,
@@ -774,7 +790,7 @@ def _candidate(
     """Build the stored record for one located candidate."""
     quote = span.quote
     position = f"{document.doc_id}|{span.char_start}|{span.char_end}|{quote}"
-    span_id = _hash_id("ev_", position)
+    span_id = derive_span_id(document.doc_id, span.char_start, span.char_end, quote)
     candidate_id = _hash_id("cand_", f"{position}|{extractor_version}")
     accepted = candidate.pain_validity is PainValidity.genuine
     pain_id = _hash_id("pp_", f"{span_id}|{extractor_version}") if accepted else None
