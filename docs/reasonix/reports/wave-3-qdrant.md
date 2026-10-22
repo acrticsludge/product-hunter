@@ -175,6 +175,17 @@ The files that carried the misspelling were outside the radius this wave
 declared, so the radius was widened for this pass and the change is its own
 commit. No code was touched.
 
+Every other Wave 3 branch and `main` still carry the sixteen inherited
+occurrences, because they all forked from the same base and none of them
+touched those files. This branch's version of them is therefore the one that
+survives the integration merge, with no conflict. Three occurrences are new
+in sibling branches' own documents and need the same treatment in the
+sessions that wrote them:
+`wave3/source-expansion` has one in
+`docs/reasonix/reports/wave-3-source-expansion.md`, and `wave3/scraping-ladder`
+has one in `docs/reasonix/prompts/wave-3-scraping-ladder-report.md` and one
+in `docs/reasonix/reports/wave-3-scraping-ladder.md`.
+
 ## 9. Debt ledger
 
 One `shortcut:` marker is in the wave's code.
