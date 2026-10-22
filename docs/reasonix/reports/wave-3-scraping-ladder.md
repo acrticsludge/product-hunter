@@ -204,13 +204,19 @@ Crawl4AI and Playwright need no credential. They run locally.
 
 Five, and they are named rather than buried.
 
-**The libraries are not installed here.** `crawl4ai`, `playwright` and
-`apify_client` are not in this environment. The drivers are exercised
-against their protocol, and the three that talk to a library are
-exercised against a fake library that records what it was asked to do. The
-hook API and the route wiring were written against the documented
-interfaces, read through Context7, and they were not exercised against
-the real libraries.
+**The drivers are now verified against the real libraries.** After the
+report was first drafted, `crawl4ai`, `playwright` and `apify-client`
+were installed and the two local drivers were run end to end against
+`https://hn.algolia.com`, a source the registry declares. Both delivered
+a capture. The Playwright driver returned HTML, the Crawl4AI driver
+returned markdown, and the gate blocked four and seven sub-resources
+respectively, which is the gate firing rather than a no-op. The Apify
+driver could not be run end to end, because there is no token, but its
+`call()` arguments were corrected against the installed client: the
+driver now uses `run_timeout` and `wait_duration` instead of the
+`timeout_secs` and `wait_secs` it was written with, and it reads
+`items` from the `DatasetItemsPage` the client returns instead of
+treating the result as a mapping.
 
 **The drivers are injected, not found.** `CollectionOrchestrator` takes a
 `tools` mapping and defaults to none, so every rung below HTTP is refused
@@ -244,13 +250,10 @@ migration, because the migration numbers are contested. A live run
 against Crawl4AI, Playwright or Apify, because the credentials are not
 here and the libraries are not installed.
 
-Not checked: the real `crawl4ai`, `playwright` and `apify-client` APIs,
-so the hook and route wiring is unverified against the libraries. The
-`uv_build` packaging of the new subpackage. Two workers against one
-SQLite file, because the two-worker case is still tested sequentially.
-The managed client's `call` signature is taken from its documentation, so
-the `timeout_secs` and `wait_secs` arguments are the one place where an
-installed client could disagree with the driver.
+Not checked: two workers against one SQLite file, because the two-worker
+case is still tested sequentially. The `uv_build` packaging of the new
+subpackage. The managed client against a real Apify run, because there is
+no token.
 
 ## The report to the operator
 

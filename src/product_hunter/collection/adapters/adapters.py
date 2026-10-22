@@ -318,6 +318,7 @@ class ApifyDriver:
     def take(self, request: CollectRequest) -> Capture:
         try:
             from apify_client import ApifyClient
+            from datetime import timedelta
         except ImportError as exc:
             raise ToolUnavailable("the Apify client is not installed") from exc
 
@@ -325,12 +326,13 @@ class ApifyDriver:
             "startUrls": [{"url": request.url}],
             "maxItems": 1,
         }
+        timeout = timedelta(seconds=int(request.policy.timeout_seconds))
         try:
             client = ApifyClient(token=self._token)
             run = client.actor(self._actor_id).call(
                 run_input=run_input,
-                timeout_secs=int(request.policy.timeout_seconds),
-                wait_secs=int(request.policy.timeout_seconds),
+                run_timeout=timeout,
+                wait_duration=timeout,
             )
             items = client.dataset(_dataset_id(run)).list_items()
         except ToolError:
@@ -338,7 +340,10 @@ class ApifyDriver:
         except Exception as exc:  # noqa: BLE001 - the client's errors are many kinds
             raise ToolNetworkError(self._redact(f"{type(exc).__name__}: {exc}")) from exc
 
-        rows = items.get("items") if isinstance(items, dict) else None
+        if isinstance(items, dict):
+            rows = items.get("items")
+        else:
+            rows = getattr(items, "items", None)
         if not rows:
             raise ToolEmptyResult("the managed run produced no items")
         text = _item_text(rows[0])
