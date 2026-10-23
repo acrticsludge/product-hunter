@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 
 from product_hunter.db.store import Store
 from product_hunter.discovery import (
+    DISCOVERY_STAGE,
     DiscoveryBudget,
     DiscoveryRecord,
     DiscoveryStatus,
@@ -76,6 +77,18 @@ def _github_search(query: str, *, limit: int = 10) -> list[dict[str, Any]]:
         resp.raise_for_status()
         data = resp.json()
     return data.get("items", [])
+
+
+def _devto_search(query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+    url = "https://dev.to/api/articles"
+    params = {"search": query, "per_page": min(limit, 30)}
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.get(url, params=params, headers={"User-Agent": "ProductHunter/0.1", "Accept": "application/json"})
+        resp.raise_for_status()
+        data = resp.json()
+    if isinstance(data, list):
+        return data
+    return data.get("articles", []) if isinstance(data, dict) else []
 
 
 def _web_search(query: str, *, limit: int = 10) -> list[dict[str, Any]]:
@@ -152,6 +165,7 @@ def _search_url(source_id: str, query: str) -> str:
 _SEARCHERS = {
     "hn_algolia": _hn_search,
     "github_issues": _github_search,
+    "dev_to": _devto_search,
 }
 
 
@@ -174,6 +188,14 @@ def _normalize_hit(source_id: str, hit: dict[str, Any]) -> tuple[str, str, str, 
         body = hit.get("body") or ""
         doc_id = f"gh_{hit.get('id', number)}"
         return doc_id, str(url), str(title), str(body)
+    if source_id == "dev_to":
+        hid = hit.get("id")
+        title = hit.get("title", "")
+        url = hit.get("url") or hit.get("path") or ""
+        if url and not url.startswith("http"):
+            url = f"https://dev.to{url}"
+        body = hit.get("description") or ""
+        return f"dev_{hid}", str(url), str(title), str(body)
     hid = hit.get("id", abs(hash(str(hit))))
     title = hit.get("title", "")
     url = hit.get("url", "")
@@ -348,6 +370,52 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
                             ),
                         )
                         docs_count += 1
+                        try:
+                            text_dir = repo_root() / "data" / "processed"
+                            text_dir.mkdir(parents=True, exist_ok=True)
+                            (text_dir / f"{doc_id}.txt").write_text(
+                                f"{title}\n{body or ''}", encoding="utf-8"
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            if source_id == "hn_algolia":
+                                author_handle = str(hit.get("author") or "unknown")
+                            elif source_id == "github_issues":
+                                author_handle = str((hit.get("user") or {}).get("login") or "unknown")
+                            else:
+                                author_handle = str(hit.get("author") or hit.get("user") or "unknown")
+                            community_id = f"community_{source_id}"
+                            conn.execute(
+                                "INSERT OR IGNORE INTO communities (community_id, source_id, name) "
+                                "VALUES (?, ?, ?)",
+                                (community_id, source_id, source_id),
+                            )
+                            author_id = f"au_{source_id}_{author_handle}"
+                            conn.execute(
+                                "INSERT OR IGNORE INTO authors (author_id, source_id, handle, "
+                                "identity_key, first_seen_at, last_seen_at, deletion_status) "
+                                "VALUES (?, ?, ?, ?, ?, ?, 'active')",
+                                (
+                                    author_id,
+                                    source_id,
+                                    author_handle,
+                                    author_handle,
+                                    now_ts,
+                                    now_ts,
+                                ),
+                            )
+                            conn.execute(
+                                "INSERT OR IGNORE INTO author_links (link_id, author_id, doc_id, "
+                                "confidence, basis) VALUES (?, ?, ?, 1.0, 'discovery')",
+                                (f"al_{doc_id}", author_id, doc_id),
+                            )
+                            conn.execute(
+                                "UPDATE documents SET community_id = ? WHERE doc_id = ?",
+                                (community_id, doc_id),
+                            )
+                        except Exception:
+                            pass
                     except Exception:
                         pass
                     result_ids.append(doc_id)
@@ -363,7 +431,7 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
                 cost=0.0,
                 tool=search_fn.__name__.lstrip("_"),
                 agent="worker",
-                stage=DISCOVERY_STAGE,
+                stage="DISCOVERY",
                 result_ref=fetch_id,
                 error=error,
                 timestamp=datetime.now(timezone.utc),
@@ -547,7 +615,7 @@ def _clustering_handler(context: Any) -> dict[str, Any] | None:
     conn = context.conn
     job = context.job
     rows = conn.execute(
-        "SELECT pain_id, doc_id, source_id, span_id, quote, domain, actor, action, "
+        "SELECT pain_id, doc_id, span_id, domain, actor, action, "
         "object, consequence, pain_statement, normalized_key, normalization_version, "
         "severity, frequency FROM pain_points"
     ).fetchall()
@@ -557,25 +625,25 @@ def _clustering_handler(context: Any) -> dict[str, Any] | None:
     import product_hunter.normalization as norm
     pain_points = []
     for row in rows:
-        domain_value = row[5] or "other"
+        domain_value = row[3] or "other"
         try:
             domain = norm.Domain(domain_value)
         except Exception:
             domain = norm.Domain.other
-        actor = row[6] or "unknown"
-        action = row[7] or "unknown"
-        obj = row[8] or "unknown"
-        consequence = row[9] or "unknown"
-        statement = row[10] or row[4] or "unknown"
-        normalized_key = row[11] or row[0]
-        norm_version = row[12] or "v1"
+        actor = row[4] or "unknown"
+        action = row[5] or "unknown"
+        obj = row[6] or "unknown"
+        consequence = row[7] or "unknown"
+        statement = row[8] or "unknown"
+        normalized_key = row[9] or row[0]
+        norm_version = row[10] or "v1"
         pain_points.append(
             ClusterPainPoint(
                 pain_id=row[0],
                 doc_id=row[1],
-                source_id=row[2] or "",
-                span_id=row[3] or "",
-                quote=row[4] or "",
+                source_id="",
+                span_id=row[2] or "",
+                quote="",
                 domain=domain,
                 actor=actor,
                 action=action,
