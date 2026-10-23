@@ -1749,11 +1749,36 @@ def _obsidian_sync_handler(context: Any) -> dict[str, Any] | None:
     vault_root = repo_root() / "data" / "vault"
     projector = Projector(vault_root, source=SqliteProjectionSource(conn))
     result = projector.project()
+
+    # Research Contract + Tool Gate: production enforcement point.
+    from product_hunter.db import GateBlocked, require_promotable
+    from product_hunter.research.contract import load_research_contract
+
+    contract = load_research_contract()
+    contract_passed = True
+    contract_violations: list[str] = []
+    try:
+        require_promotable(
+            conn,
+            contract,
+            job.run_id,
+            worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch,
+        )
+    except GateBlocked as exc:
+        contract_passed = False
+        contract_violations = [str(exc)[:500]]
+    except Exception as exc:
+        contract_passed = False
+        contract_violations = [str(exc)[:500]]
+
     return {
         "written": len(result.written),
         "unchanged": len(result.unchanged),
         "removed": len(result.removed),
         "paths": len(result.paths),
+        "contract_passed": contract_passed,
+        "contract_violations": contract_violations,
     }
 
 

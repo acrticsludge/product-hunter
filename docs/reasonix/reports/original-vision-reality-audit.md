@@ -76,8 +76,8 @@ Per `docs/reasonix/specs/Product-Hunter-Full-Spec.md`:
 | VISION-025 | Competitor discovery (code-generated queries) | IMPLEMENTED-BUT-UNWIRED | `research/investigation/competitors.py` has `analyse_competitors()`. Handler is noop. |
 | VISION-026 | Counter-evidence (falsification) | IMPLEMENTED-BUT-UNWIRED | `research/investigation/counter_evidence.py` has `assess_counter_evidence()`. Handler is noop. |
 | VISION-027 | Non-trivial zero rule | IMPLEMENTED-BUT-UNWIRED | In counter_evidence.py. Not wired. |
-| VISION-028 | Research Contract (code-enforced gates) | IMPLEMENTED-BUT-UNWIRED | `research/contract.py`, `research/gate.py` exist. `require_promotable` has 0 production callers (audit 03 F-01). |
-| VISION-029 | Tool Gate (validates results, not activity) | IMPLEMENTED-BUT-UNWIRED | In research/gate.py. Not called in production. |
+| VISION-028 | Research Contract (code-enforced gates) | PARTIAL | `research/contract.py`, `research/gate.py` exist. `require_promotable` now called in production (OBSIDIAN_SYNC handler + promote_run path). Stage evidence recording not yet wired. |
+| VISION-029 | Tool Gate (validates results, not activity) | PARTIAL | In research/gate.py. Called via promote_run in production. Handlers do not yet record tool calls per stage. |
 | VISION-030 | Budget enforcement (per-stage/run/global) | IMPLEMENTED-BUT-UNWIRED | `research/budget.py`, `autonomy/budget.py` exist. Not enforced in handler. |
 | VISION-031 | Saturation stopping | IMPLEMENTED-BUT-UNWIRED | `discovery/frontier.py` has SaturationPolicy. Not consulted. |
 | VISION-032 | Validation experiments | IMPLEMENTED-BUT-UNWIRED | `opportunity/experiments.py` exists. Not wired. |
