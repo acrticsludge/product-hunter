@@ -60,7 +60,8 @@ inspection.
 
 - `tests/test_evidence_pipeline.py`: 42 passed
 - `tests/test_extraction.py`: 70 passed
-- Combined: 112 passed in 6.10s
+- Combined subsystem: 112 passed in 6.10s
+- Full suite: 1 failure (`test_intelligence_eval_corpus`) on the first run, passes on re-run (flaky/network); all other tests green.
 
 ## Failures / limitations
 
