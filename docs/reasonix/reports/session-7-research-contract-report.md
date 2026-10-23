@@ -67,3 +67,6 @@ Stage evidence now recorded in db/worker.py run_once after successful complete_j
 
 ## S7B update
 Discovery handler now records ToolCallProvenance for each search query via SqliteToolCallStore with worker_id/lease_epoch fencing. Commit 8d1dd52.
+
+## S7C final adversarial pass
+Bypass audit: promote_run called in db/worker.py (production) and research/promotion.py (single entry point); handlers.py calls require_promotable in terminal stage. No other production promotion paths found. Full pytest run completed (no failures observed in output). 25+ deliberate violation tests not added this session. S7 remains NOT READY.
