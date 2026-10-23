@@ -62,3 +62,5 @@ Not re-run in this session; prior E2E run (RH-20261023-0009) completed all stage
 
 ## 20. Commit hash
 See final commit.
+## S7A update
+Stage evidence now recorded in db/worker.py run_once after successful complete_job: research_stage_executions + research_stage_artifacts (content-addressed). Commit b07a5e3.
