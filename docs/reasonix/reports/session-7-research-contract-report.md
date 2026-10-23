@@ -64,3 +64,6 @@ Not re-run in this session; prior E2E run (RH-20261023-0009) completed all stage
 See final commit.
 ## S7A update
 Stage evidence now recorded in db/worker.py run_once after successful complete_job: research_stage_executions + research_stage_artifacts (content-addressed). Commit b07a5e3.
+
+## S7B update
+Discovery handler now records ToolCallProvenance for each search query via SqliteToolCallStore with worker_id/lease_epoch fencing. Commit 8d1dd52.
