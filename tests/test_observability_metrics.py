@@ -409,7 +409,7 @@ def test_a_populated_database_produces_the_expected_values(tmp_path) -> None:
     conn = populated_store(tmp_path)
     report = collect_metrics(conn, run_id="run-1")
 
-    assert report.schema_version == 10
+    assert report.schema_version == 11
     assert report.run_id == "run-1"
     assert len(report.groups) == 20
 
@@ -722,7 +722,7 @@ def test_the_command_prints_the_report_as_json(tmp_path, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
     assert len(payload["groups"]) == 20
-    assert payload["schema_version"] == 10
+    assert payload["schema_version"] == 11
     assert (tmp_path / "metrics.md").is_file()
 
 

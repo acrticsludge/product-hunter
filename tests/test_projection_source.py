@@ -599,6 +599,7 @@ def test_a_table_with_a_different_shape_degrades_the_projection(
 ) -> None:
     conn = _database(tmp_path)
     try:
+        conn.execute("DROP TABLE opportunities")
         conn.execute(
             "CREATE TABLE opportunities (opportunity_id TEXT PRIMARY KEY NOT NULL,"
             " title TEXT NOT NULL, potential REAL)"

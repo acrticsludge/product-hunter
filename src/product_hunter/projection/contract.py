@@ -18,7 +18,7 @@ CONTRACT_VERSION = "projection-v1"
 # scoring and experiment tables lands it; the test suite applies it to a
 # temporary database, which pins the contract.
 CANONICAL_DDL = """\
-CREATE TABLE opportunities (
+CREATE TABLE IF NOT EXISTS opportunities (
     opportunity_id         TEXT PRIMARY KEY NOT NULL,
     title                  TEXT NOT NULL,
     normalized_problem     TEXT,
@@ -43,7 +43,7 @@ CREATE TABLE opportunities (
     updated_at             TEXT NOT NULL
 );
 
-CREATE TABLE opportunity_scores (
+CREATE TABLE IF NOT EXISTS opportunity_scores (
     score_id       TEXT PRIMARY KEY NOT NULL,
     opportunity_id TEXT NOT NULL,
     potential      REAL,
@@ -51,7 +51,7 @@ CREATE TABLE opportunity_scores (
     created_at     TEXT NOT NULL
 );
 
-CREATE TABLE opportunity_evidence (
+CREATE TABLE IF NOT EXISTS opportunity_evidence (
     opportunity_id TEXT NOT NULL,
     span_id        TEXT NOT NULL,
     stance         TEXT NOT NULL,
@@ -59,7 +59,7 @@ CREATE TABLE opportunity_evidence (
     PRIMARY KEY (opportunity_id, span_id, stance)
 );
 
-CREATE TABLE opportunity_claims (
+CREATE TABLE IF NOT EXISTS opportunity_claims (
     claim_id       TEXT PRIMARY KEY NOT NULL,
     opportunity_id TEXT NOT NULL,
     statement      TEXT NOT NULL,
@@ -68,7 +68,7 @@ CREATE TABLE opportunity_claims (
     created_at     TEXT NOT NULL
 );
 
-CREATE TABLE experiments (
+CREATE TABLE IF NOT EXISTS experiments (
     experiment_id  TEXT PRIMARY KEY NOT NULL,
     opportunity_id TEXT,
     title          TEXT NOT NULL,
@@ -79,7 +79,7 @@ CREATE TABLE experiments (
     result         TEXT
 );
 
-CREATE TABLE research_requests (
+CREATE TABLE IF NOT EXISTS research_requests (
     request_id TEXT PRIMARY KEY NOT NULL,
     title      TEXT NOT NULL,
     body       TEXT,

@@ -18,10 +18,16 @@ from product_hunter.db.jobs import (
     JobContext,
     JobOutcome,
     LeaseLost,
+    block_job,
     claim_job,
     complete_job,
     fail_job,
     recover_expired_leases,
+)
+from product_hunter.research.stages import (
+    StageNotImplemented,
+    StageOutputMissing,
+    validate_stage_result,
 )
 
 Handler = Callable[[JobContext], dict[str, object] | None]
@@ -119,9 +125,26 @@ class Worker:
             result = handler(context)
             if result is not None and not isinstance(result, dict):
                 raise TypeError("a job handler must return a dict or None")
+            missing = validate_stage_result(job.stage, result)
+            if missing:
+                raise StageOutputMissing(job.stage, missing)
+        except StageNotImplemented as exc:
+            try:
+                blocked = block_job(
+                    self.conn,
+                    job,
+                    worker_id=self.worker_id,
+                    lease_epoch=job.lease_epoch,
+                    reason=str(exc),
+                )
+            except LeaseLost:
+                return JobOutcome(job.id, "lease_lost")
+            return JobOutcome(job.id, "blocked", error=blocked.last_error)
         except LeaseLost:
             return JobOutcome(job.id, "lease_lost")
-        except Exception as exc:
+        except (StageOutputMissing, Exception) as exc:
+            # StageOutputMissing is a normal retryable failure; any other
+            # exception is too. Record it and requeue (or dead-letter).
             try:
                 failed = fail_job(
                     self.conn,
@@ -144,6 +167,27 @@ class Worker:
             )
         except LeaseLost:
             return JobOutcome(job.id, "lease_lost")
+        # Production integration point for the research contract: once a run
+        # has no further queued or leased work, attempt promotion. A blocked
+        # run is recorded but does not fail the job that just completed.
+        if job.run_id is not None:
+            remaining = self.conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE run_id = ? "
+                "AND status IN ('queued', 'leased')",
+                (job.run_id,),
+            ).fetchone()[0]
+            if remaining == 0:
+                try:
+                    from product_hunter.research.promotion import promote_run
+
+                    promote_run(
+                        self.conn,
+                        job.run_id,
+                        worker_id=self.worker_id,
+                        lease_epoch=job.lease_epoch,
+                    )
+                except Exception as exc:  # noqa: BLE001 - promotion is advisory here
+                    logger.warning("promotion blocked for run %s: %s", job.run_id, exc)
         return JobOutcome(job.id, "succeeded", result=completed.result)
 
     def run_forever(

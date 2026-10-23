@@ -131,14 +131,29 @@ def test_refresh_reads_only_the_new_rows(store: Analytics, db_path: Path) -> Non
     assert [row["note_id"] for row in rows] == ["n1", "n2"]
 
 
-def test_a_view_whose_table_is_missing_is_skipped(store: Analytics) -> None:
+def test_a_view_whose_table_is_missing_is_skipped(tmp_path: Path) -> None:
     """A view over a table that is not there is reported, not faked."""
-    report = store.snapshot()
-    views = {view.name: view for view in report.views}
-    assert views["v_score_history"].created is False
-    assert "opportunity_scores" in views["v_score_history"].reason
-    assert views["v_pain_point_trend"].created is True
-    assert "v_score_history" not in store.views()
+    from product_hunter.analytics import Analytics
+    from product_hunter.db.connection import connect
+    from product_hunter.db.migrations import migrate
+
+    db_path = tmp_path / "product_hunter.db"
+    conn = connect(db_path)
+    migrate(conn)
+    conn.execute("DROP TABLE opportunity_scores")
+    conn.commit()
+    conn.close()
+
+    analytics = Analytics.open(tmp_path / "analytics.duckdb", db_path)
+    try:
+        report = analytics.snapshot()
+        views = {view.name: view for view in report.views}
+        assert views["v_score_history"].created is False
+        assert "opportunity_scores" in views["v_score_history"].reason
+        assert views["v_pain_point_trend"].created is True
+        assert "v_score_history" not in analytics.views()
+    finally:
+        analytics.close()
 
 
 def test_duplicate_ingestion_is_a_no_op(store: Analytics) -> None:

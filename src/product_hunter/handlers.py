@@ -18,6 +18,7 @@ import httpx
 from product_hunter.config import ExtractionConfig, load_config, repo_root
 from product_hunter.extraction import Document, extract_documents
 from product_hunter.llm.opencode import OpenCodeGenerateProvider
+from product_hunter.research.stages import StageNotImplemented
 
 
 def _hn_search(query: str, *, limit: int = 20) -> list[dict[str, Any]]:
@@ -280,10 +281,10 @@ def _enqueue_next(conn: Any, job: Any, next_stage: str) -> None:
 
 
 def _collection_handler(context: Any) -> dict[str, Any] | None:
-    conn = context.conn
-    job = context.job
-    _enqueue_next(conn, job, "NORMALIZATION")
-    return {"collected": 0}
+    # Collection is not implemented in this session: the production path must
+    # not be able to claim success for it. Raise so the worker records a
+    # machine-detectable NOT_IMPLEMENTED result instead of a pass-through.
+    raise StageNotImplemented("COLLECTION", reason="collection ladder not wired to the production path")
 
 
 _STAGE_CHAIN = {
@@ -303,12 +304,12 @@ _STAGE_CHAIN = {
 
 
 def _default_handler(context: Any) -> dict[str, Any] | None:
-    conn = context.conn
-    job = context.job
-    next_stage = _STAGE_CHAIN.get(job.stage)
-    if next_stage:
-        _enqueue_next(conn, job, next_stage)
-    return None
+    # Every other stage is not implemented in this session. Do not enqueue
+    # the next stage and do not return None (which the worker used to read
+    # as success). Raise so the outcome is machine-detectable.
+    raise StageNotImplemented(
+        context.job.stage, reason="stage not wired to the production path"
+    )
 
 
 def build_handlers() -> dict[str, Any]:

@@ -409,6 +409,66 @@ def fail_job(
     return failed
 
 
+def block_job(
+    conn: sqlite3.Connection,
+    job: Job,
+    *,
+    worker_id: str,
+    lease_epoch: int,
+    reason: str,
+    now: datetime | None = None,
+) -> Job:
+    """Permanently block a job (no retry) while the caller owns the lease.
+
+    Used for stages that are not implemented: retrying cannot succeed, so the
+    job is marked dead with a machine-detectable reason rather than requeued.
+    """
+    now_iso = utc_now(now).isoformat()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT attempts, status, worker_id, lease_epoch FROM jobs WHERE id = ?",
+            (job.id,),
+        ).fetchone()
+        if row is None or not _owns(row, worker_id, lease_epoch):
+            conn.execute("ROLLBACK")
+            raise LeaseLost(
+                f"job {job.id!r} is no longer leased to {worker_id!r} at epoch {lease_epoch}"
+            )
+        changed = conn.execute(
+            """
+            UPDATE jobs
+            SET status = 'dead', worker_id = NULL, lease_expires_at = NULL,
+                last_error = ?, completed_at = ?
+            WHERE id = ? AND status = 'leased'
+              AND worker_id = ? AND lease_epoch = ?
+              AND lease_expires_at > ?
+            """,
+            (reason, now_iso, job.id, worker_id, lease_epoch, now_iso),
+        ).rowcount
+        if changed != 1:
+            conn.execute("ROLLBACK")
+            raise LeaseLost(
+                f"job {job.id!r} is no longer leased to {worker_id!r} at epoch {lease_epoch}"
+            )
+        conn.execute(
+            """
+            UPDATE stage_attempts
+            SET status = 'failed', finished_at = ?, error = ?
+            WHERE job_id = ? AND attempt = ?
+            """,
+            (now_iso, reason, job.id, job.attempts),
+        )
+        conn.execute("COMMIT")
+    except BaseException:
+        rollback(conn)
+        raise
+    blocked = get_job(conn, job.id)
+    if blocked is None:  # pragma: no cover
+        raise JobError("blocked job disappeared")
+    return blocked
+
+
 def recover_expired_leases(
     conn: sqlite3.Connection, *, now: datetime | None = None
 ) -> int:
