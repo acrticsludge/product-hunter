@@ -112,11 +112,12 @@ The user-created `product-hunter` folder was preserved. The duplicate `product-h
 There is no external service outage preventing local work. The remaining blockers are implementation gaps:
 
 1. Discovery does not yet execute the contract's canonical query families or enough distinct queries/documents/sources.
-2. The final run produced no evidence spans, so independence, scoring and promotion cannot pass.
-3. Evidence collection had no successful fetch in the final run and did not persist its required outputs.
-4. Empty-input clustering and scoring jobs do not persist contract stage executions; investigation lacks required Qdrant/DuckDB records and output artifacts.
-5. Competitor and counter-evidence family/query coverage must be aligned with the contract's canonical family set.
-6. Budget dimensions for browser time, crawl items, embeddings, model tokens/calls, and sub-queries remain unmeasured in the production run.
-7. The twelve failure categories were not all injected in a final production run, and required skill execution is not wired into durable worker stages.
+2. The contract requires three source domains, but `config/sources.yaml` has only two active reviewed sources; `blog_http` is pending review with no approved domains. Enabling another source requires operator review under the repository's source policy.
+3. The final run produced no evidence spans, so independence, scoring and promotion cannot pass.
+4. Evidence collection had no successful fetch in the final run and did not persist its required outputs.
+5. Empty-input clustering and scoring jobs do not persist contract stage executions; investigation lacks required Qdrant/DuckDB records and output artifacts.
+6. Competitor and counter-evidence family/query coverage must be aligned with the contract's canonical family set.
+7. Budget dimensions for browser time, crawl items, embeddings, model tokens/calls, and sub-queries remain unmeasured in the production run.
+8. The twelve failure categories were not all injected in a final production run, and required skill execution is not wired into durable worker stages.
 
-**Final verdict: NOT COMPLETE.** The tests pass and the negative path blocks safely, but a genuine positive run, full failure-injection acceptance, and complete runtime wiring remain unverified or incomplete. No external blocker is claimed.
+**Final verdict: NOT COMPLETE.** The tests pass and the negative path blocks safely, but a genuine positive run, full failure-injection acceptance, and complete runtime wiring remain unverified or incomplete. A third approved research source also requires operator review; no source policy was bypassed.
