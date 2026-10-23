@@ -48,6 +48,12 @@ from product_hunter.db.model_routing import (
     record_model_executions,
     record_selection,
 )
+from product_hunter.db.opportunity import (
+    OpportunityRecord,
+    OpportunityStore,
+    OpportunityStoreError,
+    create_opportunity_id,
+)
 from product_hunter.db.outbox import (
     OutboxConflict,
     OutboxError,
@@ -131,6 +137,9 @@ __all__ = [
     "LeaseRefused",
     "MeasuredPromotion",
     "MigrationError",
+    "OpportunityRecord",
+    "OpportunityStore",
+    "OpportunityStoreError",
     "OutboxConflict",
     "OutboxError",
     "Priority",
@@ -153,6 +162,7 @@ __all__ = [
     "complete_job",
     "complete_projection",
     "connect",
+    "create_opportunity_id",
     "current_version",
     "default_schedules",
     "enqueue_job",
