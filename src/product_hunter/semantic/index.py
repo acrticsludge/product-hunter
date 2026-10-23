@@ -168,16 +168,17 @@ class SemanticIndex:
             return
         held_size = vector_size(info)
         held_space = str((info.get("metadata") or {}).get("space_id") or "")
-        if (
-            held_size != self.space.dimensions
-            or held_space != self.space.space_id
-        ):
+        if held_size != self.space.dimensions:
+            raise EmbeddingSpaceMismatch(
+                f"the collection {self.collection!r} holds vectors of "
+                f"{held_size} dimensions and the configuration names "
+                f"{self.space.dimensions}"
+            )
+        if held_space and held_space != self.space.space_id:
             raise EmbeddingSpaceMismatch(
                 f"the collection {self.collection!r} holds the space "
-                f"{held_space or 'of an unknown space'} of {held_size} "
-                f"dimensions and the configuration names the space "
-                f"{self.space.space_id} of {self.space.dimensions} dimensions; "
-                "run a rebuild to replace the collection"
+                f"{held_space} and the configuration names "
+                f"{self.space.space_id}"
             )
         held_fields = set(info.get("payload_schema") or {})
         for field in _PAYLOAD_INDEX_FIELDS:

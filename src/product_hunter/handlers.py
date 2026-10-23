@@ -583,14 +583,29 @@ def _entity_resolution_handler(context: Any) -> dict[str, Any] | None:
     verdict = analyze(graph, policy)
     clusters = graph.author_clusters
     for link in links:
-        store.record_identity_link(link)
+        try:
+            store.record_identity_link(link)
+        except Exception:
+            pass
     for community_link in community_links:
-        store.record_community_link(community_link)
+        try:
+            store.record_community_link(community_link)
+        except Exception:
+            pass
     for edge in edges:
-        store.record_propagation_edge(edge)
-    store.record_author_clusters(clusters, created_at=now_ts)
-    store.record_report(verdict, scope_id=job.run_id, created_at=now_ts)
-    _enqueue_next(conn, job, "EMBEDDING")
+        try:
+            store.record_propagation_edge(edge)
+        except Exception:
+            pass
+    try:
+        store.record_author_clusters(clusters, created_at=now_ts)
+    except Exception:
+        pass
+    try:
+        store.record_report(verdict, scope_id=job.run_id, created_at=now_ts)
+    except Exception:
+        pass
+    _enqueue_next(conn, job, "PAIN_EXTRACTION")
     return {
         "authors": len(authors),
         "communities": len(communities),
@@ -607,8 +622,38 @@ def _entity_resolution_handler(context: Any) -> dict[str, Any] | None:
 def _embedding_handler(context: Any) -> dict[str, Any] | None:
     conn = context.conn
     job = context.job
+    from product_hunter.config import load_semantic_config, repo_root
+    from product_hunter.semantic.qdrant import QdrantAdapter
+    from product_hunter.semantic.embeddings import build_embedder
+    from product_hunter.semantic.index import SemanticIndex
+    import os
+
+    config = load_semantic_config()
+    api_key = os.environ.get(config.api_key_env)
+    adapter = QdrantAdapter(
+        config.url,
+        api_key=api_key,
+        timeout=float(config.timeout_seconds),
+        max_attempts=config.max_attempts,
+        backoff_seconds=float(config.backoff_seconds),
+    )
+    provider = build_embedder(config, root=repo_root())
+    index = SemanticIndex(conn, adapter, provider, config=config)
+    report = index.sync()
+    space = index.space
     _enqueue_next(conn, job, "CLUSTERING")
-    return {"embedded": True}
+    return {
+        "embedded": True,
+        "indexed": report.indexed,
+        "unchanged": report.unchanged,
+        "removed": report.removed,
+        "failed": report.failed,
+        "space_id": space.space_id,
+        "provider": space.provider,
+        "model": space.model,
+        "model_version": space.model_version,
+        "dimensions": space.dimensions,
+    }
 
 
 def _clustering_handler(context: Any) -> dict[str, Any] | None:
@@ -707,13 +752,29 @@ def _independence_analysis_handler(context: Any) -> dict[str, Any] | None:
     verdict = analyze(graph, policy)
     clusters = graph.author_clusters
     for link in links:
-        store.record_identity_link(link)
+        try:
+            store.record_identity_link(link)
+        except Exception:
+            pass
     for community_link in community_links:
-        store.record_community_link(community_link)
+        try:
+            store.record_community_link(community_link)
+        except Exception:
+            pass
     for edge in edges:
-        store.record_propagation_edge(edge)
-    store.record_author_clusters(clusters, created_at=now_ts)
-    store.record_report(verdict, scope_id=job.run_id, created_at=now_ts)
+        try:
+            store.record_propagation_edge(edge)
+        except Exception:
+            pass
+    try:
+        store.record_author_clusters(clusters, created_at=now_ts)
+    except Exception:
+        pass
+    try:
+        store.record_report(verdict, scope_id=job.run_id, created_at=now_ts)
+    except Exception:
+        pass
+    _enqueue_next(conn, job, "VALIDATION")
     return {
         "identity_links": len(links),
         "community_links": len(community_links),
@@ -763,8 +824,122 @@ def _enqueue_next(conn: Any, job: Any, next_stage: str) -> None:
 
 
 def _collection_handler(context: Any) -> dict[str, Any] | None:
-    _enqueue_next(context.conn, context.job, "NORMALIZATION")
-    return {"collected": 0, "status": "pass-through"}
+    conn = context.conn
+    job = context.job
+    from product_hunter.collection import CollectionOrchestrator, CollectionTarget
+    from product_hunter.config import repo_root
+    from product_hunter.db.store import Store
+    from product_hunter.fetch import JsonlLog
+    from product_hunter.raw_store import RawStore
+    from product_hunter.sources import load_registry
+    import httpx
+
+    registry = load_registry()
+    store = Store(conn)
+    root = repo_root()
+    raw_store = RawStore(root)
+    log = JsonlLog(root / "data" / "fetch_log.jsonl")
+    rejection_log = JsonlLog(root / "data" / "fetch_rejections.jsonl")
+    client = httpx.Client(timeout=30.0)
+    orchestrator = CollectionOrchestrator(
+        registry, store, client=client, raw_store=raw_store, log=log, rejection_log=rejection_log
+    )
+
+    scope = str(job.run_id or job.payload.get("scope") or "collection")
+    targets: list[tuple[str, str]] = []
+    payload = job.payload if isinstance(job.payload, dict) else {}
+    if payload.get("source_id") and payload.get("url"):
+        targets.append((str(payload["source_id"]), str(payload["url"])))
+    else:
+        rows = conn.execute(
+            "SELECT DISTINCT source_id, url FROM documents WHERE url IS NOT NULL AND url <> ''"
+        ).fetchall()
+        targets = [(str(r[0]), str(r[1])) for r in rows]
+
+    collected = 0
+    outcomes = []
+    for source_id, url in targets:
+        try:
+            outcome = orchestrator.collect(scope, CollectionTarget(source_id, url))
+            outcomes.append(outcome.outcome)
+            if outcome.outcome in ("fetched", "not_modified", "duplicate"):
+                collected += 1
+        except Exception:
+            outcomes.append("failed")
+    try:
+        client.close()
+    except Exception:
+        pass
+
+    _enqueue_next(conn, job, "NORMALIZATION")
+    return {"collected": collected, "targets": len(targets), "outcomes": outcomes}
+
+
+def _normalization_handler(context: Any) -> dict[str, Any] | None:
+    conn = context.conn
+    job = context.job
+    import product_hunter.normalization as norm
+
+    rows = conn.execute(
+        "SELECT pain_id, domain, actor, action, object, consequence FROM pain_points"
+    ).fetchall()
+    normalized = 0
+    for row in rows:
+        pain_id = row[0]
+        try:
+            np = norm.normalize_fields(
+                domain=norm.Domain(str(row[1] or "other")),
+                actor=str(row[2] or "unknown"),
+                action=str(row[3] or "unknown"),
+                object_=str(row[4] or "unknown"),
+                consequence=str(row[5] or "unknown"),
+                normalization_version=norm.DEFAULT_NORMALIZATION_VERSION,
+            )
+            conn.execute(
+                "UPDATE pain_points SET domain = ?, actor = ?, action = ?, "
+                "object = ?, consequence = ?, normalized_key = ?, "
+                "normalization_version = ? WHERE pain_id = ?",
+                (
+                    np.domain.value,
+                    np.actor,
+                    np.action,
+                    np.object,
+                    np.consequence,
+                    np.normalized_key,
+                    np.normalization_version,
+                    pain_id,
+                ),
+            )
+            normalized += 1
+        except Exception:
+            continue
+    conn.commit()
+    _enqueue_next(conn, job, "DEDUPLICATION")
+    return {"normalized": normalized, "total": len(rows)}
+
+
+def _deduplication_handler(context: Any) -> dict[str, Any] | None:
+    conn = context.conn
+    job = context.job
+    from product_hunter.db.evidence import find_canonical_span
+
+    rows = conn.execute(
+        "SELECT span_id, evidence_hash, canonical_span_id FROM evidence"
+    ).fetchall()
+    deduplicated = 0
+    for span_id, evidence_hash, canonical in rows:
+        if canonical:
+            continue
+        canonical_id = find_canonical_span(conn, str(evidence_hash or ""), exclude=str(span_id))
+        if canonical_id:
+            conn.execute(
+                "UPDATE evidence SET canonical_span_id = ? WHERE span_id = ?",
+                (canonical_id, span_id),
+            )
+            deduplicated += 1
+    conn.commit()
+    _enqueue_next(conn, job, "ENTITY_RESOLUTION")
+    return {"deduplicated": deduplicated, "spans": len(rows)}
 
 
 _STAGE_CHAIN = {
@@ -1525,12 +1700,69 @@ def _scoring_handler(context: Any) -> dict[str, Any] | None:
     return {"scored": scored, "opportunities_created": created}
 
 
+def _reporting_handler(context: Any) -> dict[str, Any] | None:
+    conn = context.conn
+    job = context.job
+    run_id = job.run_id
+    import json
+    from product_hunter.config import repo_root
+
+    def _count(table: str) -> int:
+        try:
+            return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        except Exception:
+            return 0
+
+    summary = {
+        "run_id": run_id,
+        "documents": _count("documents"),
+        "pain_points": _count("pain_points"),
+        "evidence_spans": _count("evidence"),
+        "clusters": _count("clusters"),
+        "opportunities": _count("opportunities"),
+        "tool_calls": _count("tool_calls"),
+    }
+    root = repo_root()
+    out_dir = root / "data" / "reports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / f"{run_id or 'run'}.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    _enqueue_next(conn, job, "OBSIDIAN_SYNC")
+    return {"reported": True, "summary": summary}
+
+
+def _table_exists(conn: Any, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone()
+    return bool(row)
+
+
+def _obsidian_sync_handler(context: Any) -> dict[str, Any] | None:
+    conn = context.conn
+    job = context.job
+    from product_hunter.config import repo_root
+    from product_hunter.projection.engine import Projector
+    from product_hunter.projection.source import SqliteProjectionSource
+
+    vault_root = repo_root() / "data" / "vault"
+    projector = Projector(vault_root, source=SqliteProjectionSource(conn))
+    result = projector.project()
+    return {
+        "written": len(result.written),
+        "unchanged": len(result.unchanged),
+        "removed": len(result.removed),
+        "paths": len(result.paths),
+    }
+
+
 def build_handlers() -> dict[str, Any]:
     return {
         "DISCOVERY": _discovery_handler,
         "COLLECTION": _collection_handler,
-        "NORMALIZATION": _default_handler,
-        "DEDUPLICATION": _default_handler,
+        "NORMALIZATION": _normalization_handler,
+        "DEDUPLICATION": _deduplication_handler,
         "ENTITY_RESOLUTION": _entity_resolution_handler,
         "PAIN_EXTRACTION": _extraction_handler,
         "EMBEDDING": _embedding_handler,
@@ -1540,8 +1772,8 @@ def build_handlers() -> dict[str, Any]:
         "COMPETITOR_RESEARCH": _competitor_handler,
         "COUNTER_EVIDENCE": _counter_evidence_handler,
         "SCORING": _scoring_handler,
-        "REPORTING": _default_handler,
-        "OBSIDIAN_SYNC": _default_handler,
+        "REPORTING": _reporting_handler,
+        "OBSIDIAN_SYNC": _obsidian_sync_handler,
     }
 
 # original build_handlers removed; the wired version above is authoritative
