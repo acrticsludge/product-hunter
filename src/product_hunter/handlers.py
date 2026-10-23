@@ -1193,7 +1193,7 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
     store = SqliteToolCallStore(conn)
     for tc in tool_calls:
         try:
-            store.append_tool_call(tc, attempt=1, source_id="hn_algolia", worker_id=None, lease_epoch=None)
+            store.append_tool_call(tc, attempt=1, source_id="hn_algolia", worker_id=context.worker_id, lease_epoch=job.lease_epoch)
         except Exception:
             pass
 
@@ -1402,7 +1402,7 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
     store = SqliteToolCallStore(conn)
     for tc in tool_calls:
         try:
-            store.append_tool_call(tc, attempt=1, source_id="hn_algolia", worker_id=None, lease_epoch=None)
+            store.append_tool_call(tc, attempt=1, source_id="hn_algolia", worker_id=context.worker_id, lease_epoch=job.lease_epoch)
         except Exception:
             pass
 
