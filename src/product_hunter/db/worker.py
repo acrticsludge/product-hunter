@@ -167,6 +167,81 @@ class Worker:
             )
         except LeaseLost:
             return JobOutcome(job.id, "lease_lost")
+
+        # Authoritative stage evidence recording (S7A).
+        if job.run_id is not None:
+            try:
+                from product_hunter.db.research_gate import record_artifact, record_stage_execution
+                from product_hunter.research.evidence import ArtifactRecord, StageExecution, StageStatus
+                import hashlib, json
+                from datetime import datetime, timezone
+
+                now = self.clock() if callable(getattr(self, "clock", None)) else __import__("datetime").datetime.now(timezone.utc)
+                started_iso = started.isoformat() if hasattr(started, "isoformat") else str(started)
+                finished_iso = now.isoformat() if hasattr(now, "isoformat") else str(now)
+
+                def _parse(s):
+                    try:
+                        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+                    except Exception:
+                        return datetime.now(timezone.utc)
+
+                item_count = 0
+                if isinstance(result, dict):
+                    for k in ("discovered", "collected", "normalized", "deduplicated",
+                              "embedded", "indexed", "pain_points", "clusters",
+                              "opportunities_created", "scored", "validated",
+                              "competitors", "counter_evidence", "written"):
+                        v = result.get(k)
+                        if isinstance(v, int):
+                            item_count = max(item_count, v)
+                payload = json.dumps(result if isinstance(result, dict) else {}, sort_keys=True, default=str)
+                content_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+                exec_rec = StageExecution(
+                    stage=job.stage,
+                    status=StageStatus.succeeded,
+                    attempt=job.attempts,
+                    started_at=_parse(started_iso),
+                    finished_at=_parse(finished_iso),
+                    tool_calls=[],
+                    artifacts=[],
+                    error=None,
+                )
+                record_stage_execution(
+                    self.conn,
+                    run_id=job.run_id,
+                    execution=exec_rec,
+                    attempt=job.attempts,
+                    worker_id=self.worker_id,
+                    lease_epoch=job.lease_epoch,
+                )
+                import hashlib as _h
+                art_id = "art_" + _h.sha256((str(job.run_id) + str(job.stage) + str(job.attempts) + content_hash).encode()).hexdigest()[:16]
+                art = ArtifactRecord(
+                    artifact_id=art_id,
+                    stage=job.stage,
+                    kind="stage_output",
+                    ref="job:" + str(job.id),
+                    item_count=item_count,
+                    content_hash=content_hash,
+                    schema_version="v1",
+                    valid=True,
+                    invalid_reason=None,
+                    produced_by_tool_call_id=None,
+                    created_at=datetime.now(timezone.utc),
+                )
+                record_artifact(
+                    self.conn,
+                    run_id=job.run_id,
+                    artifact=art,
+                    attempt=job.attempts,
+                    worker_id=self.worker_id,
+                    lease_epoch=job.lease_epoch,
+                )
+            except Exception:
+                pass
+
         # Production integration point for the research contract: once a run
         # has no further queued or leased work, attempt promotion. A blocked
         # run is recorded but does not fail the job that just completed.
