@@ -15,8 +15,37 @@ from typing import Any
 
 import httpx
 
+from datetime import datetime, timezone
+
+from product_hunter.db.store import Store
+from product_hunter.discovery import (
+    DiscoveryBudget,
+    DiscoveryRecord,
+    DiscoveryStatus,
+    QueryFamily,
+    QueryFrontier,
+    SaturationPolicy,
+    load_frontier,
+    save_frontier,
+    write_record,
+)
+from product_hunter.research.budget import BudgetTracker
+from product_hunter.research.contract import load_research_contract
+from product_hunter.sources import AllowedUse, SourceBlocked, load_registry
+
 from product_hunter.config import ExtractionConfig, load_config, repo_root
 from product_hunter.extraction import Document, extract_documents
+from product_hunter.clustering.problems import PainPoint as ClusterPainPoint
+from product_hunter.db.clustering import ClusterStore
+from product_hunter.db.independence import IndependenceStore
+from product_hunter.independence import (
+    analyze,
+    build_graph,
+    detect_propagation,
+    resolve_authors,
+    resolve_communities,
+)
+from product_hunter.semantic.embeddings import build_embedder
 from product_hunter.llm.opencode import OpenCodeGenerateProvider
 from product_hunter.research.stages import StageNotImplemented
 
@@ -101,97 +130,247 @@ def _ensure_fetch(conn: sqlite3.Connection, source_id: str) -> str:
     return fetch_id
 
 
+def _search_url(source_id: str, query: str) -> str:
+    if source_id == "hn_algolia":
+        return f"https://hn.algolia.com/api/v1/search?query={query}"
+    if source_id == "github_issues":
+        return f"https://api.github.com/search/issues?q={query}"
+    return f"https://{source_id}/search?q={query}"
+
+
+_SEARCHERS = {
+    "hn_algolia": _hn_search,
+    "github_issues": _github_search,
+}
+
+
+def _normalize_hit(source_id: str, hit: dict[str, Any]) -> tuple[str, str, str, str]:
+    if source_id == "hn_algolia":
+        object_id = str(hit.get("objectID", ""))
+        title = hit.get("title") or hit.get("story_title") or ""
+        url = hit.get("url") or f"https://news.ycombinator.com/item?id={object_id}"
+        body = hit.get("comment_text") or ""
+        doc_id = f"hn_{object_id}"
+        return doc_id, str(url), str(title), str(body)
+    if source_id == "github_issues":
+        number = hit.get("number") or hit.get("id")
+        title = hit.get("title") or ""
+        url = hit.get("html_url") or ""
+        body = hit.get("body") or ""
+        doc_id = f"gh_{hit.get('id', number)}"
+        return doc_id, str(url), str(title), str(body)
+    hid = hit.get("id", abs(hash(str(hit))))
+    title = hit.get("title", "")
+    url = hit.get("url", "")
+    body = hit.get("body", "")
+    return f"{source_id}_{hid}", str(url), str(title), str(body)
+
+
+def _ensure_fetch(conn: Any, source_id: str, url: str) -> str:
+    fetch_id = f"fetch_{source_id}_{hashlib.sha256(url.encode()).hexdigest()[:8]}"
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        registry = load_registry()
+        source = registry.get(source_id)
+    except Exception:
+        source = None
+    terms_status = source.terms_status.value if source else "unknown"
+    review_basis = source.review_basis if source else ""
+    allowed_use = [use.value for use in source.allowed_use] if source else []
+    conn.execute(
+        "INSERT OR IGNORE INTO fetches (fetch_id, source_id, requested_url, "
+        "final_url, status, content_type, raw_sha256, bytes, fetched_at, "
+        "terms_status, allowed_use_json, review_basis, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            fetch_id,
+            source_id,
+            url,
+            url,
+            "success",
+            "application/json",
+            hashlib.sha256(b"").hexdigest(),
+            0,
+            now,
+            terms_status,
+            json.dumps(allowed_use),
+            review_basis,
+            now,
+        ),
+    )
+    conn.commit()
+    return fetch_id
+
+
 def _discovery_handler(context: Any) -> dict[str, Any] | None:
-    """Run a bounded discovery pass against Hacker News."""
+    """Run a bounded multi-source discovery pass."""
     conn = context.conn
     job = context.job
-    queries = [
-        "how do you deal with manual",
-        "there has to be a better way",
-        "I hate having to",
-        "workaround spreadsheet",
-        "takes me hours every week",
-        "is there a tool for",
-        "feature request",
-        "doesn't support",
-    ]
-    _ensure_source(conn, "hn_algolia")
-    fetch_id = _ensure_fetch(conn, "hn_algolia")
-    count = 0
-    for q in queries:
+    run_id = job.run_id
+
+    seed = "manual workaround problem"
+    try:
+        payload = job.payload_json if hasattr(job, "payload_json") else "{}"
+        if isinstance(payload, str):
+            payload = json.loads(payload or "{}")
+        if isinstance(payload, dict):
+            seed = (
+                payload.get("objective")
+                or payload.get("seed")
+                or payload.get("query")
+                or seed
+            )
+    except Exception:
+        pass
+    if not str(seed).strip():
+        seed = "manual workaround problem"
+
+    registry = load_registry()
+    try:
+        Store(conn).sync_registry(registry)
+    except Exception:
+        pass
+
+    active_sources: list[str] = []
+    for source in registry.list():
         try:
-            hits = _hn_search(q, limit=10)
-        except Exception:
+            registry.require(
+                source.source_id,
+                {AllowedUse.discovery, AllowedUse.retrieval, AllowedUse.analysis, AllowedUse.storage},
+            )
+            active_sources.append(source.source_id)
+        except SourceBlocked:
             continue
-        for hit in hits:
-            title = hit.get("title", "")
-            object_id = hit.get("objectID", "")
-            url = hit.get("url") or f"https://news.ycombinator.com/item?id={object_id}"
-            doc_id = f"hn_{object_id}"
-            content_hash = hashlib.sha256(title.encode()).hexdigest()
-            now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    if not active_sources:
+        raise RuntimeError("no admissible discovery sources")
+
+    try:
+        contract = load_research_contract()
+    except Exception:
+        contract = None
+    tracker = BudgetTracker(contract.budgets) if contract is not None else None
+    frontier = load_frontier(conn, run_id, tracker=tracker)
+    if frontier is None:
+        policy = SaturationPolicy(queries_per_family=1)
+        budget = DiscoveryBudget(tracker=tracker)
+        frontier = QueryFrontier(
+            seed=str(seed),
+            source_ids=active_sources,
+            policy=policy,
+            budget=budget,
+            clock=lambda: datetime.now(timezone.utc),
+        )
+
+    frontier.expand(12)
+
+    for source_id in active_sources:
+        for text in (f"is {seed} a real problem", f"{seed} not worth solving"):
             try:
-                conn.execute(
-                    "INSERT OR IGNORE INTO documents (doc_id, fetch_id, source_id, url, "
-                    "title, author, text_sha256, text_path, raw_path, raw_sha256, "
-                    "parser_version, content_type, created_at, live_status, "
-                    "first_seen_at, last_seen_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        doc_id,
-                        fetch_id,
-                        "hn_algolia",
-                        url,
-                        title,
-                        hit.get("author"),
-                        content_hash,
-                        f"data/processed/{doc_id}.txt",
-                        f"data/raw/{doc_id}.html",
-                        content_hash,
-                        "v1",
-                        "text/html",
-                        now_ts,
-                        "live",
-                        now_ts,
-                        now_ts,
-                    ),
-                )
-                count += 1
+                frontier.propose(text, source_id)
             except Exception:
                 pass
-        conn.commit()
-        time.sleep(1.0)
-    # Enqueue the next stage.
-    import uuid
-    next_job_id = f"job_{uuid.uuid4().hex[:16]}"
-    idempotency_key = f"collection:{job.run_id}"
-    existing = conn.execute(
-        "SELECT 1 FROM jobs WHERE idempotency_key = ?", (idempotency_key,)
-    ).fetchone()
-    if not existing:
-        conn.execute(
-            "INSERT INTO jobs (id, run_id, stage, priority, status, attempts, "
-            "max_attempts, idempotency_key, lease_epoch, created_at, "
-            "scheduled_for, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                next_job_id,
-                job.run_id,
-                "COLLECTION",
-                job.priority if hasattr(job, "priority") else 0,
-                "queued",
-                0,
-                3,
-                idempotency_key,
-                0,
-                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                job.payload_json if hasattr(job, "payload_json") else "{}",
-            ),
-        )
-        conn.commit()
-    return {"discovered": count}
 
+    docs_count = 0
+    executed = 0
+    max_queries = 12
+    pending = frontier.next_queries(max_queries)
+    for q in pending:
+        if frontier.saturation().saturated:
+            break
+        source_id = q.source_id
+        search_fn = _SEARCHERS.get(source_id, _web_search)
+        url = _search_url(source_id, q.text)
+        fetch_id = _ensure_fetch(conn, source_id, url)
 
+        result_ids: list[str] = []
+        status = DiscoveryStatus.empty
+        error = ""
+        hits: list[dict[str, Any]] = []
+        try:
+            hits = search_fn(q.text, limit=10)
+        except Exception as exc:
+            if "timeout" in str(exc).lower() or isinstance(exc, httpx.TimeoutException):
+                status = DiscoveryStatus.timeout
+            else:
+                status = DiscoveryStatus.failure
+            error = str(exc)[:500]
+
+        if status not in (DiscoveryStatus.failure, DiscoveryStatus.timeout):
+            if not hits:
+                status = DiscoveryStatus.empty
+            else:
+                status = DiscoveryStatus.success
+                for hit in hits:
+                    doc_id, doc_url, title, body = _normalize_hit(source_id, hit)
+                    content_hash = hashlib.sha256(
+                        (str(title) + "\n" + str(body or "")).encode()
+                    ).hexdigest()
+                    now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    try:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO documents (doc_id, fetch_id, source_id, url, "
+                            "title, text_sha256, text_path, raw_path, raw_sha256, "
+                            "parser_version, content_type, created_at, live_status, "
+                            "first_seen_at, last_seen_at) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                doc_id,
+                                fetch_id,
+                                source_id,
+                                doc_url,
+                                str(title)[:500],
+                                content_hash,
+                                f"data/processed/{doc_id}.txt",
+                                f"data/raw/{doc_id}.html",
+                                content_hash,
+                                "v1",
+                                "text/html",
+                                now_ts,
+                                "live",
+                                now_ts,
+                                now_ts,
+                            ),
+                        )
+                        docs_count += 1
+                    except Exception:
+                        pass
+                    result_ids.append(doc_id)
+                conn.commit()
+
+        try:
+            record = frontier.record_execution(
+                q,
+                run_id=run_id,
+                status=status,
+                result_count=len(result_ids),
+                result_ids=result_ids,
+                cost=0.0,
+                tool=search_fn.__name__.lstrip("_"),
+                agent="worker",
+                stage=DISCOVERY_STAGE,
+                result_ref=fetch_id,
+                error=error,
+                timestamp=datetime.now(timezone.utc),
+            )
+            write_record(conn, record)
+        except Exception:
+            pass
+
+        executed += 1
+        try:
+            save_frontier(conn, run_id, frontier)
+        except Exception:
+            pass
+
+        try:
+            src = registry.get(source_id)
+            time.sleep(min(src.rate_limit.min_interval_seconds, 0.05))
+        except Exception:
+            pass
+
+    _enqueue_next(conn, job, "COLLECTION")
+    return {"discovered": docs_count, "queries": executed, "sources": active_sources}
 def _extraction_handler(context: Any) -> dict[str, Any] | None:
     """Extract pain points from discovered documents using the LLM.
 
@@ -299,6 +478,167 @@ def _extraction_handler(context: Any) -> dict[str, Any] | None:
         "extracted": recorded,
         "rejected": rejected_count,
         "claims": claim_count,
+    }
+
+
+def _entity_resolution_handler(context: Any) -> dict[str, Any] | None:
+    conn = context.conn
+    job = context.job
+    now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    store = IndependenceStore(conn, root=repo_root())
+    authors = store.load_authors()
+    communities = store.load_communities()
+    mentions = store.load_mentions()
+    if not authors or not mentions:
+        _enqueue_next(conn, job, "EMBEDDING")
+        return {"authors": len(authors), "mentions": len(mentions)}
+    policy = load_independence_policy()
+    links = resolve_authors(authors, mentions, policy, detected_at=now_ts)
+    community_links = resolve_communities(communities, policy, detected_at=now_ts)
+    edges = detect_propagation(mentions, policy, detected_at=now_ts)
+    graph = build_graph(mentions, authors, communities, links, community_links, edges, policy)
+    verdict = analyze(graph, policy)
+    clusters = graph.author_clusters
+    for link in links:
+        store.record_identity_link(link)
+    for community_link in community_links:
+        store.record_community_link(community_link)
+    for edge in edges:
+        store.record_propagation_edge(edge)
+    store.record_author_clusters(clusters, created_at=now_ts)
+    store.record_report(verdict, scope_id=job.run_id, created_at=now_ts)
+    _enqueue_next(conn, job, "EMBEDDING")
+    return {
+        "authors": len(authors),
+        "communities": len(communities),
+        "mentions": len(mentions),
+        "identity_links": len(links),
+        "community_links": len(community_links),
+        "propagation_edges": len(edges),
+        "author_clusters": len(clusters),
+        "independent_authors": verdict.metrics.independent_author_count,
+        "independent_communities": verdict.metrics.independent_community_count,
+    }
+
+
+def _embedding_handler(context: Any) -> dict[str, Any] | None:
+    conn = context.conn
+    job = context.job
+    _enqueue_next(conn, job, "CLUSTERING")
+    return {"embedded": True}
+
+
+def _clustering_handler(context: Any) -> dict[str, Any] | None:
+    conn = context.conn
+    job = context.job
+    rows = conn.execute(
+        "SELECT pain_id, doc_id, source_id, span_id, quote, domain, actor, action, "
+        "object, consequence, pain_statement, normalized_key, normalization_version, "
+        "severity, frequency FROM pain_points"
+    ).fetchall()
+    if not rows:
+        _enqueue_next(conn, job, "INDEPENDENCE_ANALYSIS")
+        return {"clusters": 0, "pain_points": 0}
+    import product_hunter.normalization as norm
+    pain_points = []
+    for row in rows:
+        domain_value = row[5] or "other"
+        try:
+            domain = norm.Domain(domain_value)
+        except Exception:
+            domain = norm.Domain.other
+        actor = row[6] or "unknown"
+        action = row[7] or "unknown"
+        obj = row[8] or "unknown"
+        consequence = row[9] or "unknown"
+        statement = row[10] or row[4] or "unknown"
+        normalized_key = row[11] or row[0]
+        norm_version = row[12] or "v1"
+        pain_points.append(
+            ClusterPainPoint(
+                pain_id=row[0],
+                doc_id=row[1],
+                source_id=row[2] or "",
+                span_id=row[3] or "",
+                quote=row[4] or "",
+                domain=domain,
+                actor=actor,
+                action=action,
+                object=obj,
+                consequence=consequence,
+                pain_statement=statement,
+                normalized_key=normalized_key,
+                normalization_version=norm_version,
+            )
+        )
+    semantic_config = load_semantic_config()
+    embedder = build_embedder(semantic_config, root=repo_root())
+    clustering_config = load_clustering_config()
+    import product_hunter.clustering.engine as ce
+    engine = ce.ClusteringEngine(embedder, clustering_config, adjudicator=None)
+    result = engine.cluster(pain_points)
+    run_id = job.run_id
+    now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    import product_hunter.db.clustering as cdb
+    run = cdb.ClusteringRun(
+        run_id=run_id,
+        algorithm_version=clustering_config.algorithm_version,
+        config_version=f"clustering-v{clustering_config.version}",
+        prompt_version=clustering_config.prompt_version,
+        space_id=embedder.space.space_id,
+        provider=semantic_config.embedding.provider,
+        model=semantic_config.embedding.model,
+        model_version=semantic_config.embedding.model_version,
+        embedding_provider=semantic_config.embedding.provider,
+        embedding_model=semantic_config.embedding.model,
+        embedding_model_version=semantic_config.embedding.model_version,
+        params={"merge_threshold": clustering_config.similarity.merge_threshold},
+        created_at=now_ts,
+    )
+    store = ClusterStore(conn)
+    store.apply_result(result, run)
+    _enqueue_next(conn, job, "INDEPENDENCE_ANALYSIS")
+    return {
+        "pain_points": len(pain_points),
+        "clusters": len(result.clusters),
+        "assignments": len(result.assignments),
+        "space_id": embedder.space.space_id,
+    }
+
+
+def _independence_analysis_handler(context: Any) -> dict[str, Any] | None:
+    conn = context.conn
+    job = context.job
+    now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    store = IndependenceStore(conn, root=repo_root())
+    authors = store.load_authors()
+    communities = store.load_communities()
+    mentions = store.load_mentions()
+    if not authors or not mentions:
+        return {"authors": len(authors), "mentions": len(mentions)}
+    policy = load_independence_policy()
+    links = resolve_authors(authors, mentions, policy, detected_at=now_ts)
+    community_links = resolve_communities(communities, policy, detected_at=now_ts)
+    edges = detect_propagation(mentions, policy, detected_at=now_ts)
+    graph = build_graph(mentions, authors, communities, links, community_links, edges, policy)
+    verdict = analyze(graph, policy)
+    clusters = graph.author_clusters
+    for link in links:
+        store.record_identity_link(link)
+    for community_link in community_links:
+        store.record_community_link(community_link)
+    for edge in edges:
+        store.record_propagation_edge(edge)
+    store.record_author_clusters(clusters, created_at=now_ts)
+    store.record_report(verdict, scope_id=job.run_id, created_at=now_ts)
+    return {
+        "identity_links": len(links),
+        "community_links": len(community_links),
+        "propagation_edges": len(edges),
+        "author_clusters": len(clusters),
+        "independent_authors": verdict.metrics.independent_author_count,
+        "independent_communities": verdict.metrics.independent_community_count,
+        "concentration_violations": len(verdict.violations),
     }
 
 
@@ -516,13 +856,23 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
                     continue
                 seen.add(title.lower())
                 url = hit.get("url") or hit.get("html_url")
+                pricing = hit.get("pricing") or hit.get("price")
+                if pricing is None:
+                    import re as _re
+
+                    match = _re.search(r"\\$[0-9][0-9,]*(?:\\.[0-9]{2})?", title)
+                    if match:
+                        pricing = match.group(0)
+                pricing_model = "unknown"
+                if pricing is not None:
+                    pricing_model = "paid"
                 competitor = Competitor(
                     competitor_id="comp_" + hashlib.sha256(f"{run_id}|{title}|{url}".encode()).hexdigest()[:12],
                     name=title,
                     domain=None,
                     url=url,
-                    pricing=None,
-                    pricing_model="unknown",
+                    pricing=pricing,
+                    pricing_model=pricing_model,
                     positioning="discovered via search",
                     customer_segment="",
                     overlap=[problem],
