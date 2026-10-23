@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "skills": {
+    "asb-willingness-to-pay": {
+      "source": "asmartbear/asb-skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/asb-willingness-to-pay/SKILL.md",
+      "computedHash": "4a6accf7656ead7a11e2c5deb96f49314f2d37484fa926fb72d7081e296d40bf"
+    },
+    "brainstorm-experiments-new": {
+      "source": "phuryn/pm-skills",
+      "sourceType": "github",
+      "skillPath": "pm-product-discovery/skills/brainstorm-experiments-new/SKILL.md",
+      "computedHash": "8aadc41391e6c048466240de8feefa63c6b6d74475a629b8f983c293da965787"
+    },
+    "competitor-discovery": {
+      "source": "superamped/ai-marketing-skills",
+      "sourceType": "github",
+      "skillPath": "skills/research/competitor-discovery/SKILL.md",
+      "computedHash": "a30228927560139dca8396606ef1b7c9e95322be35c4df721389087a54551ad7"
+    },
+    "competitor-profiling": {
+      "source": "coreyhaines31/marketingskills",
+      "sourceType": "github",
+      "skillPath": "skills/competitor-profiling/SKILL.md",
+      "computedHash": "6cfdd2be3fa27b64891d0cb51381516ce21a186e98b9df6e06824ba25e078dd7"
+    },
+    "expected-value": {
+      "source": "lyndonkl/claude",
+      "sourceType": "github",
+      "skillPath": "skills/expected-value/SKILL.md",
+      "computedHash": "1253915221741b1280e70426c9e369848ffa39afc2d6edf40cb93e39e448212a"
+    },
+    "firecrawl-search": {
+      "source": "firecrawl/cli",
+      "sourceType": "github",
+      "skillPath": "skills/firecrawl-search/SKILL.md",
+      "computedHash": "a339714c4512536af947f07465f784f94736a5a7a4f5ad114c15319de7eb62e0"
+    },
+    "opc-mvp-designer": {
+      "source": "easychen/opc-methodology",
+      "sourceType": "github",
+      "skillPath": "skills/opc-mvp-designer/SKILL.md",
+      "computedHash": "43d4609ef97186ab83cd66c704ce4672f8efbaf3d8a4687acaaa4a6e8010c505"
+    },
+    "pm-opportunity-scoring": {
+      "source": "julianoczkowski/product-manager",
+      "sourceType": "github",
+      "skillPath": "skills/pm-opportunity-scoring/SKILL.md",
+      "computedHash": "927377240b4c903ff385ffb347e5835a55406102754d714b548ceb2da7ffaf2e"
+    },
+    "pricing-strategy": {
+      "source": "phuryn/pm-skills",
+      "sourceType": "github",
+      "skillPath": "pm-product-strategy/skills/pricing-strategy/SKILL.md",
+      "computedHash": "223e5ed8c4abd05ed259629272b4cbd14280ce65654de00134dab91442b3ec56"
+    },
+    "research": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/research/SKILL.md",
+      "computedHash": "2c8b768d5f0309eaea9f92ef740101e813645b39aef88fb82733a52eae23dc0b"
+    },
+    "s4h-investigation-counter-hypothesis": {
+      "source": "human-avatar/skills-for-humanity",
+      "sourceType": "github",
+      "skillPath": "skills/s4h-investigation-counter-hypothesis/SKILL.md",
+      "computedHash": "985cb3306c058468d618645a2c9868c63e1126e83092714303fd993dbc798bbd"
+    },
+    "startup-idea-validator": {
+      "source": "mohitagw15856/pm-claude-skills",
+      "sourceType": "github",
+      "skillPath": "skills/startup-idea-validator/SKILL.md",
+      "computedHash": "bac8a06cfd4e6030d727f12314ccaf09a292a393577d04dcde767194bfd5acca"
+    },
+    "statistical-analysis": {
+      "source": "anthropics/knowledge-work-plugins",
+      "sourceType": "github",
+      "skillPath": "data/skills/statistical-analysis/SKILL.md",
+      "computedHash": "f3bc611085cf4bdb5e1f82009a5da707d11afc012a28a1df63978e4e66c5fff9"
+    },
+    "time-series-analysis": {
+      "source": "nimrodfisher/data-analytics-skills",
+      "sourceType": "github",
+      "skillPath": "03-data-analysis-investigation/time-series-analysis/SKILL.md",
+      "computedHash": "55f42aabf823471746f6a1ff574861747a10dbbe8e7b79eac1a5c26f52ff471e"
+    },
+    "traction-channel-research": {
+      "source": "lvtd-llc/skills",
+      "sourceType": "github",
+      "skillPath": "skills/traction-channel-research/SKILL.md",
+      "computedHash": "103938f688d9397cadc1948a4e2db9e20541275bfd8bb29464a3f8aafb38f055"
+    }
+  }
+}

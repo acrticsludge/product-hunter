@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from product_hunter.db import connect, migrate, enqueue_job
+from product_hunter.db.jobs import claim_job
 from product_hunter.db.jobs import JobContext
 from product_hunter.handlers import (
     _competitor_handler,
@@ -26,7 +27,11 @@ from product_hunter.research.investigation.counter_evidence import (
 )
 
 
-def _setup(conn: sqlite3.Connection, run_id: str = "run_test") -> tuple[str, object]:
+def _setup(
+    conn: sqlite3.Connection,
+    run_id: str = "run_test",
+    stage: str = "COMPETITOR_RESEARCH",
+) -> tuple[str, object]:
     migrate(conn)
     conn.execute(
         "INSERT INTO research_runs (run_id, public_id, objective, original_request) "
@@ -59,7 +64,9 @@ def _setup(conn: sqlite3.Connection, run_id: str = "run_test") -> tuple[str, obj
         ),
     )
     conn.commit()
-    job = enqueue_job(conn, stage="COMPETITOR_RESEARCH", idempotency_key=f"comp:{run_id}", run_id=run_id)
+    enqueue_job(conn, stage=stage, idempotency_key=f"{stage}:{run_id}", run_id=run_id)
+    job = claim_job(conn, "w", lease_seconds=60)
+    assert job is not None
     return run_id, job
 
 
@@ -125,9 +132,7 @@ def test_competitor_search_failure(monkeypatch):
 
 def test_counter_evidence_found(monkeypatch):
     conn = connect(":memory:")
-    run_id, job = _setup(conn)
-    # counter handler expects COMPETITOR_RESEARCH job stage but uses same setup; re-enqueue counter stage
-    job2 = enqueue_job(conn, stage="COUNTER_EVIDENCE", idempotency_key=f"ce:{run_id}", run_id=run_id)
+    run_id, job2 = _setup(conn, stage="COUNTER_EVIDENCE")
     monkeypatch.setattr(
         "product_hunter.handlers._live_search",
         lambda q: ([("hn_algolia", {"title": "Not worth it", "url": "https://x.com"})], None, ["x.com"]),
@@ -140,8 +145,7 @@ def test_counter_evidence_found(monkeypatch):
 
 def test_counter_evidence_timeout(monkeypatch):
     conn = connect(":memory:")
-    run_id, job = _setup(conn)
-    job2 = enqueue_job(conn, stage="COUNTER_EVIDENCE", idempotency_key=f"ce2:{run_id}", run_id=run_id)
+    run_id, job2 = _setup(conn, stage="COUNTER_EVIDENCE")
     monkeypatch.setattr(
         "product_hunter.handlers._live_search",
         lambda q: ([], "timeout", []),

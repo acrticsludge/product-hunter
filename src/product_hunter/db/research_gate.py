@@ -24,6 +24,7 @@ import json
 import sqlite3
 from collections import Counter
 from datetime import datetime
+from typing import Any
 
 from product_hunter.db.leases import (
     assert_fence_pair,
@@ -162,6 +163,8 @@ class SqliteToolCallStore:
         source_id: str | None = None,
         worker_id: str | None = None,
         lease_epoch: int | None = None,
+        lease_stage: str | None = None,
+        result_payload: Any | None = None,
     ) -> None:
         """Store one tool call.
 
@@ -211,7 +214,7 @@ class SqliteToolCallStore:
         with fenced_write(
             self.conn,
             run_id=call.run_id,
-            stage=call.stage,
+            stage=lease_stage or call.stage,
             worker_id=worker_id,
             lease_epoch=lease_epoch,
         ) as conn:
@@ -227,6 +230,9 @@ class SqliteToolCallStore:
                     raise ValueError(
                         f"tool call {tool_call_id!r} already exists with different content"
                     )
+                _append_durable_tool_result(
+                    conn, call, tool_call_id, result_payload
+                )
                 return
             conn.execute(
                 """
@@ -239,20 +245,72 @@ class SqliteToolCallStore:
                 """,
                 (tool_call_id, *values),
             )
+            _append_durable_tool_result(conn, call, tool_call_id, result_payload)
 
     def list_tool_calls(
         self, run_id: str, *, stage: str | None = None
     ) -> list[ToolCallProvenance]:
         """Return the tool calls of a run, optionally of one stage."""
-        sql = "SELECT * FROM tool_calls WHERE run_id = ?"
+        sql = (
+            "SELECT tc.*, (tr.tool_call_id IS NOT NULL) AS result_is_durable "
+            "FROM tool_calls tc LEFT JOIN research_tool_results tr "
+            "ON tr.tool_call_id = tc.tool_call_id WHERE tc.run_id = ?"
+        )
         params: list[object] = [run_id]
         if stage is not None:
-            sql += " AND stage = ?"
+            sql += " AND tc.stage = ?"
             params.append(stage)
-        sql += " ORDER BY occurred_at, tool_call_id"
+        sql += " ORDER BY tc.occurred_at, tc.tool_call_id"
         rows = self.conn.execute(sql, params).fetchall()
         return [_tool_call_from_row(row) for row in rows]
 
+
+def _append_durable_tool_result(
+    conn: sqlite3.Connection,
+    call: ToolCallProvenance,
+    tool_call_id: str,
+    payload: Any | None,
+) -> None:
+    """Persist a tool's result payload alongside its provenance row.
+
+    The canonical JSON and digest make retries idempotent and prevent a
+    result reference from being silently rebound to different content.
+    """
+    if payload is None:
+        return
+    if call.status not in (ToolCallStatus.success, ToolCallStatus.partial):
+        raise ValueError("only successful or partial tool calls may carry results")
+    if not call.result_ref:
+        raise ValueError("a durable tool result requires a result_ref")
+    payload_json = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        allow_nan=False,
+    )
+    payload_sha256 = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+    values = (
+        call.run_id,
+        call.stage,
+        call.result_ref,
+        payload_json,
+        payload_sha256,
+    )
+    existing = conn.execute(
+        "SELECT run_id, stage, result_ref, payload_json, payload_sha256 "
+        "FROM research_tool_results WHERE tool_call_id = ?",
+        (tool_call_id,),
+    ).fetchone()
+    if existing is not None:
+        if tuple(existing) != values:
+            raise ValueError(
+                f"tool result {tool_call_id!r} already exists with different content"
+            )
+        return
+    conn.execute(
+        "INSERT INTO research_tool_results (tool_call_id, run_id, stage, "
+        "result_ref, payload_json, payload_sha256, saved_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (tool_call_id, *values, utc_now().isoformat()),
+    )
 
 class SqliteGateResultStore:
     """The gate verdicts of a run, in SQLite.
@@ -280,6 +338,7 @@ class SqliteGateResultStore:
         contract_fingerprint: str,
         worker_id: str | None = None,
         lease_epoch: int | None = None,
+        lease_stage: str | None = None,
     ) -> None:
         """Store one gate result and the contract fingerprint it carries.
 
@@ -295,7 +354,7 @@ class SqliteGateResultStore:
         with fenced_write(
             self.conn,
             run_id=result.run_id,
-            stage=result.stage,
+            stage=lease_stage or result.stage,
             worker_id=worker_id,
             lease_epoch=lease_epoch,
         ) as conn:
@@ -310,6 +369,7 @@ class SqliteGateResultStore:
         *,
         worker_id: str | None = None,
         lease_epoch: int | None = None,
+        lease_stage: str | None = None,
     ) -> None:
         """Store the verdict of a whole run: every stage and the run itself.
 
@@ -324,16 +384,15 @@ class SqliteGateResultStore:
         a run never holds the verdicts of one contract beside the verdicts
         of another.
 
-        The lease of every stage the set covers is checked in that same
-        transaction, so a worker that lost the lease of a stage cannot
-        write the verdict of that stage, and a write that is refused leaves
-        the set the run carried before it untouched.
+        Legacy callers without ``lease_stage`` must hold every stage lease.
+        A production worker supplies its current ``lease_stage`` and may
+        aggregate prior evidence under that single live lease.
         """
         fingerprint = run_result.contract_fingerprint
         if not fingerprint:
             return
         stages = list(run_result.stages.values())
-        fence_stage = stages[0].stage if stages else _RUN_LEVEL_STAGE
+        fence_stage = lease_stage or (stages[0].stage if stages else _RUN_LEVEL_STAGE)
         with fenced_write(
             self.conn,
             run_id=run_result.run_id,
@@ -341,8 +400,12 @@ class SqliteGateResultStore:
             worker_id=worker_id,
             lease_epoch=lease_epoch,
         ) as conn:
-            if worker_id is not None and lease_epoch is not None:
-                for stage_result in stages[1:]:
+            if (
+                lease_stage is None
+                and worker_id is not None
+                and lease_epoch is not None
+            ):
+                for stage_result in stages:
                     assert_live_lease(
                         conn,
                         run_id=run_result.run_id,
@@ -422,6 +485,7 @@ def record_stage_execution(
     attempt: int | None = None,
     worker_id: str | None = None,
     lease_epoch: int | None = None,
+    lease_stage: str | None = None,
 ) -> None:
     """Record one stage execution of a run, upserted by run, stage and attempt.
 
@@ -438,7 +502,7 @@ def record_stage_execution(
     with fenced_write(
         conn,
         run_id=run_id,
-        stage=execution.stage,
+        stage=lease_stage or execution.stage,
         worker_id=worker_id,
         lease_epoch=lease_epoch,
     ) as conn:
@@ -480,6 +544,7 @@ def record_artifact(
     attempt: int,
     worker_id: str | None = None,
     lease_epoch: int | None = None,
+    lease_stage: str | None = None,
 ) -> None:
     """Record one stage artifact of a run, upserted by its artifact id.
 
@@ -497,7 +562,7 @@ def record_artifact(
     with fenced_write(
         conn,
         run_id=run_id,
-        stage=artifact.stage,
+        stage=lease_stage or artifact.stage,
         worker_id=worker_id,
         lease_epoch=lease_epoch,
     ) as conn:
@@ -554,6 +619,7 @@ def record_claim(
     claim: ResearchClaim,
     worker_id: str | None = None,
     lease_epoch: int | None = None,
+    lease_stage: str | None = None,
 ) -> None:
     """Record one claim of a run, upserted by its claim id.
 
@@ -563,7 +629,7 @@ def record_claim(
     with fenced_write(
         conn,
         run_id=run_id,
-        stage=claim.stage,
+        stage=lease_stage or claim.stage,
         worker_id=worker_id,
         lease_epoch=lease_epoch,
     ) as conn:
@@ -722,6 +788,7 @@ def evaluate_stage_gate(
     *,
     worker_id: str | None = None,
     lease_epoch: int | None = None,
+    lease_stage: str | None = None,
 ) -> GateResult:
     """Judge one stage of the evidence and keep the verdict.
 
@@ -743,6 +810,7 @@ def evaluate_stage_gate(
         contract_fingerprint=fingerprint,
         worker_id=worker_id,
         lease_epoch=lease_epoch,
+        lease_stage=lease_stage,
     )
     return result
 
@@ -754,6 +822,7 @@ def evaluate_run_gate(
     *,
     worker_id: str | None = None,
     lease_epoch: int | None = None,
+    lease_stage: str | None = None,
 ) -> RunGateResult:
     """Judge every stage of the run and keep the verdicts.
 
@@ -770,6 +839,7 @@ def evaluate_run_gate(
         run_result,
         worker_id=worker_id,
         lease_epoch=lease_epoch,
+        lease_stage=lease_stage,
     )
     return run_result
 
@@ -795,6 +865,7 @@ def require_promotable(
     *,
     worker_id: str | None = None,
     lease_epoch: int | None = None,
+    lease_stage: str | None = None,
 ) -> MeasuredPromotion:
     """Return the promotion verdict of a run, or refuse it.
 
@@ -827,6 +898,7 @@ def require_promotable(
             evidence,
             worker_id=worker_id,
             lease_epoch=lease_epoch,
+            lease_stage=lease_stage,
         )
     else:
         run_result = evaluate_run(
@@ -873,8 +945,10 @@ def _load_calls_by_attempt(
 ) -> dict[tuple[str, int], list[ToolCallProvenance]]:
     """Return the tool calls of a run, keyed by the stage and attempt."""
     rows = conn.execute(
-        "SELECT * FROM tool_calls WHERE run_id = ? "
-        "ORDER BY occurred_at, tool_call_id",
+        "SELECT tc.*, (tr.tool_call_id IS NOT NULL) AS result_is_durable "
+        "FROM tool_calls tc LEFT JOIN research_tool_results tr "
+        "ON tr.tool_call_id = tc.tool_call_id WHERE tc.run_id = ? "
+        "ORDER BY tc.occurred_at, tc.tool_call_id",
         (run_id,),
     ).fetchall()
     calls: dict[tuple[str, int], list[ToolCallProvenance]] = {}
@@ -920,6 +994,7 @@ def _load_claims(
 
 
 def _tool_call_from_row(row: sqlite3.Row) -> ToolCallProvenance:
+    row_keys = set(row.keys())
     return ToolCallProvenance(
         run_id=row["run_id"],
         stage=row["stage"],
@@ -929,6 +1004,11 @@ def _tool_call_from_row(row: sqlite3.Row) -> ToolCallProvenance:
         timestamp=datetime.fromisoformat(row["occurred_at"]),
         query_or_operation=row["query_or_operation"],
         result_ref=row["result_ref"] or "",
+        result_is_durable=(
+            bool(row["result_is_durable"])
+            if "result_is_durable" in row_keys
+            else None
+        ),
         result_count=int(row["result_count"]),
         status=ToolCallStatus(row["status"]),
         # The id the caller declared is the provenance. A row whose id was

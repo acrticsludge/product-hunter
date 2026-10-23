@@ -62,7 +62,7 @@ refuses a run whose stage verdicts do not share one fingerprint.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from product_hunter.research.evidence import ToolCallProvenance
 from product_hunter.research.gate import GateResult
@@ -78,6 +78,8 @@ class ToolCallStore(Protocol):
         *,
         attempt: int,
         source_id: str | None = None,
+        lease_stage: str | None = None,
+        result_payload: Any | None = None,
     ) -> None:
         """Store one tool call.
 

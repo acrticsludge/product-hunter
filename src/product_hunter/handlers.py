@@ -139,7 +139,7 @@ def _ensure_fetch(conn: sqlite3.Connection, source_id: str) -> str:
             source_id,
             "https://hn.algolia.com/api/v1/search",
             "https://hn.algolia.com/api/v1/search",
-            "success",
+            200,
             "application/json",
             hashlib.sha256(b"").hexdigest(),
             0,
@@ -224,7 +224,7 @@ def _ensure_fetch(conn: Any, source_id: str, url: str) -> str:
             source_id,
             url,
             url,
-            "success",
+            200,
             "application/json",
             hashlib.sha256(b"").hexdigest(),
             0,
@@ -244,10 +244,13 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
     conn = context.conn
     job = context.job
     run_id = job.run_id
+    stage_started = datetime.now(timezone.utc)
 
     seed = "manual workaround problem"
     try:
-        payload = job.payload_json if hasattr(job, "payload_json") else "{}"
+        payload = getattr(job, "payload", None)
+        if payload is None:
+            payload = getattr(job, "payload_json", "{}")
         if isinstance(payload, str):
             payload = json.loads(payload or "{}")
         if isinstance(payload, dict):
@@ -312,6 +315,8 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
     executed = 0
     max_queries = 12
     tool_calls: list = []
+    tool_results: dict[str, Any] = {}
+    tool_sources: dict[str, str] = {}
     pending = frontier.next_queries(max_queries)
     for q in pending:
         if frontier.saturation().saturated:
@@ -427,12 +432,12 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
                 q,
                 run_id=run_id,
                 status=status,
-                result_count=len(result_ids),
+                result_count=len(hits),
                 result_ids=result_ids,
                 cost=0.0,
                 tool=search_fn.__name__.lstrip("_"),
                 agent="worker",
-                stage="DISCOVERY",
+                stage="discovery",
                 result_ref=fetch_id,
                 error=error,
                 timestamp=datetime.now(timezone.utc),
@@ -452,17 +457,29 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
             )
             tc = ToolCallProvenance(
                 run_id=run_id,
-                stage="DISCOVERY",
+                stage="discovery",
                 agent="worker",
                 tool="search",
                 purpose="discovery search",
                 timestamp=_dt.datetime.now(_dt.timezone.utc),
                 query_or_operation=str(q.text),
-                result_ref=str(fetch_id) if fetch_id else "missing",
+                result_ref=(
+                    f"{fetch_id}/attempt-{job.attempts}"
+                    if fetch_id else f"missing/attempt-{job.attempts}"
+                ),
                 result_count=len(result_ids),
                 status=tc_status,
+                query_family=q.family.value,
+                tool_call_id=(
+                    "tc_" + hashlib.sha256(
+                        f"{run_id}|{source_id}|{q.text}|{job.attempts}".encode("utf-8")
+                    ).hexdigest()[:20]
+                ),
             )
             tool_calls.append(tc)
+            tool_sources[tc.tool_call_id] = source_id
+            if tc.tool_call_id and tc_status in (ToolCallStatus.success, ToolCallStatus.partial):
+                tool_results[tc.tool_call_id] = hits
         except Exception:
             pass
 
@@ -479,16 +496,78 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
             pass
 
     # Persist tool-call provenance.
-    try:
-        from product_hunter.db.research_gate import SqliteToolCallStore
-        store = SqliteToolCallStore(conn)
-        for tc in tool_calls:
-            try:
-                store.append_tool_call(tc, attempt=1, source_id=None, worker_id=context.worker_id, lease_epoch=job.lease_epoch)
-            except Exception:
-                pass
-    except Exception:
-        pass
+    from product_hunter.db.research_gate import SqliteToolCallStore
+    store = SqliteToolCallStore(conn)
+    for tc in tool_calls:
+        store.append_tool_call(
+            tc,
+            attempt=job.attempts,
+            source_id=tool_sources.get(tc.tool_call_id or ""),
+            worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+            result_payload=tool_results.get(tc.tool_call_id or ""),
+        )
+
+    from product_hunter.db.research_gate import record_artifact, record_stage_execution
+    from product_hunter.research.evidence import (
+        ArtifactRecord,
+        StageExecution,
+        StageStatus,
+        ToolCallStatus,
+    )
+
+    finished = datetime.now(timezone.utc)
+    successful_calls = [tc for tc in tool_calls if tc.status is ToolCallStatus.success]
+    artifacts = []
+    if successful_calls:
+        producer = successful_calls[0]
+        for kind, count in (
+            ("source_records", docs_count),
+            ("provenance", len(tool_calls)),
+            ("document", docs_count),
+        ):
+            artifacts.append(
+                ArtifactRecord(
+                    artifact_id=(
+                        f"{run_id}-discovery-{job.attempts}-{kind}"
+                    ),
+                    stage="discovery",
+                    kind=kind,
+                    ref=producer.result_ref,
+                    item_count=count,
+                    produced_by_tool_call_id=producer.tool_call_id,
+                    created_at=finished,
+                    valid=True,
+                )
+            )
+    execution = StageExecution(
+        stage="discovery",
+        status=StageStatus.succeeded,
+        started_at=stage_started,
+        finished_at=finished,
+        tool_calls=tool_calls,
+        artifacts=artifacts,
+    )
+    record_stage_execution(
+        conn,
+        run_id=run_id,
+        execution=execution,
+        attempt=job.attempts,
+        worker_id=context.worker_id,
+        lease_epoch=job.lease_epoch,
+        lease_stage=job.stage,
+    )
+    for artifact in artifacts:
+        record_artifact(
+            conn,
+            run_id=run_id,
+            artifact=artifact,
+            attempt=job.attempts,
+            worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+        )
 
     _enqueue_next(conn, job, "COLLECTION")
     return {"discovered": docs_count, "queries": executed, "sources": active_sources}
@@ -697,6 +776,7 @@ def _embedding_handler(context: Any) -> dict[str, Any] | None:
 def _clustering_handler(context: Any) -> dict[str, Any] | None:
     conn = context.conn
     job = context.job
+    stage_started = datetime.now(timezone.utc)
     rows = conn.execute(
         "SELECT pain_id, doc_id, span_id, domain, actor, action, "
         "object, consequence, pain_statement, normalized_key, normalization_version, "
@@ -763,6 +843,135 @@ def _clustering_handler(context: Any) -> dict[str, Any] | None:
     )
     store = ClusterStore(conn)
     store.apply_result(result, run)
+
+    import os
+    from product_hunter.db.research_gate import (
+        SqliteToolCallStore,
+        record_artifact,
+        record_stage_execution,
+    )
+    from product_hunter.research.evidence import (
+        StageExecution,
+        StageStatus,
+        ToolCallProvenance,
+        ToolCallStatus,
+    )
+    from product_hunter.clustering import clustering_artifacts
+    from product_hunter.semantic.qdrant import QdrantAdapter
+
+    adapter = QdrantAdapter(
+        semantic_config.url,
+        api_key=os.environ.get(semantic_config.api_key_env),
+        timeout=float(semantic_config.timeout_seconds),
+        max_attempts=semantic_config.max_attempts,
+        backoff_seconds=float(semantic_config.backoff_seconds),
+    )
+    calls = []
+    for point, vector in zip(pain_points, embedder.embed([p.pain_statement for p in pain_points])):
+        result_ref = (
+            f"qdrant/cluster/{run_id}/{point.pain_id}/attempt-{job.attempts}"
+        )
+        call_id = "tc_" + hashlib.sha256(result_ref.encode("utf-8")).hexdigest()[:20]
+        neighbors = adapter.search(semantic_config.collection, vector, limit=5)
+        call = ToolCallProvenance(
+            run_id=run_id,
+            stage="clustering",
+            agent="worker",
+            tool="qdrant",
+            purpose="check nearest indexed evidence for a clustered pain point",
+            timestamp=datetime.now(timezone.utc),
+            query_or_operation=point.pain_id,
+            result_ref=result_ref,
+            result_count=len(neighbors),
+            status=ToolCallStatus.success,
+            tool_call_id=call_id,
+            query_family="problem",
+        )
+        SqliteToolCallStore(conn).append_tool_call(
+            call,
+            attempt=job.attempts,
+            worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+            result_payload=[
+                {
+                    "id": str(neighbor.get("id", "")),
+                    "score": float(neighbor.get("score", 0.0)),
+                    "entity_type": (neighbor.get("payload") or {}).get("entity_type"),
+                    "entity_id": (neighbor.get("payload") or {}).get("entity_id"),
+                    "space_id": (neighbor.get("payload") or {}).get("space_id"),
+                }
+                for neighbor in neighbors
+            ],
+        )
+        calls.append(call)
+    adapter.close()
+
+    finished = datetime.now(timezone.utc)
+    result_ref = f"clustering/{run_id}/attempt-{job.attempts}"
+    cluster_call_id = "tc_" + hashlib.sha256(result_ref.encode("utf-8")).hexdigest()[:20]
+    cluster_call = ToolCallProvenance(
+        run_id=run_id,
+        stage="clustering",
+        agent="worker",
+        tool="clustering_engine",
+        purpose="assign pain points to clusters and review nearest candidates",
+        timestamp=finished,
+        query_or_operation=f"cluster {len(pain_points)} pain points",
+        result_ref=result_ref,
+        result_count=len(result.assignments),
+        status=ToolCallStatus.success,
+        tool_call_id=cluster_call_id,
+        query_family="problem",
+    )
+    SqliteToolCallStore(conn).append_tool_call(
+        cluster_call,
+        attempt=job.attempts,
+        worker_id=context.worker_id,
+        lease_epoch=job.lease_epoch,
+        lease_stage=job.stage,
+        result_payload=result.model_dump(mode="json"),
+    )
+    calls.append(cluster_call)
+    artifacts = clustering_artifacts(
+        result,
+        run_id=run_id,
+        tool_call_id=cluster_call_id,
+        created_at=finished,
+    )
+    artifacts = [
+        artifact.model_copy(
+            update={"artifact_id": f"{artifact.artifact_id}-a{job.attempts}"}
+        )
+        for artifact in artifacts
+    ]
+    execution = StageExecution(
+        stage="clustering",
+        status=StageStatus.succeeded,
+        started_at=stage_started,
+        finished_at=finished,
+        tool_calls=calls,
+        artifacts=artifacts,
+    )
+    record_stage_execution(
+        conn,
+        run_id=run_id,
+        execution=execution,
+        attempt=job.attempts,
+        worker_id=context.worker_id,
+        lease_epoch=job.lease_epoch,
+        lease_stage=job.stage,
+    )
+    for artifact in artifacts:
+        record_artifact(
+            conn,
+            run_id=run_id,
+            artifact=artifact,
+            attempt=job.attempts,
+            worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+        )
     _enqueue_next(conn, job, "INDEPENDENCE_ANALYSIS")
     return {
         "pain_points": len(pain_points),
@@ -864,6 +1073,7 @@ def _enqueue_next(conn: Any, job: Any, next_stage: str) -> None:
 def _collection_handler(context: Any) -> dict[str, Any] | None:
     conn = context.conn
     job = context.job
+    stage_started = datetime.now(timezone.utc)
     from product_hunter.collection import CollectionOrchestrator, CollectionTarget
     from product_hunter.config import repo_root
     from product_hunter.db.store import Store
@@ -899,23 +1109,166 @@ def _collection_handler(context: Any) -> dict[str, Any] | None:
     for source_id, url in targets:
         try:
             outcome = orchestrator.collect(scope, CollectionTarget(source_id, url))
-            outcomes.append(outcome.outcome)
+            outcomes.append(outcome)
             if outcome.outcome in ("fetched", "not_modified", "duplicate"):
                 collected += 1
         except Exception:
-            outcomes.append("failed")
+            outcomes.append(None)
     try:
         client.close()
     except Exception:
         pass
 
+    from product_hunter.db.research_gate import (
+        SqliteToolCallStore,
+        record_artifact,
+        record_stage_execution,
+    )
+    from product_hunter.research.evidence import (
+        ArtifactRecord,
+        StageExecution,
+        StageStatus,
+        ToolCallProvenance,
+        ToolCallStatus,
+    )
+
+    tool_calls = []
+    tool_results: dict[str, Any] = {}
+    tool_sources: dict[str, str] = {}
+    finished = datetime.now(timezone.utc)
+    for index, outcome in enumerate(outcomes):
+        if outcome is None:
+            continue
+        attempted = outcome.outcome in {"fetched", "not_modified"} or (
+            outcome.reason_code
+            in {"http_error", "network_error", "timeout", "empty_body"}
+        )
+        if not attempted:
+            continue
+        succeeded = outcome.outcome in {"fetched", "not_modified"} and bool(
+            outcome.fetch_id
+        )
+        call_id = "tc_" + hashlib.sha256(
+            f"{job.run_id}|evidence_collection|{job.attempts}|{index}|{outcome.url}".encode(
+                "utf-8"
+            )
+        ).hexdigest()[:20]
+        result_ref = (
+            f"{outcome.fetch_id}/attempt-{job.attempts}"
+            if succeeded and outcome.fetch_id
+            else ""
+        )
+        call = ToolCallProvenance(
+            run_id=job.run_id,
+            stage="evidence_collection",
+            agent="worker",
+            tool="fetch",
+            purpose="collect a permitted source URL",
+            timestamp=finished,
+            query_or_operation=outcome.url,
+            result_ref=result_ref,
+            result_count=1 if succeeded else 0,
+            status=(ToolCallStatus.success if succeeded else ToolCallStatus.failure),
+            tool_call_id=call_id,
+            duration_ms=outcome.latency_ms,
+            error=outcome.reason_code or None,
+        )
+        tool_calls.append(call)
+        tool_sources[call_id] = outcome.source_id
+        if succeeded:
+            tool_results[call_id] = {
+                "fetch_id": outcome.fetch_id,
+                "status": outcome.status,
+                "bytes": outcome.bytes,
+                "raw_sha256": outcome.raw_sha256,
+                "raw_path": outcome.raw_path,
+                "rung": outcome.rung,
+            }
+
+    call_store = SqliteToolCallStore(conn)
+    for call in tool_calls:
+        call_store.append_tool_call(
+            call,
+            attempt=job.attempts,
+            source_id=tool_sources.get(call.tool_call_id or ""),
+            worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+            result_payload=tool_results.get(call.tool_call_id or ""),
+        )
+
+    successful_calls = [call for call in tool_calls if call.status is ToolCallStatus.success]
+    artifacts = []
+    if successful_calls:
+        producer = successful_calls[0]
+        captured_documents = sum(
+            int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM documents WHERE fetch_id = ?",
+                    (outcome.fetch_id,),
+                ).fetchone()[0]
+            )
+            for outcome in outcomes
+            if outcome is not None and outcome.fetch_id
+        )
+        for kind, count in (
+            ("source_records", captured_documents),
+            ("provenance", len(successful_calls)),
+        ):
+            artifacts.append(
+                ArtifactRecord(
+                    artifact_id=(
+                        f"{job.run_id}-evidence-collection-{job.attempts}-{kind}"
+                    ),
+                    stage="evidence_collection",
+                    kind=kind,
+                    ref=producer.result_ref,
+                    item_count=count,
+                    produced_by_tool_call_id=producer.tool_call_id,
+                    created_at=finished,
+                    valid=True,
+                )
+            )
+    execution = StageExecution(
+        stage="evidence_collection",
+        status=StageStatus.succeeded,
+        started_at=stage_started,
+        finished_at=finished,
+        tool_calls=tool_calls,
+        artifacts=artifacts,
+    )
+    record_stage_execution(
+        conn,
+        run_id=job.run_id,
+        execution=execution,
+        attempt=job.attempts,
+        worker_id=context.worker_id,
+        lease_epoch=job.lease_epoch,
+        lease_stage=job.stage,
+    )
+    for artifact in artifacts:
+        record_artifact(
+            conn,
+            run_id=job.run_id,
+            artifact=artifact,
+            attempt=job.attempts,
+            worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+        )
+
     _enqueue_next(conn, job, "NORMALIZATION")
-    return {"collected": collected, "targets": len(targets), "outcomes": outcomes}
+    return {
+        "collected": collected,
+        "targets": len(targets),
+        "outcomes": [outcome.outcome if outcome is not None else "failed" for outcome in outcomes],
+    }
 
 
 def _normalization_handler(context: Any) -> dict[str, Any] | None:
     conn = context.conn
     job = context.job
+    stage_started = datetime.now(timezone.utc)
     import product_hunter.normalization as norm
 
     rows = conn.execute(
@@ -952,6 +1305,97 @@ def _normalization_handler(context: Any) -> dict[str, Any] | None:
         except Exception:
             continue
     conn.commit()
+
+    database_file = conn.execute("PRAGMA database_list").fetchone()[2]
+    if database_file:
+        from product_hunter.analytics.ingest import Analytics
+        from product_hunter.db.research_gate import (
+            SqliteToolCallStore,
+            record_artifact,
+            record_stage_execution,
+        )
+        from product_hunter.research.evidence import (
+            ArtifactRecord,
+            StageExecution,
+            StageStatus,
+            ToolCallProvenance,
+            ToolCallStatus,
+        )
+
+        analytics_path = repo_root() / "db" / "product_hunter.duckdb"
+        with Analytics.open(analytics_path, database_file) as analytics:
+            report = analytics.snapshot()
+        finished = datetime.now(timezone.utc)
+        result_ref = f"duckdb/snapshot/{job.run_id}/normalization/{job.attempts}"
+        call_id = "tc_" + hashlib.sha256(result_ref.encode("utf-8")).hexdigest()[:20]
+        call = ToolCallProvenance(
+            run_id=job.run_id,
+            stage="normalization",
+            agent="worker",
+            tool="duckdb",
+            purpose="materialize normalized records for analysis",
+            timestamp=finished,
+            query_or_operation="snapshot authoritative normalized records",
+            result_ref=result_ref,
+            result_count=normalized,
+            status=ToolCallStatus.success,
+            tool_call_id=call_id,
+        )
+        result_payload = {
+            "summary": report.summary(),
+            "tables": [
+                {
+                    "name": table.name,
+                    "rows_read": table.rows_read,
+                    "rows_written": table.rows_written,
+                    "reason": table.reason,
+                }
+                for table in report.tables
+            ],
+        }
+        SqliteToolCallStore(conn).append_tool_call(
+            call,
+            attempt=job.attempts,
+            worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+            result_payload=result_payload,
+        )
+        artifact = ArtifactRecord(
+            artifact_id=f"{job.run_id}-normalization-{job.attempts}-normalized",
+            stage="normalization",
+            kind="normalized_records",
+            ref=result_ref,
+            item_count=normalized,
+            produced_by_tool_call_id=call_id,
+            created_at=finished,
+            valid=True,
+        )
+        record_stage_execution(
+            conn,
+            run_id=job.run_id,
+            execution=StageExecution(
+                stage="normalization",
+                status=StageStatus.succeeded,
+                started_at=stage_started,
+                finished_at=finished,
+                tool_calls=[call],
+                artifacts=[artifact],
+            ),
+            attempt=job.attempts,
+            worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+        )
+        record_artifact(
+            conn,
+            run_id=job.run_id,
+            artifact=artifact,
+            attempt=job.attempts,
+            worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+        )
     _enqueue_next(conn, job, "DEDUPLICATION")
     return {"normalized": normalized, "total": len(rows)}
 
@@ -1099,6 +1543,7 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
 
     templates = competitor_templates()
     tool_calls: list[ToolCallProvenance] = []
+    tool_results: dict[str, Any] = {}
     attempts: list[SearchAttempt] = []
     competitors: list[Competitor] = []
     seen: set[str] = set()
@@ -1133,6 +1578,10 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
             error=error,
         )
         tool_calls.append(tc)
+        if status in (ToolCallStatus.success, ToolCallStatus.partial):
+            tool_results[tc_id] = [
+                {"source": source, "result": hit} for source, hit in results
+            ]
 
         attempt = SearchAttempt(
             family=q.family.value,
@@ -1192,10 +1641,12 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
     # Persist tool calls.
     store = SqliteToolCallStore(conn)
     for tc in tool_calls:
-        try:
-            store.append_tool_call(tc, attempt=1, source_id="hn_algolia", worker_id=context.worker_id, lease_epoch=job.lease_epoch)
-        except Exception:
-            pass
+        store.append_tool_call(
+            tc, attempt=job.attempts, source_id="hn_algolia",
+            worker_id=context.worker_id, lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+            result_payload=tool_results.get(tc.tool_call_id or ""),
+        )
 
     # Artifacts.
     arts: list[ArtifactRecord] = []
@@ -1236,15 +1687,17 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
         artifacts=arts,
         zero_result=zero,
     )
-    try:
-        record_stage_execution(conn, run_id=run_id, execution=stage_exec, attempt=1, worker_id=None, lease_epoch=None)
-    except Exception:
-        pass
+    record_stage_execution(
+        conn, run_id=run_id, execution=stage_exec, attempt=job.attempts,
+        worker_id=context.worker_id, lease_epoch=job.lease_epoch,
+        lease_stage=job.stage,
+    )
     for art in arts:
-        try:
-            record_artifact(conn, run_id=run_id, artifact=art, attempt=1, worker_id=None, lease_epoch=None)
-        except Exception:
-            pass
+        record_artifact(
+            conn, run_id=run_id, artifact=art, attempt=job.attempts,
+            worker_id=context.worker_id, lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+        )
 
     # Claim.
     try:
@@ -1257,9 +1710,12 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
             stage=contract_stage,
             evidence_refs=[tc.tool_call_id for tc in tool_calls if tc.tool_call_id],
         )
-        record_claim(conn, run_id=run_id, claim=claim, worker_id=None, lease_epoch=None)
+        record_claim(
+            conn, run_id=run_id, claim=claim, worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch, lease_stage=job.stage,
+        )
     except Exception:
-        pass
+        raise
 
     # Link opportunity.
     try:
@@ -1323,6 +1779,7 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
     }
 
     tool_calls: list[ToolCallProvenance] = []
+    tool_results: dict[str, Any] = {}
     attempts: list[SearchAttempt] = []
     items: list[CounterEvidenceItem] = []
 
@@ -1355,6 +1812,10 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
             error=error,
         )
         tool_calls.append(tc)
+        if status in (ToolCallStatus.success, ToolCallStatus.partial):
+            tool_results[tc_id] = [
+                {"source": source, "result": hit} for source, hit in results
+            ]
 
         attempt = SearchAttempt(
             family=q.family.value,
@@ -1401,10 +1862,12 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
 
     store = SqliteToolCallStore(conn)
     for tc in tool_calls:
-        try:
-            store.append_tool_call(tc, attempt=1, source_id="hn_algolia", worker_id=context.worker_id, lease_epoch=job.lease_epoch)
-        except Exception:
-            pass
+        store.append_tool_call(
+            tc, attempt=job.attempts, source_id="hn_algolia",
+            worker_id=context.worker_id, lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+            result_payload=tool_results.get(tc.tool_call_id or ""),
+        )
 
     arts: list[ArtifactRecord] = []
     if items:
@@ -1454,15 +1917,17 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
         artifacts=arts,
         zero_result=zero,
     )
-    try:
-        record_stage_execution(conn, run_id=run_id, execution=stage_exec, attempt=1, worker_id=None, lease_epoch=None)
-    except Exception:
-        pass
+    record_stage_execution(
+        conn, run_id=run_id, execution=stage_exec, attempt=job.attempts,
+        worker_id=context.worker_id, lease_epoch=job.lease_epoch,
+        lease_stage=job.stage,
+    )
     for art in arts:
-        try:
-            record_artifact(conn, run_id=run_id, artifact=art, attempt=1, worker_id=None, lease_epoch=None)
-        except Exception:
-            pass
+        record_artifact(
+            conn, run_id=run_id, artifact=art, attempt=job.attempts,
+            worker_id=context.worker_id, lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+        )
 
     try:
         claim_id = f"claim_{run_id}_{stage}"
@@ -1474,9 +1939,12 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
             stage=contract_stage,
             evidence_refs=[tc.tool_call_id for tc in tool_calls if tc.tool_call_id],
         )
-        record_claim(conn, run_id=run_id, claim=claim, worker_id=None, lease_epoch=None)
+        record_claim(
+            conn, run_id=run_id, claim=claim, worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch, lease_stage=job.stage,
+        )
     except Exception:
-        pass
+        raise
 
     try:
         OpportunityStore(conn).add_claim(claim_id, opp_id, statement, kind="counter_evidence", span_id=None)
@@ -1501,23 +1969,364 @@ def _frequency_from_raw(value: Any) -> "Frequency":
         return Frequency.unknown
 
 
+def _discovered_document_ids(conn: Any, run_id: str) -> set[str]:
+    """Return document identities present in this run's durable search results."""
+    rows = conn.execute(
+        "SELECT tc.source_id, tr.payload_json "
+        "FROM research_tool_results tr "
+        "JOIN tool_calls tc ON tc.tool_call_id = tr.tool_call_id "
+        "WHERE tr.run_id = ? AND tr.stage = 'discovery' AND tc.source_id IS NOT NULL",
+        (run_id,),
+    ).fetchall()
+    document_ids: set[str] = set()
+    for source_id, payload_json in rows:
+        try:
+            hits = json.loads(payload_json)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(hits, list):
+            continue
+        for hit in hits:
+            if not isinstance(hit, dict):
+                continue
+            try:
+                doc_id, _url, _title, _body = _normalize_hit(str(source_id), hit)
+            except (KeyError, TypeError, ValueError):
+                continue
+            exists = conn.execute(
+                "SELECT 1 FROM documents WHERE doc_id = ? AND live_status = 'live'",
+                (doc_id,),
+            ).fetchone()
+            if exists:
+                document_ids.add(doc_id)
+    return document_ids
+
+
 def _validation_handler(context: Any) -> dict[str, Any] | None:
     conn = context.conn
     job = context.job
-    count = int(conn.execute("SELECT COUNT(*) FROM pain_points").fetchone()[0])
-    rows = conn.execute(
+    stage_started = datetime.now(timezone.utc)
+    run_id = job.run_id
+    problem = _problem_statement(conn, run_id)
+
+    from product_hunter.research.query_plan import plan_for_stage
+
+    templates = []
+    seen_families: set[str] = set()
+    for template in plan_for_stage("validation"):
+        if template.family in seen_families:
+            continue
+        templates.append(template)
+        seen_families.add(template.family)
+        if len(templates) == 4:
+            break
+
+    from product_hunter.research.evidence import (
+        ArtifactRecord,
+        StageExecution,
+        StageStatus,
+        ToolCallProvenance,
+        ToolCallStatus,
+    )
+    from product_hunter.db.research_gate import (
+        SqliteToolCallStore,
+        record_artifact,
+        record_stage_execution,
+    )
+
+    now = datetime.now(timezone.utc)
+    calls: list[ToolCallProvenance] = []
+    results_by_call: dict[str, Any] = {}
+    urls_found = 0
+    for index, template in enumerate(templates):
+        query = template.render(problem)
+        results, error, _domains = _live_search(query)
+        status = (
+            ToolCallStatus.failure if error and not results
+            else ToolCallStatus.partial if error
+            else ToolCallStatus.success
+        )
+        result_ref = (
+            f"validation/{template.family}/{job.attempts}"
+        )
+        call_id = "tc_" + hashlib.sha256(
+            f"{run_id}|validation|{job.attempts}|{template.family}|{index}".encode(
+                "utf-8"
+            )
+        ).hexdigest()[:20]
+        call = ToolCallProvenance(
+            run_id=run_id,
+            stage="validation",
+            agent="worker",
+            tool="search",
+            purpose="validate prevalence and negative alternatives",
+            timestamp=now,
+            query_or_operation=query,
+            result_ref=result_ref if status is not ToolCallStatus.failure else "",
+            result_count=len(results),
+            status=status,
+            tool_call_id=call_id,
+            query_family=template.family,
+            error=error,
+        )
+        calls.append(call)
+        if status in (ToolCallStatus.success, ToolCallStatus.partial):
+            results_by_call[call_id] = [
+                {"source": source, "result": result} for source, result in results
+            ]
+            urls_found += sum(
+                1 for _source, result in results
+                if result.get("url") or result.get("html_url")
+            )
+
+    import os
+    from product_hunter.config import load_semantic_config, repo_root
+    from product_hunter.semantic.qdrant import QdrantAdapter
+
+    semantic_config = load_semantic_config()
+    adapter = QdrantAdapter(
+        semantic_config.url,
+        api_key=os.environ.get(semantic_config.api_key_env),
+        timeout=float(semantic_config.timeout_seconds),
+        max_attempts=semantic_config.max_attempts,
+        backoff_seconds=float(semantic_config.backoff_seconds),
+    )
+    qdrant_points = adapter.count(semantic_config.collection)
+    adapter.close()
+    qdrant_ref = f"qdrant/validation/{run_id}/attempt-{job.attempts}"
+    qdrant_id = "tc_" + hashlib.sha256(qdrant_ref.encode("utf-8")).hexdigest()[:20]
+    qdrant_call = ToolCallProvenance(
+        run_id=run_id,
+        stage="validation",
+        agent="worker",
+        tool="qdrant",
+        purpose="verify the evidence index is reachable and populated",
+        timestamp=now,
+        query_or_operation="count indexed evidence points",
+        result_ref=qdrant_ref,
+        result_count=qdrant_points,
+        status=ToolCallStatus.success,
+        tool_call_id=qdrant_id,
+    )
+    calls.append(qdrant_call)
+    results_by_call[qdrant_id] = {"collection": semantic_config.collection, "points": qdrant_points}
+
+    database_file = conn.execute("PRAGMA database_list").fetchone()[2]
+    if not database_file:
+        raise RuntimeError("validation requires the file-backed authoritative database")
+    from product_hunter.analytics.ingest import Analytics
+
+    analytics_path = repo_root() / "db" / "product_hunter.duckdb"
+    with Analytics.open(analytics_path, database_file) as analytics:
+        ingest_report = analytics.snapshot()
+        frequency_rows = analytics.sql(
+            "SELECT normalized_key, COUNT(*) AS observations "
+            "FROM pain_points GROUP BY normalized_key ORDER BY normalized_key"
+        )
+        trend_rows = analytics.query("growing_pain_points", months=3, limit=50)
+    duckdb_ref = f"duckdb/validation/{run_id}/attempt-{job.attempts}"
+    duckdb_id = "tc_" + hashlib.sha256(duckdb_ref.encode("utf-8")).hexdigest()[:20]
+    duckdb_call = ToolCallProvenance(
+        run_id=run_id,
+        stage="validation",
+        agent="worker",
+        tool="duckdb",
+        purpose="analyze normalized pain frequency and temporal trends",
+        timestamp=now,
+        query_or_operation="snapshot, frequency, and trend analysis",
+        result_ref=duckdb_ref,
+        result_count=len(frequency_rows) + len(trend_rows),
+        status=ToolCallStatus.success,
+        tool_call_id=duckdb_id,
+    )
+    calls.append(duckdb_call)
+    results_by_call[duckdb_id] = {
+        "snapshot": ingest_report.summary(),
+        "frequency": frequency_rows,
+        "trends": trend_rows,
+    }
+
+    doc_ids = _discovered_document_ids(conn, run_id)
+    document_ids = sorted(doc_ids)
+    source_ids: set[str] = set()
+    author_ids: set[str] = set()
+    community_ids: set[str] = set()
+    evidence_count = 0
+    if document_ids:
+        placeholders = ",".join("?" for _ in document_ids)
+        for row in conn.execute(
+            f"SELECT DISTINCT source_id, community_id FROM documents "
+            f"WHERE doc_id IN ({placeholders})",
+            document_ids,
+        ):
+            if row[0]:
+                source_ids.add(str(row[0]))
+            if row[1]:
+                community_ids.add(str(row[1]))
+        author_ids = {
+            str(row[0])
+            for row in conn.execute(
+                f"SELECT DISTINCT a.author_id FROM authors a "
+                f"JOIN author_links l ON l.author_id = a.author_id "
+                f"WHERE l.doc_id IN ({placeholders}) AND a.deletion_status = 'active'",
+                document_ids,
+            )
+        }
+        evidence_count = int(
+            conn.execute(
+                f"SELECT COUNT(DISTINCT span_id) FROM evidence "
+                f"WHERE doc_id IN ({placeholders}) AND live_status = 'live'",
+                document_ids,
+            ).fetchone()[0]
+        )
+    independent_report = conn.execute(
+        "SELECT metrics_json FROM independence_reports WHERE scope_id = ? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (run_id,),
+    ).fetchone()
+    independence = json.loads(independent_report[0]) if independent_report else {}
+    independent_authors = int(
+        independence.get("independent_author_count", len(author_ids))
+    )
+    independent_communities = int(
+        independence.get("independent_community_count", len(community_ids))
+    )
+    concentration_total = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM pain_points p JOIN documents d ON d.doc_id = p.doc_id "
+            "WHERE d.doc_id IN (" + (placeholders if document_ids else "NULL") + ")",
+            document_ids,
+        ).fetchone()[0]
+    ) if document_ids else 0
+    count = concentration_total
+    source_counts = conn.execute(
         "SELECT d.source_id, COUNT(*) FROM pain_points p "
-        "JOIN documents d ON d.doc_id = p.doc_id GROUP BY d.source_id"
-    ).fetchall()
-    total = sum(r[1] for r in rows) or 1
-    max_share = max((r[1] / total for r in rows), default=0.0)
+        "JOIN documents d ON d.doc_id = p.doc_id "
+        "WHERE d.doc_id IN (" + (placeholders if document_ids else "NULL") + ") "
+        "GROUP BY d.source_id",
+        document_ids,
+    ).fetchall() if document_ids else []
+    total = sum(int(row[1]) for row in source_counts) or 1
+    max_share = max((int(row[1]) / total for row in source_counts), default=0.0)
     concentration_ok = max_share <= 0.9
+
+    finished = datetime.now(timezone.utc)
+    sqlite_ref = f"sqlite/validation/{run_id}/attempt-{job.attempts}"
+    sqlite_id = "tc_" + hashlib.sha256(sqlite_ref.encode("utf-8")).hexdigest()[:20]
+    sqlite_call = ToolCallProvenance(
+        run_id=run_id,
+        stage="validation",
+        agent="worker",
+        tool="sqlite",
+        purpose="summarize run-scoped authors, communities, sources, and evidence",
+        timestamp=finished,
+        query_or_operation=f"validate {len(document_ids)} discovered documents",
+        result_ref=sqlite_ref,
+        result_count=evidence_count,
+        status=ToolCallStatus.success,
+        tool_call_id=sqlite_id,
+    )
+    calls.append(sqlite_call)
+    results_by_call[sqlite_id] = {
+        "documents": len(document_ids),
+        "sources": sorted(source_ids),
+        "authors": len(author_ids),
+        "communities": sorted(community_ids),
+        "evidence_spans": evidence_count,
+        "independent_authors": independent_authors,
+        "independent_communities": independent_communities,
+        "concentration_ok": concentration_ok,
+        "max_source_share": max_share,
+    }
+
+    store = SqliteToolCallStore(conn)
+    for call in calls:
+        store.append_tool_call(
+            call,
+            attempt=job.attempts,
+            worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+            result_payload=results_by_call.get(call.tool_call_id or ""),
+        )
+
+    artifacts = []
+    producers = {
+        "candidate_url": next((c for c in calls if c.tool == "search" and c.status is ToolCallStatus.success), None),
+        "independent_source_count": sqlite_call,
+        "independent_person_count": sqlite_call,
+        "community_count": sqlite_call,
+        "frequency_analysis": duckdb_call,
+        "trend_analysis": duckdb_call,
+        "evidence_summary": sqlite_call,
+        "author": sqlite_call,
+        "community": sqlite_call,
+        "evidence_span": sqlite_call,
+    }
+    counts = {
+        "candidate_url": urls_found,
+        "independent_source_count": len(source_ids),
+        "independent_person_count": independent_authors,
+        "community_count": independent_communities,
+        "frequency_analysis": len(frequency_rows),
+        "trend_analysis": len(trend_rows),
+        "evidence_summary": evidence_count,
+        "author": len(author_ids),
+        "community": len(community_ids),
+        "evidence_span": evidence_count,
+    }
+    for kind, producer in producers.items():
+        if producer is None:
+            continue
+        artifacts.append(
+            ArtifactRecord(
+                artifact_id=f"{run_id}-validation-{job.attempts}-{kind}",
+                stage="validation",
+                kind=kind,
+                ref=producer.result_ref,
+                item_count=counts[kind],
+                produced_by_tool_call_id=producer.tool_call_id,
+                created_at=finished,
+                valid=True,
+            )
+        )
+    record_stage_execution(
+        conn,
+        run_id=run_id,
+        execution=StageExecution(
+            stage="validation",
+            status=StageStatus.succeeded,
+            started_at=stage_started,
+            finished_at=finished,
+            tool_calls=calls,
+            artifacts=artifacts,
+        ),
+        attempt=job.attempts,
+        worker_id=context.worker_id,
+        lease_epoch=job.lease_epoch,
+        lease_stage=job.stage,
+    )
+    for artifact in artifacts:
+        record_artifact(
+            conn,
+            run_id=run_id,
+            artifact=artifact,
+            attempt=job.attempts,
+            worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+        )
+
     _enqueue_next(conn, job, "COMPETITOR_RESEARCH")
     return {
         "validated": count,
         "concentration_ok": concentration_ok,
         "max_source_share": max_share,
         "status": "validated",
+        "searches": len(templates),
+        "independent_authors": independent_authors,
+        "independent_communities": independent_communities,
+        "evidence_spans": evidence_count,
     }
 
 
@@ -1786,37 +2595,30 @@ def _obsidian_sync_handler(context: Any) -> dict[str, Any] | None:
 
     vault_root = repo_root() / "data" / "vault"
     projector = Projector(vault_root, source=SqliteProjectionSource(conn))
-    result = projector.project()
-
     # Research Contract + Tool Gate: production enforcement point.
-    from product_hunter.db import GateBlocked, require_promotable
+    from product_hunter.db import require_promotable
     from product_hunter.research.contract import load_research_contract
 
     contract = load_research_contract()
-    contract_passed = True
-    contract_violations: list[str] = []
-    try:
-        require_promotable(
-            conn,
-            contract,
-            job.run_id,
-            worker_id=context.worker_id,
-            lease_epoch=job.lease_epoch,
-        )
-    except GateBlocked as exc:
-        contract_passed = False
-        contract_violations = [str(exc)[:500]]
-    except Exception as exc:
-        contract_passed = False
-        contract_violations = [str(exc)[:500]]
+    # A failed gate is a failed terminal stage. Returning a success-shaped
+    # dictionary here lets WorkerRuntime complete the job even though the run
+    # is not promotable, so propagate the refusal to the lease-owning worker.
+    require_promotable(
+        conn,
+        contract,
+        job.run_id,
+        worker_id=context.worker_id,
+        lease_epoch=job.lease_epoch,
+        lease_stage=job.stage,
+    )
+
+    result = projector.project()
 
     return {
         "written": len(result.written),
         "unchanged": len(result.unchanged),
         "removed": len(result.removed),
         "paths": len(result.paths),
-        "contract_passed": contract_passed,
-        "contract_violations": contract_violations,
     }
 
 

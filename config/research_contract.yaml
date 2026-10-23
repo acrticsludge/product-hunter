@@ -23,7 +23,6 @@ stages:
   discovery:
     required_tools:
       - search
-      - fetch
     required_outputs:
       - source_records
       - provenance
@@ -37,15 +36,11 @@ stages:
 
   evidence_collection:
     required_tools:
-      - search
       - fetch
     required_outputs:
       - source_records
       - provenance
-    quality_checks:
-      - non_empty_queries
-      - mandatory_query_families
-      - known_query_families
+    quality_checks: []
     gate_key: evidence_collection
 
   normalization:

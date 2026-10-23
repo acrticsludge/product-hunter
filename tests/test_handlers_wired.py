@@ -9,6 +9,7 @@ import pytest
 
 from product_hunter.db import Store, connect, migrate, enqueue_job
 from product_hunter.db.jobs import JobContext
+from product_hunter.db.worker import Worker
 from product_hunter.handlers import (
     _collection_handler,
     _normalization_handler,
@@ -17,6 +18,8 @@ from product_hunter.handlers import (
     _reporting_handler,
     _obsidian_sync_handler,
 )
+from product_hunter.runtime.identity import WorkerIdentity
+from product_hunter.runtime.worker import WorkerRuntime
 
 
 def _store_with_run() -> Store:
@@ -33,10 +36,23 @@ def _store_with_run() -> Store:
 def test_collection_handler_no_targets_enqueues_normalization():
     store = _store_with_run()
     try:
-        job = enqueue_job(store.conn, stage="COLLECTION", idempotency_key="coll-1", run_id="run-1")
-        ctx = JobContext(store.conn, job, worker_id="w", lease_seconds=60)
-        result = _collection_handler(ctx)
-        assert result["targets"] == 0
+        enqueue_job(store.conn, stage="COLLECTION", idempotency_key="coll-1", run_id="run-1")
+        worker = Worker(store.conn, "w", {"COLLECTION": _collection_handler})
+        outcome = worker.run_once()
+        assert outcome is not None
+        assert outcome.status == "succeeded"
+        assert outcome.result["targets"] == 0
+        execution = store.conn.execute(
+            "SELECT stage, status FROM research_stage_executions "
+            "WHERE run_id = 'run-1'"
+        ).fetchone()
+        assert tuple(execution) == ("evidence_collection", "succeeded")
+        assert store.conn.execute(
+            "SELECT COUNT(*) FROM research_stage_artifacts WHERE run_id = 'run-1'"
+        ).fetchone()[0] == 0
+        assert store.conn.execute(
+            "SELECT COUNT(*) FROM tool_calls WHERE run_id = 'run-1'"
+        ).fetchone()[0] == 0
         nxt = store.conn.execute("SELECT 1 FROM jobs WHERE stage='NORMALIZATION' AND run_id='run-1'").fetchone()
         assert nxt is not None
     finally:
@@ -67,7 +83,7 @@ def test_deduplication_handler_sets_canonical():
         )
         store.conn.execute(
             "INSERT INTO fetches (fetch_id, source_id, requested_url, final_url, status, content_type, raw_sha256, bytes, fetched_at, terms_status, allowed_use_json, review_basis, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            ("f1", "hn_algolia", "u", "u", "success", "text/html", "h", 0, "2026-01-01T00:00:00Z", "permitted", "[]", "", "2026-01-01T00:00:00Z"),
+            ("f1", "hn_algolia", "u", "u", 200, "text/html", "h", 0, "2026-01-01T00:00:00Z", "permitted", "[]", "", "2026-01-01T00:00:00Z"),
         )
         store.conn.execute(
             "INSERT INTO documents (doc_id, fetch_id, source_id, url, title, text_sha256, text_path, raw_path, raw_sha256, parser_version, content_type, created_at, live_status, first_seen_at, last_seen_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -167,14 +183,30 @@ def test_reporting_handler_writes_summary(tmp_path, monkeypatch):
         store.close()
 
 
-def test_obsidian_sync_handler_generates_vault(tmp_path, monkeypatch):
+def test_production_worker_does_not_complete_a_run_blocked_by_the_contract(
+    tmp_path, monkeypatch
+):
     store = _store_with_run()
     try:
         monkeypatch.setattr("product_hunter.config.repo_root", lambda: tmp_path)
         job = enqueue_job(store.conn, stage="OBSIDIAN_SYNC", idempotency_key="obs-1", run_id="run-1")
-        ctx = JobContext(store.conn, job, worker_id="w", lease_seconds=60)
-        result = _obsidian_sync_handler(ctx)
-        assert "written" in result
-        assert (tmp_path / "data" / "vault").is_dir()
+        runtime = WorkerRuntime(
+            store.conn,
+            WorkerIdentity("w", "test", 1, datetime.now(timezone.utc).isoformat()),
+            {"OBSIDIAN_SYNC": _obsidian_sync_handler},
+            lease_seconds=60,
+            heartbeat_seconds=0,
+        )
+
+        outcome = runtime.run_once()
+
+        assert outcome is not None
+        assert outcome.status == "failed"
+        current = store.conn.execute(
+            "SELECT status, last_error FROM jobs WHERE id = ?", (job.id,)
+        ).fetchone()
+        assert current["status"] == "queued"
+        assert "gate" in current["last_error"].lower()
+        assert not (tmp_path / "data" / "vault").exists()
     finally:
         store.close()

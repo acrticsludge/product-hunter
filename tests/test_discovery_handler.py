@@ -61,6 +61,25 @@ def test_discovery_handler_invokes_multiple_sources(monkeypatch) -> None:
         assert len(records) >= 2
         assert {r.source_id for r in records} == {"hn_algolia", "github_issues"}
 
+        from product_hunter.db.research_gate import (
+            SqliteToolCallStore,
+            load_run_evidence,
+        )
+
+        calls = SqliteToolCallStore(store.conn).list_tool_calls(
+            "run-1", stage="discovery"
+        )
+        assert calls
+        assert all(call.result_is_durable is True for call in calls)
+        assert any("manual report" in call.query_or_operation for call in calls)
+        evidence = load_run_evidence(
+            store.conn, run_id="run-1", contract_version="test-v1"
+        )
+        assert evidence.stages["discovery"].tool_calls == calls
+        assert {a.kind for a in evidence.stages["discovery"].artifacts} == {
+            "source_records", "provenance", "document"
+        }
+
         collection_job = store.conn.execute(
             "SELECT 1 FROM jobs WHERE stage = 'COLLECTION' AND run_id = 'run-1'"
         ).fetchone()

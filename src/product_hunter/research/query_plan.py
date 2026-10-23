@@ -75,14 +75,10 @@ QUERY_VARIANTS: tuple[str, ...] = (
 # and the alternative-to query mandatory for validation, so that a run does
 # not only collect the people who agree with the initial thesis; the same
 # rule is applied to the stages that search for competitors and for
-# counter-evidence. The stages that do not search declare nothing.
+# counter-evidence. Evidence collection fetches URLs without running a
+# search, so it does not declare query families.
 MANDATORY_FAMILIES_BY_STAGE: dict[str, tuple[str, ...]] = {
     "discovery": (
-        FAMILY_DIRECT_PAIN,
-        FAMILY_FAILED_SOLUTION,
-        FAMILY_ALTERNATIVE_TO,
-    ),
-    "evidence_collection": (
         FAMILY_DIRECT_PAIN,
         FAMILY_FAILED_SOLUTION,
         FAMILY_ALTERNATIVE_TO,
@@ -92,6 +88,7 @@ MANDATORY_FAMILIES_BY_STAGE: dict[str, tuple[str, ...]] = {
         FAMILY_FAILED_SOLUTION,
         FAMILY_ALTERNATIVE_TO,
     ),
+    "evidence_collection": (),
     "counter_evidence": (
         FAMILY_DIRECT_PAIN,
         FAMILY_FAILED_SOLUTION,

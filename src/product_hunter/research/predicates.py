@@ -293,12 +293,17 @@ def incomplete_calls(context: PredicateContext) -> list[ToolCallProvenance]:
     """Return the successful calls whose provenance is not complete.
 
     A successful call without a ``tool_call_id`` cannot be pointed at by an
-    artifact, so its result cannot be traced back to the call that made it.
+    artifact. A call loaded from SQLite also needs its referenced payload in
+    the durable result store; in-memory fixtures leave that fact unknown.
     """
     return [
         call
         for call in context.execution.tool_calls
-        if call.status is ToolCallStatus.success and not call.tool_call_id
+        if call.status is ToolCallStatus.success
+        and (
+            not call.tool_call_id
+            or call.result_is_durable is False
+        )
     ]
 
 

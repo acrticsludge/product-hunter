@@ -77,6 +77,9 @@ class ToolCallProvenance(BaseModel):
     timestamp: datetime
     query_or_operation: str = Field(min_length=1)
     result_ref: str
+    # None means the caller supplied in-memory evidence rather than a value
+    # loaded from the durable result store. Database reads set this explicitly.
+    result_is_durable: bool | None = None
     result_count: int = Field(ge=0)
     status: ToolCallStatus
     tool_call_id: str | None = None

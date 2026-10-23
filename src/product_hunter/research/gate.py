@@ -342,9 +342,15 @@ def evaluate_stage(
                     code=ViolationCode.provenance_missing,
                     stage=stage,
                     message=(
-                        f"tool call {call.tool!r} in stage {stage!r} carries no tool_call_id"
+                        f"tool call {call.tool!r} in stage {stage!r} lacks required provenance"
                     ),
-                    detail={"tool": call.tool, "stage": stage, "run_id": call.run_id},
+                    detail={
+                        "tool": call.tool,
+                        "stage": stage,
+                        "run_id": call.run_id,
+                        "has_tool_call_id": bool(call.tool_call_id),
+                        "result_is_durable": call.result_is_durable,
+                    },
                 )
             )
         for call in mismatched_calls(context):

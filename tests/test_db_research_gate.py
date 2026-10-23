@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -212,7 +214,10 @@ def _seed_run(
     _insert_run(conn, run_id)
     store = SqliteToolCallStore(conn)
     for stage in STAGES:
-        store.append_tool_call(_call(stage, run_id=run_id), attempt=1)
+        call = _call(stage, run_id=run_id, result_is_durable=True)
+        store.append_tool_call(
+            call, attempt=1, result_payload={"results": [call.result_ref]}
+        )
         artifact = _artifact(stage)
         if stage in invalid_stages:
             artifact = _artifact(stage, valid=False, invalid_reason=invalid_reason)
@@ -262,15 +267,66 @@ def test_a_tool_call_round_trips_through_the_database(
     conn: sqlite3.Connection,
 ) -> None:
     _insert_run(conn)
-    call = _call("discovery", duration_ms=120, query_family="problem")
+    call = _call(
+        "discovery", duration_ms=120, query_family="problem",
+        result_is_durable=True,
+    )
     store = SqliteToolCallStore(conn)
-    store.append_tool_call(call, attempt=1)
+    store.append_tool_call(call, attempt=1, result_payload={"items": ["doc-1"]})
 
     loaded = store.list_tool_calls(RUN_ID)
 
     assert loaded == [call]
     assert loaded[0].duration_ms == 120
     assert loaded[0].timestamp == FROZEN
+
+
+def test_tool_result_payload_is_durable_and_cannot_be_rebound(
+    conn: sqlite3.Connection,
+) -> None:
+    _insert_run(conn)
+    store = SqliteToolCallStore(conn)
+    call = _call("discovery")
+    payload = {"items": ["doc-1", "doc-2"]}
+
+    store.append_tool_call(call, attempt=1, result_payload=payload)
+    store.append_tool_call(call, attempt=1, result_payload=payload)
+    row = conn.execute(
+        "SELECT result_ref, payload_json, payload_sha256 "
+        "FROM research_tool_results WHERE tool_call_id = ?",
+        (call.tool_call_id,),
+    ).fetchone()
+
+    assert row["result_ref"] == call.result_ref
+    assert json.loads(row["payload_json"]) == payload
+    assert row["payload_sha256"] == hashlib.sha256(
+        row["payload_json"].encode("utf-8")
+    ).hexdigest()
+    assert store.list_tool_calls(RUN_ID)[0].result_is_durable is True
+    with pytest.raises(ValueError, match="different content"):
+        store.append_tool_call(
+            call, attempt=1, result_payload={"items": ["replaced"]}
+        )
+
+
+def test_a_successful_call_without_a_durable_result_fails_the_gate(
+    conn: sqlite3.Connection,
+) -> None:
+    _insert_run(conn)
+    call = _call("discovery")
+    store = SqliteToolCallStore(conn)
+    store.append_tool_call(call, attempt=1)
+    record_artifact(conn, run_id=RUN_ID, artifact=_artifact("discovery"), attempt=1)
+    record_stage_execution(
+        conn, run_id=RUN_ID, execution=_execution("discovery")
+    )
+    evidence = load_run_evidence(conn, run_id=RUN_ID, contract_version="test-v1")
+
+    result = evaluate_stage(
+        _contract(), RUN_ID, "discovery", evidence.stages["discovery"]
+    )
+
+    assert any(v.code.value == "provenance_missing" for v in result.violations)
 
 
 def test_list_tool_calls_filters_by_stage(conn: sqlite3.Connection) -> None:
@@ -337,9 +393,11 @@ def test_writing_a_tool_call_twice_with_different_content_is_refused(
 
 def test_a_stage_round_trips_through_the_database(conn: sqlite3.Connection) -> None:
     _insert_run(conn)
-    call = _call("discovery")
+    call = _call("discovery", result_is_durable=True)
     artifact = _artifact("discovery", content_hash="a" * 64, schema_version="v1")
-    SqliteToolCallStore(conn).append_tool_call(call, attempt=1)
+    SqliteToolCallStore(conn).append_tool_call(
+        call, attempt=1, result_payload={"items": ["doc-1"]}
+    )
     record_artifact(conn, run_id=RUN_ID, artifact=artifact, attempt=1)
     record_stage_execution(conn, run_id=RUN_ID, execution=_execution("discovery"))
 
@@ -742,7 +800,9 @@ def _seed_shipped_run(
     for stage in contract.required_stages:
         calls = _shipped_calls(contract, run_id, stage)
         for call in calls:
-            SqliteToolCallStore(conn).append_tool_call(call, attempt=1)
+            SqliteToolCallStore(conn).append_tool_call(
+                call, attempt=1, result_payload={"results": [call.result_ref]}
+            )
         for artifact in _shipped_artifacts(contract, run_id, stage, calls):
             record_artifact(conn, run_id=run_id, artifact=artifact, attempt=1)
         status = (
@@ -915,7 +975,9 @@ def test_the_round_trip_verdict_matches_the_in_memory_verdict(
     expected = evaluate_stage(contract, RUN_ID, "discovery", in_memory)
 
     _insert_run(conn)
-    SqliteToolCallStore(conn).append_tool_call(call, attempt=1)
+    SqliteToolCallStore(conn).append_tool_call(
+        call, attempt=1, result_payload={"documents": ["doc-1"]}
+    )
     record_artifact(conn, run_id=RUN_ID, artifact=artifact, attempt=1)
     record_stage_execution(conn, run_id=RUN_ID, execution=execution)
     evidence = load_run_evidence(
