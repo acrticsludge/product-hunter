@@ -33,7 +33,14 @@ from product_hunter.research.budget import BudgetTracker
 from product_hunter.research.contract import load_research_contract
 from product_hunter.sources import AllowedUse, SourceBlocked, load_registry
 
-from product_hunter.config import ExtractionConfig, load_config, repo_root
+from product_hunter.config import (
+    ExtractionConfig,
+    load_clustering_config,
+    load_config,
+    load_semantic_config,
+    repo_root,
+)
+from product_hunter.independence.policy import load_independence_policy
 from product_hunter.extraction import Document, extract_documents
 from product_hunter.clustering.problems import PainPoint as ClusterPainPoint
 from product_hunter.db.clustering import ClusterStore
@@ -69,6 +76,10 @@ def _github_search(query: str, *, limit: int = 10) -> list[dict[str, Any]]:
         resp.raise_for_status()
         data = resp.json()
     return data.get("items", [])
+
+
+def _web_search(query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+    return []
 
 
 def _ensure_source(conn: sqlite3.Connection, source_id: str) -> None:
@@ -142,6 +153,10 @@ _SEARCHERS = {
     "hn_algolia": _hn_search,
     "github_issues": _github_search,
 }
+
+
+def _web_search(query: str, *, limit: int = 20) -> list[dict[str, Any]]:
+    return _hn_search(query, limit=limit)
 
 
 def _normalize_hit(source_id: str, hit: dict[str, Any]) -> tuple[str, str, str, str]:
