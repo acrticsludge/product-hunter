@@ -1,0 +1,13 @@
+{
+  "dataset_version": "evidence-scenarios-v1",
+  "created_at": "2026-10-23",
+  "description": "Deterministic evidence-pipeline scenario cases. No fabricated scores; expected blocks are null until human-labelled.",
+  "cases": [
+    {"case_id": "genuine_pain", "task": "pain_extraction", "case_version": 1, "input": {"text": "Every month I export invoices to CSV and paste totals into a spreadsheet by hand, which takes a whole Saturday.", "doc_id": "doc_evidence_01"}, "expected": null},
+    {"case_id": "feature_request", "task": "pain_extraction", "case_version": 1, "input": {"text": "It would be great if the export had a filter for unpaid invoices.", "doc_id": "doc_evidence_02"}, "expected": null},
+    {"case_id": "question", "task": "pain_extraction", "case_version": 1, "input": {"text": "Is there a way to reconcile the payments automatically?", "doc_id": "doc_evidence_03"}, "expected": null},
+    {"case_id": "negativity_no_problem", "task": "pain_extraction", "case_version": 1, "input": {"text": "None of these apps are any good.", "doc_id": "doc_evidence_04"}, "expected": null},
+    {"case_id": "informational", "task": "pain_extraction", "case_version": 1, "input": {"text": "The vendor portal posts a PDF statement on the first of the month.", "doc_id": "doc_evidence_05"}, "expected": null},
+    {"case_id": "incidental", "task": "pain_extraction", "case_version": 1, "input": {"text": "The cafe downstairs is closed for renovation this week.", "doc_id": "doc_evidence_06"}, "expected": null}
+  ]
+}
