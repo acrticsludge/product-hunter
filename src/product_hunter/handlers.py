@@ -311,6 +311,7 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
     docs_count = 0
     executed = 0
     max_queries = 12
+    tool_calls: list = []
     pending = frontier.next_queries(max_queries)
     for q in pending:
         if frontier.saturation().saturated:
@@ -440,6 +441,31 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
         except Exception:
             pass
 
+        # Record tool-call provenance.
+        try:
+            from product_hunter.research.evidence import ToolCallProvenance, ToolCallStatus
+            from product_hunter.db.research_gate import SqliteToolCallStore
+            import datetime as _dt
+
+            tc_status = ToolCallStatus.success if status not in (DiscoveryStatus.failure, DiscoveryStatus.timeout) else (
+                ToolCallStatus.failure if status == DiscoveryStatus.failure else ToolCallStatus.timeout
+            )
+            tc = ToolCallProvenance(
+                run_id=run_id,
+                stage="DISCOVERY",
+                agent="worker",
+                tool="search",
+                purpose="discovery search",
+                timestamp=_dt.datetime.now(_dt.timezone.utc),
+                query_or_operation=str(q.text),
+                result_ref=str(fetch_id) if fetch_id else "missing",
+                result_count=len(result_ids),
+                status=tc_status,
+            )
+            tool_calls.append(tc)
+        except Exception:
+            pass
+
         executed += 1
         try:
             save_frontier(conn, run_id, frontier)
@@ -451,6 +477,18 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
             time.sleep(min(src.rate_limit.min_interval_seconds, 0.05))
         except Exception:
             pass
+
+    # Persist tool-call provenance.
+    try:
+        from product_hunter.db.research_gate import SqliteToolCallStore
+        store = SqliteToolCallStore(conn)
+        for tc in tool_calls:
+            try:
+                store.append_tool_call(tc, attempt=1, source_id=None, worker_id=context.worker_id, lease_epoch=job.lease_epoch)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     _enqueue_next(conn, job, "COLLECTION")
     return {"discovered": docs_count, "queries": executed, "sources": active_sources}
