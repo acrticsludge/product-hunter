@@ -70,3 +70,6 @@ Discovery handler now records ToolCallProvenance for each search query via Sqlit
 
 ## S7C final adversarial pass
 Bypass audit: promote_run called in db/worker.py (production) and research/promotion.py (single entry point); handlers.py calls require_promotable in terminal stage. No other production promotion paths found. Full pytest run completed (no failures observed in output). 25+ deliberate violation tests not added this session. S7 remains NOT READY.
+
+## S7D update
+Competitor + counter-evidence handlers now fence tool_call writes with worker_id/lease_epoch (was None/None). Commit 4ed279e. Discovery already fenced.
