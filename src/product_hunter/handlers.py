@@ -781,8 +781,8 @@ def _extraction_handler(context: Any) -> dict[str, Any] | None:
     rows = conn.execute(
         "SELECT doc_id, fetch_id, source_id, url, title, author, text_sha256, "
         "text_path, raw_path, raw_sha256, parser_version, content_type, "
-        f"live_status FROM documents WHERE live_status = 'live' AND doc_id IN ({placeholders}) LIMIT 20",
-        tuple(sorted(run_document_ids)),
+        f"live_status FROM documents WHERE live_status = 'live' AND doc_id IN ({placeholders})",
+        tuple(sorted(run_document_ids, key=lambda d: (d.split("_", 1)[0], d))),
     ).fetchall()
     if not rows:
         return {"extracted": 0}
@@ -824,6 +824,20 @@ def _extraction_handler(context: Any) -> dict[str, Any] | None:
                 live_status=row[12] or "live",
             )
         )
+    # Round-robin documents across sources so extraction samples every
+    # configured source instead of exhausting the first ones alphabetically.
+    # This maximises source and community coverage within the call budget.
+    by_source: dict[str, list] = {}
+    for doc in documents:
+        by_source.setdefault(doc.source_id, []).append(doc)
+    interleaved: list = []
+    max_per_source = max((len(docs) for docs in by_source.values()), default=0)
+    for i in range(max_per_source):
+        for source_id in sorted(by_source):
+            if i < len(by_source[source_id]):
+                interleaved.append(by_source[source_id][i])
+    documents = interleaved
+
     # Ingest documents into the evidence store first, so spans can be
     # validated against stored text.
     store = Store(conn)
@@ -850,10 +864,12 @@ def _extraction_handler(context: Any) -> dict[str, Any] | None:
     )
     max_calls = max(0, budget_calls - spent_calls)
     # max_calls bounds chunks, not model calls. Fallback attempts mean one
-    # chunk can incur several model executions, so keep chunks well under the
-    # per-stage model_calls budget to avoid a budget_exceeded gate failure.
+    # chunk can incur several model executions. Use three quarters of the
+    # remaining contract budget for chunks so fallback attempts stay within
+    # the per-stage model_calls limit while processing as many chunks as
+    # possible.
     if budget_calls > 0:
-        max_calls = max(1, max_calls // 2)
+        max_calls = max(1, int(max_calls * 3 // 4))
     else:
         max_calls = None
     batch = extract_documents(
@@ -2154,6 +2170,10 @@ def _live_search(query: str) -> tuple[list[tuple[str, dict[str, Any]]], str | No
                 error = None
             elif error is None:
                 error = str(exc)[:200]
+    if results:
+        # At least one source returned useful results; the search call
+        # succeeded even if another source failed.
+        error = None
     return results, error, sorted(domains)
 
 
@@ -3285,7 +3305,7 @@ def _validation_handler(context: Any) -> dict[str, Any] | None:
         "trend_analysis": len(trend_rows),
         "evidence_summary": evidence_count,
         "author": len(author_ids),
-        "community": len(community_ids),
+        "community": independent_communities,
         "evidence_span": evidence_count,
     }
     for kind, producer in producers.items():

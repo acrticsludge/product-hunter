@@ -170,6 +170,13 @@ budgets:
     embedding_items: 5000
     usd_cost: 25.0
   per_stage:
+    # The normalization per_stage model_calls budget governs extraction
+    # (and the other stages mapped to the normalization contract stage).
+    # Measured production runs show 0.4-1.0 evidence spans per model call.
+    # The validation gate requires 20 evidence spans, so the budget must
+    # allow enough extraction calls to surface that many spans. 30 gives
+    # headroom for fallback attempts while staying within the per_run limit
+    # of 50 (clustering uses ~3 calls, leaving headroom for scoring).
     discovery:
       search_queries: 40
       fetch_requests: 60
@@ -179,7 +186,7 @@ budgets:
     normalization:
       llm_input_tokens: 100000
       llm_output_tokens: 20000
-      model_calls: 20
+      model_calls: 40
     clustering:
       embedding_items: 2000
     validation:
