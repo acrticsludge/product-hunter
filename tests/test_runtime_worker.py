@@ -8,7 +8,7 @@ import sqlite3
 import sys
 import threading
 import types
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -25,6 +25,10 @@ from product_hunter.runtime.worker import (
     RetryPolicy,
     WorkerRuntime,
     install_shutdown_handlers,
+)
+from product_hunter.research.contract import (
+    contract_fingerprint as fingerprint_of_contract,
+    load_research_contract,
 )
 
 
@@ -1015,5 +1019,133 @@ def test_the_watchdog_leaves_a_worker_that_finishes_in_time(monkeypatch) -> None
         runtime_entry.watch_shutdown(runtime, finished, JsonlEventSink(stream))
         assert exits == []
         assert "shutdown_timeout" not in _names(stream)
+    finally:
+        store.close()
+
+
+def _seed_run(store: Store, run_id: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    store.conn.execute(
+        "INSERT INTO research_runs (run_id, public_id, objective, original_request, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (run_id, run_id, "test", "", "running", now, now),
+    )
+    store.conn.commit()
+
+
+def test_a_mapped_stage_persists_a_failing_gate_verdict_and_still_succeeds() -> None:
+    store = Store.open(":memory:")
+    try:
+        _seed_run(store, "run-gate-1")
+        job = enqueue_job(
+            store.conn,
+            stage="DISCOVERY",
+            idempotency_key="gate-1",
+            run_id="run-gate-1",
+        )
+        runtime, _ = _runtime(store, {"DISCOVERY": lambda _context: {"ok": True}})
+        outcome = runtime.run_once()
+        assert outcome is not None
+        assert outcome.status == "succeeded"
+        assert outcome.result["stage_gate"]["passed"] is False
+        rows = store.conn.execute(
+            "SELECT count(*) FROM stage_gate_results WHERE run_id = ? AND stage = 'discovery'",
+            ("run-gate-1",),
+        ).fetchone()
+        assert rows[0] == 1
+        fingerprint = store.conn.execute(
+            "SELECT contract_fingerprint FROM stage_gate_results WHERE run_id = ? AND stage = 'discovery'",
+            ("run-gate-1",),
+        ).fetchone()[0]
+        assert fingerprint == fingerprint_of_contract(load_research_contract())
+    finally:
+        store.close()
+
+
+def test_a_stage_without_a_contract_stage_writes_no_gate_row() -> None:
+    store = Store.open(":memory:")
+    try:
+        _seed_run(store, "run-nogate")
+        for stage, key in (("WRITE", "nogate-write"), ("EMBEDDING", "nogate-embed")):
+            enqueue_job(
+                store.conn, stage=stage, idempotency_key=key, run_id="run-nogate"
+            )
+            runtime, _ = _runtime(store, {stage: lambda _context: {"ok": True}})
+            outcome = runtime.run_once()
+            assert outcome is not None
+            assert outcome.status == "succeeded"
+            assert outcome.result == {"ok": True}
+        rows = store.conn.execute(
+            "SELECT count(*) FROM stage_gate_results WHERE run_id = 'run-nogate'"
+        ).fetchone()[0]
+        assert rows == 0
+    finally:
+        store.close()
+
+
+def test_a_job_without_a_run_id_writes_no_gate_row() -> None:
+    store = Store.open(":memory:")
+    try:
+        job = enqueue_job(
+            store.conn, stage="DISCOVERY", idempotency_key="norun-1", run_id=None
+        )
+        runtime, _ = _runtime(store, {"DISCOVERY": lambda _context: {"ok": True}})
+        outcome = runtime.run_once()
+        assert outcome is not None
+        assert outcome.status == "succeeded"
+        rows = store.conn.execute("SELECT count(*) FROM stage_gate_results").fetchone()[0]
+        assert rows == 0
+    finally:
+        store.close()
+
+
+def test_a_gate_that_raises_fails_the_job(monkeypatch) -> None:
+    store = Store.open(":memory:")
+    try:
+        _seed_run(store, "run-gate-boom")
+        job = enqueue_job(
+            store.conn,
+            stage="DISCOVERY",
+            idempotency_key="gateboom-1",
+            run_id="run-gate-boom",
+        )
+        monkeypatch.setattr(
+            worker_module,
+            "load_run_evidence",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                RuntimeError("gate exploded")
+            ),
+        )
+        runtime, _ = _runtime(store, {"DISCOVERY": lambda _context: {"ok": True}})
+        outcome = runtime.run_once()
+        assert outcome is not None
+        assert outcome.status == "failed"
+        current = get_job(store.conn, job.id)
+        assert current is not None
+        assert current.last_error is not None
+        assert "gate exploded" in current.last_error
+        rows = store.conn.execute(
+            "SELECT count(*) FROM stage_gate_results WHERE run_id = 'run-gate-boom'"
+        ).fetchone()[0]
+        assert rows == 0
+    finally:
+        store.close()
+
+
+def test_a_none_result_with_a_mapped_stage_still_gets_stage_gate() -> None:
+    store = Store.open(":memory:")
+    try:
+        _seed_run(store, "run-none-1")
+        job = enqueue_job(
+            store.conn,
+            stage="DISCOVERY",
+            idempotency_key="none-1",
+            run_id="run-none-1",
+        )
+        runtime, _ = _runtime(store, {"DISCOVERY": lambda _context: None})
+        outcome = runtime.run_once()
+        assert outcome is not None
+        assert outcome.status == "succeeded"
+        assert "stage_gate" in outcome.result
+        assert outcome.result["stage_gate"]["passed"] is False
     finally:
         store.close()

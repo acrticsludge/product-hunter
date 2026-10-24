@@ -24,7 +24,10 @@ embeddings = [
 ph = "product_hunter.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=9.1,<10"]
+dev = [
+    "pytest>=9.1,<10",
+    "pytest-xdist>=3.8.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.9.4,<0.14"]

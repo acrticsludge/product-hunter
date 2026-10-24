@@ -8,6 +8,7 @@ writes a job whose lease it no longer holds.
 
 from __future__ import annotations
 
+import functools
 import importlib
 import signal
 import sqlite3
@@ -37,7 +38,9 @@ from product_hunter.db.jobs import (
     recover_expired_leases,
     renew_lease,
 )
+from product_hunter.db.research_gate import evaluate_stage_gate, load_run_evidence
 from product_hunter.fetch import utcnow
+from product_hunter.research.contract import ResearchContract, load_research_contract
 from product_hunter.runtime.events import EventSink, JsonlEventSink, WorkerEvent
 from product_hunter.runtime.identity import WorkerIdentity
 
@@ -66,6 +69,16 @@ class RetryPolicy:
         """The backoff in whole seconds for the given attempt number."""
         delay = self.base_seconds * (self.multiplier ** (attempt - 1))
         return int(min(delay, self.max_seconds))
+
+
+@functools.lru_cache(maxsize=1)
+def _research_contract() -> ResearchContract:
+    """Load the research contract once per process.
+
+    One YAML read is enough; the gate step runs for every gated job, so the
+    contract is cached instead of re-read per job.
+    """
+    return load_research_contract()
 
 
 class WorkerRuntime:
@@ -197,6 +210,12 @@ class WorkerRuntime:
         if not self._stop_heartbeat() or self._heartbeat_lost.is_set():
             return self._lease_lost(job)
         try:
+            result = self._evaluate_stage_gate(job, result)
+        except LeaseLost as exc:
+            return self._lease_lost(job, error=_safe_error(exc))
+        except Exception as exc:
+            return self._record_failure(job, _safe_error(exc))
+        try:
             completed = with_busy_retry(
                 lambda: complete_job(
                     self.conn,
@@ -231,6 +250,48 @@ class WorkerRuntime:
             duration_ms=_duration_ms(started, self.clock()),
         )
         return JobOutcome(job.id, "succeeded", result=completed.result)
+
+    def _evaluate_stage_gate(
+        self, job: Job, result: dict[str, object] | None
+    ) -> dict[str, object] | None:
+        """Evaluate and persist the stage gate for a completed job.
+
+        Returns the job result with ``stage_gate`` merged in, or the unchanged
+        result when the stage has no contract gate. A gate that cannot be
+        computed raises, so the caller routes it to the failure path.
+        """
+        from product_hunter.handlers import gate_stage_for
+
+        if job.run_id is None:
+            return result
+        contract_stage = gate_stage_for(job.stage)
+        if contract_stage is None:
+            return result
+        contract = _research_contract()
+        evidence = load_run_evidence(
+            self.conn,
+            run_id=job.run_id,
+            contract_version=contract.contract_version,
+        )
+        gate_result = evaluate_stage_gate(
+            self.conn,
+            contract,
+            evidence,
+            contract_stage,
+            worker_id=self.identity.worker_id,
+            lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+        )
+        stage_gate = {
+            "stage": contract_stage,
+            "passed": gate_result.passed,
+            "violations": [
+                violation.model_dump(mode="json") for violation in gate_result.violations
+            ],
+        }
+        if result is None:
+            return {"stage_gate": stage_gate}
+        return {**result, "stage_gate": stage_gate}
 
     def run_forever(self, stop_event: Event | None = None) -> None:
         """Claim and run jobs until a stop is requested.

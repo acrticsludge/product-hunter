@@ -12,6 +12,7 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -54,7 +55,12 @@ from product_hunter.independence import (
     resolve_communities,
 )
 from product_hunter.semantic.embeddings import build_embedder
+from product_hunter.llm import build_router, build_generator_for_selection, ModelRole
+from product_hunter.llm.base import ProviderError
 from product_hunter.llm.opencode import OpenCodeGenerateProvider
+from product_hunter.llm.routing import FallbackGenerator, ModelIdentity, SelectionSource
+from product_hunter.config import load_routing_config
+from product_hunter.db.model_routing import ModelExecution, record_model_executions
 from product_hunter.research.stages import StageNotImplemented
 
 
@@ -70,7 +76,7 @@ def _hn_search(query: str, *, limit: int = 20) -> list[dict[str, Any]]:
 
 def _github_search(query: str, *, limit: int = 10) -> list[dict[str, Any]]:
     url = "https://api.github.com/search/issues"
-    params = {"q": query, "per_page": limit}
+    params = {"q": f"{query} is:issue is:open", "per_page": limit}
     headers = {"Accept": "application/vnd.github+json"}
     with httpx.Client(timeout=30.0) as client:
         resp = client.get(url, params=params, headers=headers)
@@ -177,7 +183,7 @@ def _normalize_hit(source_id: str, hit: dict[str, Any]) -> tuple[str, str, str, 
     if source_id == "hn_algolia":
         object_id = str(hit.get("objectID", ""))
         title = hit.get("title") or hit.get("story_title") or ""
-        url = hit.get("url") or f"https://news.ycombinator.com/item?id={object_id}"
+        url = f"https://news.ycombinator.com/item?id={object_id}"
         body = hit.get("comment_text") or ""
         doc_id = f"hn_{object_id}"
         return doc_id, str(url), str(title), str(body)
@@ -201,6 +207,21 @@ def _normalize_hit(source_id: str, hit: dict[str, Any]) -> tuple[str, str, str, 
     url = hit.get("url", "")
     body = hit.get("body", "")
     return f"{source_id}_{hid}", str(url), str(title), str(body)
+
+
+def _collection_url(source_id: str, url: str) -> str:
+    """Map reviewed public result URLs to their reviewed API endpoints."""
+    parsed = urlparse(url)
+    if source_id == "hn_algolia" and parsed.hostname == "news.ycombinator.com":
+        item_id = parse_qs(parsed.query).get("id", [""])[0]
+        if item_id.isdigit():
+            return f"https://hn.algolia.com/api/v1/items/{item_id}"
+    if source_id == "github_issues" and parsed.hostname == "github.com":
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) == 4 and parts[2] == "issues" and parts[3].isdigit():
+            owner, repo, _kind, number = parts
+            return f"https://api.github.com/repos/{owner}/{repo}/issues/{number}"
+    return url
 
 
 def _ensure_fetch(conn: Any, source_id: str, url: str) -> str:
@@ -239,6 +260,104 @@ def _ensure_fetch(conn: Any, source_id: str, url: str) -> str:
     return fetch_id
 
 
+# Job stages run under uppercase names; the contract limits spend per lowercase
+# contract stage. This map translates a job stage to its contract stage so
+# per-stage limits and per-stage gates see the spend they should judge. A job
+# stage with no contract mapping keeps its name: projection spend stays visible
+# under the stage that incurred it instead of being silently attributed to a
+# contract stage that did not.
+_CONTRACT_STAGE = {
+    "DISCOVERY": "discovery",
+    "COLLECTION": "evidence_collection",
+    "NORMALIZATION": "normalization",
+    "DEDUPLICATION": "normalization",
+    "ENTITY_RESOLUTION": "normalization",
+    "PAIN_EXTRACTION": "normalization",
+    "EMBEDDING": "clustering",
+    "CLUSTERING": "clustering",
+    "INDEPENDENCE_ANALYSIS": "validation",
+    "VALIDATION": "validation",
+    "COMPETITOR_RESEARCH": "investigation",
+    "COUNTER_EVIDENCE": "counter_evidence",
+    "SCORING": "scoring",
+}
+
+# The contract stages whose gate a completed job stage may decide. EMBEDDING
+# maps to "clustering" but is excluded: the clustering verdict is not judgeable
+# until CLUSTERING finishes, so EMBEDDING itself carries no gate.
+_GATE_STAGES = frozenset(
+    {
+        "discovery",
+        "evidence_collection",
+        "normalization",
+        "clustering",
+        "validation",
+        "investigation",
+        "counter_evidence",
+        "scoring",
+    }
+)
+
+
+def gate_stage_for(job_stage: str) -> str | None:
+    """The contract stage whose gate this job stage decides, if any.
+
+    Returns None for job stages with no contract mapping, for EMBEDDING, and
+    for stages (REPORTING, OBSIDIAN_SYNC) that never reach a contract gate.
+    """
+    if job_stage == "EMBEDDING":
+        return None
+    contract_stage = _CONTRACT_STAGE.get(job_stage)
+    if contract_stage is None or contract_stage not in _GATE_STAGES:
+        return None
+    return contract_stage
+
+
+def _write_spend_ledger(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    stage: str,
+    tool: str,
+    unit_type: str,
+    units: int,
+    cost_micros: int = 0,
+    provider: str | None = None,
+    model: str | None = None,
+) -> None:
+    """Write one spend_ledger row, idempotent on replay.
+
+    The entry id is derived from the run, stage, tool, unit type and units,
+    so a replay of the same spend lands on the same row and is a no-op. The
+    stage is translated to its contract stage first, so the ledger and the
+    contract speak the same language.
+    """
+    stage = _CONTRACT_STAGE.get(stage, stage)
+    entry_id = "spn_" + hashlib.sha256(
+        f"{run_id}|{stage}|{tool}|{unit_type}|{units}".encode("utf-8")
+    ).hexdigest()[:16]
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO spend_ledger (
+            entry_id, run_id, stage, tool, provider, model,
+            units, unit_type, cost_micros, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            entry_id,
+            run_id,
+            stage,
+            tool,
+            provider,
+            model,
+            units,
+            unit_type,
+            cost_micros,
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+
+
 def _discovery_handler(context: Any) -> dict[str, Any] | None:
     """Run a bounded multi-source discovery pass."""
     conn = context.conn
@@ -266,10 +385,7 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
         seed = "manual workaround problem"
 
     registry = load_registry()
-    try:
-        Store(conn).sync_registry(registry)
-    except Exception:
-        pass
+    Store(conn).sync_registry(registry)
 
     active_sources: list[str] = []
     for source in registry.list():
@@ -302,15 +418,28 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
             clock=lambda: datetime.now(timezone.utc),
         )
 
-    frontier.expand(12)
+    from product_hunter.research.query_plan import plan_for_stage
 
-    for source_id in active_sources:
-        for text in (f"is {seed} a real problem", f"{seed} not worth solving"):
-            try:
-                frontier.propose(text, source_id)
-            except Exception:
-                pass
+    # Use the contract's canonical query families for live discovery. The
+    # older frontier taxonomy still provides admission, deduplication, and
+    # budget accounting for the actual query text.
+    canonical_family_by_text: dict[str, str] = {}
+    planned_count = 0
+    for template in plan_for_stage("discovery"):
+        if planned_count >= 12:
+            break
+        text = template.render(str(seed))
+        source_id = active_sources[planned_count % len(active_sources)]
+        try:
+            query, admitted, _refusal = frontier.propose(text, source_id)
+        except Exception:
+            continue
+        if not admitted:
+            continue
+        canonical_family_by_text[query.text] = template.family
+        planned_count += 1
 
+    run_document_ids: set[str] = set()
     docs_count = 0
     executed = 0
     max_queries = 12
@@ -319,8 +448,6 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
     tool_sources: dict[str, str] = {}
     pending = frontier.next_queries(max_queries)
     for q in pending:
-        if frontier.saturation().saturated:
-            break
         source_id = q.source_id
         search_fn = _SEARCHERS.get(source_id, _web_search)
         url = _search_url(source_id, q.text)
@@ -375,7 +502,8 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
                                 now_ts,
                             ),
                         )
-                        docs_count += 1
+                        run_document_ids.add(doc_id)
+                        docs_count = len(run_document_ids)
                         try:
                             text_dir = repo_root() / "data" / "processed"
                             text_dir.mkdir(parents=True, exist_ok=True)
@@ -469,7 +597,8 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
                 ),
                 result_count=len(result_ids),
                 status=tc_status,
-                query_family=q.family.value,
+                query_family=canonical_family_by_text.get(q.text),
+                source_domains=[urlparse(url).hostname] if urlparse(url).hostname else [],
                 tool_call_id=(
                     "tc_" + hashlib.sha256(
                         f"{run_id}|{source_id}|{q.text}|{job.attempts}".encode("utf-8")
@@ -569,6 +698,38 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
             lease_stage=job.stage,
         )
 
+    # Record spend for discovery search queries and cost.
+    if executed > 0:
+        _write_spend_ledger(
+            conn,
+            run_id=run_id,
+            stage="DISCOVERY",
+            tool="search",
+            unit_type="search_queries",
+            units=executed,
+        )
+    # Explicit measured-zero declaration: discovery fetches documents, but its
+    # fetch requests are measured from tool_calls, so fetch_requests is
+    # declared here even when this stage ran none.
+    _write_spend_ledger(
+        conn,
+        run_id=run_id,
+        stage="DISCOVERY",
+        tool="search",
+        unit_type="fetch_requests",
+        units=0,
+        cost_micros=0,
+    )
+    _write_spend_ledger(
+        conn,
+        run_id=run_id,
+        stage="DISCOVERY",
+        tool="search",
+        unit_type="usd_cost",
+        units=0,
+        cost_micros=0,
+    )
+
     _enqueue_next(conn, job, "COLLECTION")
     return {"discovered": docs_count, "queries": executed, "sources": active_sources}
 def _extraction_handler(context: Any) -> dict[str, Any] | None:
@@ -581,16 +742,47 @@ def _extraction_handler(context: Any) -> dict[str, Any] | None:
     dropped.
     """
     conn = context.conn
+    job = context.job
+    run_id = job.run_id
+    # Route the extraction role through the dynamic model router.
+    # The model pinned in extraction.yaml is only a fallback when the router
+    # cannot answer; it is never hard-coded into business logic.
+    config = load_config()
+    generator = None
+    selection = None
+    routing_failure = None
     try:
-        config = load_config()
+        routing = load_routing_config()
+        router = build_router(routing, config)
+        selection = router.select(ModelRole.extraction)
+        generator = FallbackGenerator(
+            router,
+            ModelRole.extraction,
+            lambda chosen: build_generator_for_selection(config, chosen),
+        )
+        # Fail fast if no candidate can answer.
+        try:
+            generator.check()
+        except ProviderError as exc:
+            generator = None
+            routing_failure = f"provider check failed: {exc}"
+    except (OSError, ValueError, ProviderError) as exc:
+        routing_failure = f"{type(exc).__name__}: {exc}"
+        # The router could not answer: the model pinned in the extraction
+        # config runs the extraction, and the failure is recorded. If that
+        # provider also cannot answer, the exception propagates and the job
+        # fails instead of succeeding with zero extracted.
         generator = OpenCodeGenerateProvider(config)
-    except Exception:
-        return {"extracted": 0, "error": "no model available"}
     # Read documents
+    run_document_ids = _discovered_document_ids(conn, context.job.run_id)
+    if not run_document_ids:
+        return {"extracted": 0}
+    placeholders = ",".join("?" for _ in run_document_ids)
     rows = conn.execute(
         "SELECT doc_id, fetch_id, source_id, url, title, author, text_sha256, "
         "text_path, raw_path, raw_sha256, parser_version, content_type, "
-        "live_status FROM documents WHERE live_status = 'live' LIMIT 20"
+        f"live_status FROM documents WHERE live_status = 'live' AND doc_id IN ({placeholders}) LIMIT 20",
+        tuple(sorted(run_document_ids)),
     ).fetchall()
     if not rows:
         return {"extracted": 0}
@@ -598,38 +790,196 @@ def _extraction_handler(context: Any) -> dict[str, Any] | None:
     from product_hunter.evidence import EvidencePipeline, EvidenceRejected
     from product_hunter.db import Store
 
-    documents = [
-        Document(
-            doc_id=r[0],
-            fetch_id=r[1],
-            source_id=r[2],
-            url=r[3],
-            title=r[4],
-            author=r[5],
-            text=r[4] or "",
-            text_sha256=r[6],
-            text_path=r[7],
-            raw_path=r[8],
-            raw_sha256=r[9],
-            parser_version=r[10] or "v1",
-            content_type=r[11] or "text/html",
-            live_status=r[12] or "live",
+    root = repo_root().resolve()
+    documents = []
+    for row in rows:
+        raw_text_path = Path(row[7]) if row[7] else None
+        if raw_text_path is None:
+            continue
+        text_path = raw_text_path if raw_text_path.is_absolute() else root / raw_text_path
+        try:
+            resolved_text_path = text_path.resolve(strict=True)
+            if not resolved_text_path.is_relative_to(root):
+                continue
+            text = resolved_text_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError, ValueError):
+            continue
+        if not text.strip():
+            continue
+        documents.append(
+            Document(
+                doc_id=row[0],
+                fetch_id=row[1],
+                source_id=row[2],
+                url=row[3],
+                title=row[4],
+                author=row[5],
+                text=text,
+                text_sha256=row[6],
+                text_path=str(row[7]),
+                raw_path=row[8],
+                raw_sha256=row[9],
+                parser_version=row[10] or "v1",
+                content_type=row[11] or "text/html",
+                live_status=row[12] or "live",
+            )
         )
-        for r in rows
-    ]
     # Ingest documents into the evidence store first, so spans can be
     # validated against stored text.
     store = Store(conn)
     pipeline = EvidencePipeline(store, repo_root=repo_root())
     for doc in documents:
-        try:
-            pipeline.ingest_document(doc)
-        except Exception:
-            pass
+        pipeline.ingest_document(doc)
+    # The extraction stage draws on the contract's per-stage model_calls
+    # budget for its contract stage, minus whatever this run already spent.
+    contract_stage = _CONTRACT_STAGE["PAIN_EXTRACTION"]
     try:
-        batch = extract_documents(documents, generator, config, max_documents=20, max_calls=5)
-    except Exception as e:
-        return {"extracted": 0, "error": str(e)[:200]}
+        contract = load_research_contract()
+        stage_budget = contract.budgets.per_stage.get(contract_stage, {})
+        budget_calls = int(stage_budget.get("model_calls", 0) or 0)
+    except Exception:
+        # The contract is the source of truth; fall back to the extraction
+        # config's own call cap only when it cannot be read.
+        budget_calls = int(config.limits.max_calls)
+    spent_calls = int(
+        conn.execute(
+            "SELECT count(*) FROM model_executions WHERE run_id = ? AND stage = ?",
+            (run_id, contract_stage),
+        ).fetchone()[0]
+        or 0
+    )
+    max_calls = max(0, budget_calls - spent_calls)
+    batch = extract_documents(
+        documents,
+        generator,
+        config,
+        max_documents=config.limits.max_documents,
+        max_calls=max_calls,
+    )
+    # Record model executions with full provenance: which provider/model was
+    # selected, whether it was a fallback, the catalog version, latency,
+    # success/failure, and the run/stage that produced it.
+    model_executions: list[ModelExecution] = []
+    if selection is not None and generator is not None:
+        # One row per provider call (fallback attempts included).
+        for index, attempt in enumerate(generator.attempts):
+            identity = attempt.selection.identity
+            model_executions.append(
+                ModelExecution(
+                    execution_id=(
+                        "exec_"
+                        + hashlib.sha256(
+                            f"{run_id}|{index}|{identity.provider_id}|{identity.model_id}".encode(
+                                "utf-8"
+                            )
+                        ).hexdigest()[:16]
+                    ),
+                    run_id=run_id,
+                    stage=_CONTRACT_STAGE["PAIN_EXTRACTION"],
+                    role=attempt.selection.role,
+                    provider_id=identity.provider_id,
+                    model_id=identity.model_id,
+                    selection_source=attempt.selection.selection_source,
+                    fallback_index=attempt.selection.fallback_index,
+                    is_fallback=attempt.selection.is_fallback,
+                    catalog_version=attempt.selection.catalog_version,
+                    prompt_version=config.prompt_version,
+                    config_version=routing.config_version,
+                    latency_ms=attempt.latency_ms,
+                    status="ok" if attempt.ok else "error",
+                    error=attempt.error,
+                    created_at=attempt.created_at,
+                )
+            )
+    elif selection is None and generator is not None:
+        # Router failed: the pinned model ran. One row per call.
+        for call in getattr(batch, "calls", []):
+            model_executions.append(
+                ModelExecution(
+                    execution_id=(
+                        "exec_"
+                        + hashlib.sha256(
+                            f"{run_id}|{call.call_id}".encode("utf-8")
+                        ).hexdigest()[:16]
+                    ),
+                    run_id=run_id,
+                    stage=_CONTRACT_STAGE["PAIN_EXTRACTION"],
+                    role=ModelRole.extraction,
+                    provider_id=call.provider,
+                    model_id=call.model,
+                    selection_source=SelectionSource.default,
+                    fallback_index=0,
+                    is_fallback=False,
+                    catalog_version="",
+                    prompt_version=call.prompt_version,
+                    config_version="",
+                    latency_ms=call.latency_ms,
+                    status="ok" if call.status == "ok" else "error",
+                    error=call.error,
+                    created_at=call.created_at,
+                )
+            )
+    if model_executions:
+        record_model_executions(conn, model_executions)
+    # Record spend for the LLM dimensions the extraction incurred.
+    # input_chars is a character count; approximate tokens at 4 chars/token.
+    input_tokens = 0
+    if selection is not None and generator is not None:
+        for call in getattr(batch, "calls", []):
+            input_tokens += int(call.input_chars)
+    elif selection is None and generator is not None:
+        for call in getattr(batch, "calls", []):
+            input_tokens += int(call.input_chars)
+    if input_tokens > 0:
+        _write_spend_ledger(
+            conn,
+            run_id=run_id,
+            stage="PAIN_EXTRACTION",
+            tool="llm",
+            unit_type="llm_input_tokens",
+            units=input_tokens // 4,
+            provider=(selection.identity.provider_id if selection else None),
+            model=(selection.identity.model_id if selection else None),
+        )
+    # Output tokens are not directly reported by the provider; record the
+    # dimension as measured (zero units) rather than unmeasured.
+    _write_spend_ledger(
+        conn,
+        run_id=run_id,
+        stage="PAIN_EXTRACTION",
+        tool="llm",
+        unit_type="llm_output_tokens",
+        units=0,
+        provider=(selection.identity.provider_id if selection else None),
+        model=(selection.identity.model_id if selection else None),
+    )
+    # Cost is not directly reported by the provider; record the dimension as
+    # measured (zero micros) rather than unmeasured.
+    _write_spend_ledger(
+        conn,
+        run_id=run_id,
+        stage="PAIN_EXTRACTION",
+        tool="llm",
+        unit_type="usd_cost",
+        units=0,
+        cost_micros=0,
+        provider=(selection.identity.provider_id if selection else None),
+        model=(selection.identity.model_id if selection else None),
+    )
+    # Explicit measured-zero declaration: the real model call count is
+    # measured from model_executions, so model_calls is declared here even
+    # when this stage made no calls.
+    _write_spend_ledger(
+        conn,
+        run_id=run_id,
+        stage="PAIN_EXTRACTION",
+        tool="llm",
+        unit_type="model_calls",
+        units=0,
+        cost_micros=0,
+        provider=(selection.identity.provider_id if selection else None),
+        model=(selection.identity.model_id if selection else None),
+    )
     # Record candidates through the evidence pipeline, providing document
     # text in memory so the hash check uses the captured text.
     text_by_doc = {d.doc_id: d.text for d in documents}
@@ -660,25 +1010,25 @@ def _extraction_handler(context: Any) -> dict[str, Any] | None:
                 continue
             # Only genuine pain points become claims.
             # (weak/not_pain candidates are still stored as spans.)
-            try:
-                claim = ResearchClaim(
-                    claim_id=f"claim_{pain_id}",
-                    kind=ClaimKind.problem_exists,
-                    statement=f"Pain point {pain_id} observed in document",
-                    stage="PAIN_EXTRACTION",
-                    evidence_refs=[span_id],
-                )
-                record_claim(conn, run_id=run_id, claim=claim)
-                claim_count += 1
-            except Exception:
-                pass
+            claim = ResearchClaim(
+                claim_id=f"claim_{pain_id}",
+                kind=ClaimKind.problem_exists,
+                statement=f"Pain point {pain_id} observed in document",
+                stage="PAIN_EXTRACTION",
+                evidence_refs=[span_id],
+            )
+            record_claim(conn, run_id=run_id, claim=claim)
+            claim_count += 1
     conn.commit()
     _enqueue_next(conn, context.job, "EMBEDDING")
-    return {
+    result: dict[str, object] = {
         "extracted": recorded,
         "rejected": rejected_count,
         "claims": claim_count,
     }
+    if routing_failure is not None:
+        result["routing_failure"] = routing_failure
+    return result
 
 
 def _entity_resolution_handler(context: Any) -> dict[str, Any] | None:
@@ -758,6 +1108,32 @@ def _embedding_handler(context: Any) -> dict[str, Any] | None:
     index = SemanticIndex(conn, adapter, provider, config=config)
     report = index.sync()
     space = index.space
+    # Record spend for embedding dimensions.
+    embedded_count = int(getattr(report, "indexed", 0)) + int(
+        getattr(report, "unchanged", 0)
+    )
+    if embedded_count > 0:
+        _write_spend_ledger(
+            conn,
+            run_id=job.run_id,
+            stage="EMBEDDING",
+            tool="embedding",
+            unit_type="embedding_items",
+            units=embedded_count,
+            provider=space.provider,
+            model=space.model,
+        )
+    _write_spend_ledger(
+        conn,
+        run_id=job.run_id,
+        stage="EMBEDDING",
+        tool="embedding",
+        unit_type="usd_cost",
+        units=0,
+        cost_micros=0,
+        provider=space.provider,
+        model=space.model,
+    )
     _enqueue_next(conn, job, "CLUSTERING")
     return {
         "embedded": True,
@@ -777,14 +1153,17 @@ def _clustering_handler(context: Any) -> dict[str, Any] | None:
     conn = context.conn
     job = context.job
     stage_started = datetime.now(timezone.utc)
-    rows = conn.execute(
-        "SELECT pain_id, doc_id, span_id, domain, actor, action, "
-        "object, consequence, pain_statement, normalized_key, normalization_version, "
-        "severity, frequency FROM pain_points"
-    ).fetchall()
-    if not rows:
-        _enqueue_next(conn, job, "INDEPENDENCE_ANALYSIS")
-        return {"clusters": 0, "pain_points": 0}
+    run_document_ids = _discovered_document_ids(conn, job.run_id)
+    if run_document_ids:
+        placeholders = ",".join("?" for _ in run_document_ids)
+        rows = conn.execute(
+            "SELECT pain_id, doc_id, span_id, domain, actor, action, "
+            "object, consequence, pain_statement, normalized_key, normalization_version, "
+            f"severity, frequency FROM pain_points WHERE doc_id IN ({placeholders})",
+            tuple(sorted(run_document_ids)),
+        ).fetchall()
+    else:
+        rows = []
     import product_hunter.normalization as norm
     pain_points = []
     for row in rows:
@@ -817,13 +1196,135 @@ def _clustering_handler(context: Any) -> dict[str, Any] | None:
                 normalization_version=norm_version,
             )
         )
+    run_id = job.run_id
+    config = load_config()
     semantic_config = load_semantic_config()
     embedder = build_embedder(semantic_config, root=repo_root())
     clustering_config = load_clustering_config()
+
+    # Route the clustering role through the dynamic model router for the
+    # adjudicator. A failed route leaves adjudicator=None: the engine then
+    # holds the pair and never merges on a model verdict it cannot reach.
+    adjudicator = None
+    routing_failure = None
+    routing = None
+    selection = None
+    generator = None
+    try:
+        from product_hunter.clustering.adjudication import LlmAdjudicator
+
+        routing = load_routing_config()
+        router = build_router(routing, config)
+        selection = router.select(ModelRole.clustering)
+        generator = FallbackGenerator(
+            router,
+            ModelRole.clustering,
+            lambda chosen: build_generator_for_selection(config, chosen),
+        )
+        generator.check()
+        adjudicator = LlmAdjudicator(
+            generator,
+            prompt_version=clustering_config.prompt_version,
+            config_version=f"clustering-v{clustering_config.version}",
+        )
+    except (OSError, ValueError, ProviderError) as exc:
+        routing_failure = f"{type(exc).__name__}: {exc}"
+
     import product_hunter.clustering.engine as ce
-    engine = ce.ClusteringEngine(embedder, clustering_config, adjudicator=None)
+    engine = ce.ClusteringEngine(embedder, clustering_config, adjudicator=adjudicator)
     result = engine.cluster(pain_points)
-    run_id = job.run_id
+    # Record the adjudicator's model executions with full provenance, exactly
+    # like extraction: one row per provider call the adjudicator made.
+    model_executions: list[ModelExecution] = []
+    if selection is not None and generator is not None:
+        for index, attempt in enumerate(generator.attempts):
+            identity = attempt.selection.identity
+            model_executions.append(
+                ModelExecution(
+                    execution_id=(
+                        "exec_"
+                        + hashlib.sha256(
+                            f"{run_id}|{index}|{identity.provider_id}|{identity.model_id}".encode(
+                                "utf-8"
+                            )
+                        ).hexdigest()[:16]
+                    ),
+                    run_id=run_id,
+                    stage=_CONTRACT_STAGE["CLUSTERING"],
+                    role=attempt.selection.role,
+                    provider_id=identity.provider_id,
+                    model_id=identity.model_id,
+                    selection_source=attempt.selection.selection_source,
+                    fallback_index=attempt.selection.fallback_index,
+                    is_fallback=attempt.selection.is_fallback,
+                    catalog_version=attempt.selection.catalog_version,
+                    prompt_version=clustering_config.prompt_version,
+                    config_version=routing.config_version,
+                    latency_ms=attempt.latency_ms,
+                    status="ok" if attempt.ok else "error",
+                    error=attempt.error,
+                    created_at=attempt.created_at,
+                )
+            )
+    if model_executions:
+        try:
+            record_model_executions(conn, model_executions)
+        except Exception:
+            # Provenance recording must never fail the clustering run.
+            pass
+    # Record spend for the LLM dimensions the adjudicator incurred. The
+    # provider does not report input/output tokens, so they are declared as
+    # measured-zero rather than left unmeasured.
+    if selection is not None:
+        provider_id = selection.identity.provider_id
+        model_id = selection.identity.model_id
+    else:
+        provider_id = None
+        model_id = None
+    _write_spend_ledger(
+        conn,
+        run_id=run_id,
+        stage="CLUSTERING",
+        tool="llm",
+        unit_type="llm_input_tokens",
+        units=0,
+        provider=provider_id,
+        model=model_id,
+    )
+    _write_spend_ledger(
+        conn,
+        run_id=run_id,
+        stage="CLUSTERING",
+        tool="llm",
+        unit_type="llm_output_tokens",
+        units=0,
+        provider=provider_id,
+        model=model_id,
+    )
+    _write_spend_ledger(
+        conn,
+        run_id=run_id,
+        stage="CLUSTERING",
+        tool="llm",
+        unit_type="usd_cost",
+        units=0,
+        cost_micros=0,
+        provider=provider_id,
+        model=model_id,
+    )
+    # Explicit measured-zero declaration: the real model call count is measured
+    # from model_executions, so model_calls is declared here even when this
+    # stage made no calls.
+    _write_spend_ledger(
+        conn,
+        run_id=run_id,
+        stage="CLUSTERING",
+        tool="llm",
+        unit_type="model_calls",
+        units=0,
+        provider=provider_id,
+        model=model_id,
+    )
     now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     import product_hunter.db.clustering as cdb
     run = cdb.ClusteringRun(
@@ -851,12 +1352,14 @@ def _clustering_handler(context: Any) -> dict[str, Any] | None:
         record_stage_execution,
     )
     from product_hunter.research.evidence import (
+        ArtifactRecord,
         StageExecution,
         StageStatus,
         ToolCallProvenance,
         ToolCallStatus,
     )
     from product_hunter.clustering import clustering_artifacts
+    from product_hunter.research.predicates import KIND_CLUSTER_NEIGHBORS_CHECKED
     from product_hunter.semantic.qdrant import QdrantAdapter
 
     adapter = QdrantAdapter(
@@ -867,6 +1370,31 @@ def _clustering_handler(context: Any) -> dict[str, Any] | None:
         backoff_seconds=float(semantic_config.backoff_seconds),
     )
     calls = []
+    point_count = adapter.count(semantic_config.collection)
+    qdrant_ref = f"qdrant/count/{run_id}/clustering/attempt-{job.attempts}"
+    qdrant_call_id = "tc_" + hashlib.sha256(qdrant_ref.encode("utf-8")).hexdigest()[:20]
+    qdrant_call = ToolCallProvenance(
+        run_id=run_id,
+        stage="clustering",
+        agent="worker",
+        tool="qdrant",
+        purpose="inspect the indexed evidence collection before clustering",
+        timestamp=datetime.now(timezone.utc),
+        query_or_operation=f"count points in {semantic_config.collection}",
+        result_ref=qdrant_ref,
+        result_count=point_count,
+        status=ToolCallStatus.success,
+        tool_call_id=qdrant_call_id,
+    )
+    SqliteToolCallStore(conn).append_tool_call(
+        qdrant_call,
+        attempt=job.attempts,
+        worker_id=context.worker_id,
+        lease_epoch=job.lease_epoch,
+        lease_stage=job.stage,
+        result_payload={"collection": semantic_config.collection, "points": point_count},
+    )
+    calls.append(qdrant_call)
     for point, vector in zip(pain_points, embedder.embed([p.pain_statement for p in pain_points])):
         result_ref = (
             f"qdrant/cluster/{run_id}/{point.pain_id}/attempt-{job.attempts}"
@@ -945,6 +1473,19 @@ def _clustering_handler(context: Any) -> dict[str, Any] | None:
         )
         for artifact in artifacts
     ]
+    if not result.clusters:
+        artifacts.append(
+            ArtifactRecord(
+                artifact_id=f"{run_id}-clustering-{job.attempts}-empty-neighbor-checks",
+                stage="clustering",
+                kind=KIND_CLUSTER_NEIGHBORS_CHECKED,
+                ref=result_ref,
+                item_count=0,
+                produced_by_tool_call_id=cluster_call_id,
+                created_at=finished,
+                valid=True,
+            )
+        )
     execution = StageExecution(
         stage="clustering",
         status=StageStatus.succeeded,
@@ -972,6 +1513,30 @@ def _clustering_handler(context: Any) -> dict[str, Any] | None:
             lease_epoch=job.lease_epoch,
             lease_stage=job.stage,
         )
+    # Record spend for embedding items produced by clustering.
+    embedding_item_count = len(pain_points)
+    if embedding_item_count > 0:
+        _write_spend_ledger(
+            conn,
+            run_id=run_id,
+            stage="CLUSTERING",
+            tool="embedding",
+            unit_type="embedding_items",
+            units=embedding_item_count,
+            provider=semantic_config.embedding.provider,
+            model=semantic_config.embedding.model,
+        )
+    _write_spend_ledger(
+        conn,
+        run_id=run_id,
+        stage="CLUSTERING",
+        tool="embedding",
+        unit_type="usd_cost",
+        units=0,
+        cost_micros=0,
+        provider=semantic_config.embedding.provider,
+        model=semantic_config.embedding.model,
+    )
     _enqueue_next(conn, job, "INDEPENDENCE_ANALYSIS")
     return {
         "pain_points": len(pain_points),
@@ -1099,10 +1664,15 @@ def _collection_handler(context: Any) -> dict[str, Any] | None:
     if payload.get("source_id") and payload.get("url"):
         targets.append((str(payload["source_id"]), str(payload["url"])))
     else:
-        rows = conn.execute(
-            "SELECT DISTINCT source_id, url FROM documents WHERE url IS NOT NULL AND url <> ''"
-        ).fetchall()
-        targets = [(str(r[0]), str(r[1])) for r in rows]
+        run_document_ids = _discovered_document_ids(conn, job.run_id)
+        if run_document_ids:
+            placeholders = ",".join("?" for _ in run_document_ids)
+            rows = conn.execute(
+                f"SELECT DISTINCT source_id, url FROM documents WHERE doc_id IN ({placeholders}) "
+                "AND url IS NOT NULL AND url <> ''",
+                tuple(sorted(run_document_ids)),
+            ).fetchall()
+            targets = [(str(r[0]), _collection_url(str(r[0]), str(r[1]))) for r in rows]
 
     collected = 0
     outcomes = []
@@ -1198,19 +1768,43 @@ def _collection_handler(context: Any) -> dict[str, Any] | None:
         )
 
     successful_calls = [call for call in tool_calls if call.status is ToolCallStatus.success]
+    # Parse each successful capture into durable normalized documents so later
+    # stages consume captured source text, not the thin search result preview.
+    from product_hunter.documents import load_fetch_documents
+    from product_hunter.fetch import FetchRecord
+
+    parsed_document_count = 0
+    for outcome in outcomes:
+        if outcome is None or outcome.outcome not in {"fetched", "not_modified", "duplicate"} or not outcome.fetch_id:
+            continue
+        fetch_row = conn.execute(
+            "SELECT fetch_id, source_id, requested_url, final_url, status, content_type, "
+            "raw_sha256, raw_path, bytes, fetched_at, etag, last_modified, "
+            "terms_status, allowed_use_json, review_basis, user_agent, latency_ms, retry_count "
+            "FROM fetches WHERE fetch_id = ?",
+            (outcome.fetch_id,),
+        ).fetchone()
+        if fetch_row is None:
+            continue
+        fetch_data = dict(fetch_row)
+        fetch_data["allowed_use"] = json.loads(fetch_data.pop("allowed_use_json") or "[]")
+        fetch = FetchRecord.model_validate(fetch_data)
+        try:
+            parsed_docs = load_fetch_documents(fetch, root)
+        except Exception:
+            continue
+        for document in parsed_docs:
+            try:
+                store.import_document(document)
+                parsed_document_count += 1
+            except Exception:
+                continue
+    conn.commit()
+
     artifacts = []
     if successful_calls:
         producer = successful_calls[0]
-        captured_documents = sum(
-            int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM documents WHERE fetch_id = ?",
-                    (outcome.fetch_id,),
-                ).fetchone()[0]
-            )
-            for outcome in outcomes
-            if outcome is not None and outcome.fetch_id
-        )
+        captured_documents = parsed_document_count
         for kind, count in (
             ("source_records", captured_documents),
             ("provenance", len(successful_calls)),
@@ -1257,6 +1851,39 @@ def _collection_handler(context: Any) -> dict[str, Any] | None:
             lease_stage=job.stage,
         )
 
+    # Record spend for collection fetch requests and cost.
+    fetch_count = len(successful_calls)
+    if fetch_count > 0:
+        _write_spend_ledger(
+            conn,
+            run_id=job.run_id,
+            stage="COLLECTION",
+            tool="fetch",
+            unit_type="fetch_requests",
+            units=fetch_count,
+        )
+    # Explicit measured-zero declaration: collection stages search, but their
+    # searches are measured from tool_calls, so search_queries is declared here
+    # even when this stage ran none.
+    _write_spend_ledger(
+        conn,
+        run_id=job.run_id,
+        stage="COLLECTION",
+        tool="fetch",
+        unit_type="search_queries",
+        units=0,
+        cost_micros=0,
+    )
+    _write_spend_ledger(
+        conn,
+        run_id=job.run_id,
+        stage="COLLECTION",
+        tool="fetch",
+        unit_type="usd_cost",
+        units=0,
+        cost_micros=0,
+    )
+
     _enqueue_next(conn, job, "NORMALIZATION")
     return {
         "collected": collected,
@@ -1271,9 +1898,16 @@ def _normalization_handler(context: Any) -> dict[str, Any] | None:
     stage_started = datetime.now(timezone.utc)
     import product_hunter.normalization as norm
 
-    rows = conn.execute(
-        "SELECT pain_id, domain, actor, action, object, consequence FROM pain_points"
-    ).fetchall()
+    run_document_ids = _discovered_document_ids(conn, job.run_id)
+    if run_document_ids:
+        placeholders = ",".join("?" for _ in run_document_ids)
+        rows = conn.execute(
+            "SELECT pain_id, domain, actor, action, object, consequence FROM pain_points "
+            f"WHERE doc_id IN ({placeholders})",
+            tuple(sorted(run_document_ids)),
+        ).fetchall()
+    else:
+        rows = []
     normalized = 0
     for row in rows:
         pain_id = row[0]
@@ -1405,9 +2039,16 @@ def _deduplication_handler(context: Any) -> dict[str, Any] | None:
     job = context.job
     from product_hunter.db.evidence import find_canonical_span
 
-    rows = conn.execute(
-        "SELECT span_id, evidence_hash, canonical_span_id FROM evidence"
-    ).fetchall()
+    run_document_ids = _discovered_document_ids(conn, context.job.run_id)
+    if run_document_ids:
+        placeholders = ",".join("?" for _ in run_document_ids)
+        rows = conn.execute(
+            "SELECT span_id, evidence_hash, canonical_span_id FROM evidence "
+            f"WHERE doc_id IN ({placeholders})",
+            tuple(sorted(run_document_ids)),
+        ).fetchall()
+    else:
+        rows = []
     deduplicated = 0
     for span_id, evidence_hash, canonical in rows:
         if canonical:
@@ -1541,16 +2182,36 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
     except Exception:
         pass
 
-    templates = competitor_templates()
+    specialist_templates = competitor_templates()
+    from product_hunter.research.query_plan import plan_for_stage
+
+    required_templates = tuple(
+        template for template in plan_for_stage("investigation") if template.mandatory
+    )
+    search_specs = [
+        (
+            template.family,
+            template.render(problem),
+            f"required investigation query: {template.family}",
+        )
+        for template in required_templates
+    ]
+    search_specs.extend(
+        (
+            template.family.value,
+            render(template, problem).text,
+            template.purpose,
+        )
+        for template in specialist_templates
+    )
     tool_calls: list[ToolCallProvenance] = []
     tool_results: dict[str, Any] = {}
     attempts: list[SearchAttempt] = []
     competitors: list[Competitor] = []
     seen: set[str] = set()
 
-    for idx, template in enumerate(templates):
-        q = render(template, problem)
-        results, error, domains = _live_search(q.text)
+    for idx, (query_family, query_text, purpose) in enumerate(search_specs):
+        results, error, domains = _live_search(query_text)
         tc_id = f"tc_{run_id}_{stage}_{idx}"
         status = ToolCallStatus.failure if error and not results else ToolCallStatus.success
         if error and not results:
@@ -1566,14 +2227,14 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
             stage=contract_stage,
             agent="product-hunter",
             tool="search",
-            purpose=q.purpose,
+            purpose=purpose,
             timestamp=now,
-            query_or_operation=q.text,
+            query_or_operation=query_text,
             result_ref=result_ref,
             result_count=result_count,
             status=status,
             tool_call_id=tc_id,
-            query_family=q.family.value,
+            query_family=query_family,
             duration_ms=0,
             error=error,
         )
@@ -1584,8 +2245,8 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
             ]
 
         attempt = SearchAttempt(
-            family=q.family.value,
-            query=q.text,
+            family=query_family,
+            query=query_text,
             status=status,
             document_count=result_count,
             domains=domains,
@@ -1631,12 +2292,13 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
                 competitors.append(competitor)
 
     requirements = CoverageRequirements(
-        min_queries=len(templates),
+        min_queries=len(search_specs),
         min_documents=1,
         min_domains=2,
     )
-    coverage = assess_coverage([t.family.value for t in templates], attempts, requirements)
-    analysis = analyse_competitors(competitors, coverage, [t.family.value for t in templates])
+    required_families = [family for family, _query, _purpose in search_specs]
+    coverage = assess_coverage(required_families, attempts, requirements)
+    analysis = analyse_competitors(competitors, coverage, required_families)
 
     # Persist tool calls.
     store = SqliteToolCallStore(conn)
@@ -1723,6 +2385,39 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
     except Exception:
         pass
 
+    # Record spend for competitor research search queries and cost.
+    search_count = len(tool_calls)
+    if search_count > 0:
+        _write_spend_ledger(
+            conn,
+            run_id=run_id,
+            stage="investigation",
+            tool="search",
+            unit_type="search_queries",
+            units=search_count,
+        )
+    # Explicit measured-zero declaration: the handler makes no model call, so
+    # the LLM dimensions it cannot incur are declared as measured zeros.
+    for unit_type in ("llm_input_tokens", "llm_output_tokens", "model_calls"):
+        _write_spend_ledger(
+            conn,
+            run_id=run_id,
+            stage="investigation",
+            tool="search",
+            unit_type=unit_type,
+            units=0,
+            cost_micros=0,
+        )
+    _write_spend_ledger(
+        conn,
+        run_id=run_id,
+        stage="investigation",
+        tool="search",
+        unit_type="usd_cost",
+        units=0,
+        cost_micros=0,
+    )
+
     _enqueue_next(conn, job, "COUNTER_EVIDENCE")
     return {
         "competitors": len(analysis.competitors),
@@ -1771,7 +2466,28 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
     except Exception:
         pass
 
-    templates = counter_evidence_templates()
+    specialist_templates = counter_evidence_templates()
+    from product_hunter.research.query_plan import plan_for_stage
+
+    required_templates = tuple(
+        template for template in plan_for_stage("counter_evidence") if template.mandatory
+    )
+    search_specs = [
+        (
+            template.family,
+            template.render(problem),
+            f"required counter-evidence query: {template.family}",
+        )
+        for template in required_templates
+    ]
+    search_specs.extend(
+        (
+            template.family.value,
+            render(template, problem).text,
+            template.purpose,
+        )
+        for template in specialist_templates
+    )
     kind_map = {
         "counter_not_worth": CounterEvidenceKind.low_willingness_to_pay,
         "counter_complaints": CounterEvidenceKind.contradicting_thesis,
@@ -1783,9 +2499,8 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
     attempts: list[SearchAttempt] = []
     items: list[CounterEvidenceItem] = []
 
-    for idx, template in enumerate(templates):
-        q = render(template, problem)
-        results, error, domains = _live_search(q.text)
+    for idx, (query_family, query_text, purpose) in enumerate(search_specs):
+        results, error, domains = _live_search(query_text)
         tc_id = f"tc_{run_id}_{stage}_{idx}"
         if error and not results:
             status = ToolCallStatus.failure
@@ -1800,14 +2515,14 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
             stage=contract_stage,
             agent="product-hunter",
             tool="search",
-            purpose=q.purpose,
+            purpose=purpose,
             timestamp=now,
-            query_or_operation=q.text,
+            query_or_operation=query_text,
             result_ref=result_ref,
             result_count=result_count,
             status=status,
             tool_call_id=tc_id,
-            query_family=q.family.value,
+            query_family=query_family,
             duration_ms=0,
             error=error,
         )
@@ -1818,8 +2533,8 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
             ]
 
         attempt = SearchAttempt(
-            family=q.family.value,
-            query=q.text,
+            family=query_family,
+            query=query_text,
             status=status,
             document_count=result_count,
             domains=domains,
@@ -1829,7 +2544,13 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
         attempts.append(attempt)
 
         if status in (ToolCallStatus.success, ToolCallStatus.partial):
-            kind = kind_map.get(q.family.value, CounterEvidenceKind.contradicting_thesis)
+            # The canonical direct-pain and failed-solution searches are
+            # controls for the thesis. Their results are not automatically
+            # evidence against it; only the counter-evidence families below
+            # may create counter-evidence items.
+            kind = kind_map.get(query_family)
+            if kind is None:
+                continue
             for source, hit in results:
                 title = str(hit.get("title") or hit.get("name") or "counter evidence")[:200]
                 url = hit.get("url") or hit.get("html_url")
@@ -1848,17 +2569,19 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
                     source_url=url,
                     source_domain=domain,
                     tool_call_id=tc_id,
-                    query_family=q.family.value,
+                    query_family=query_family,
                     strength=0.5,
                 )
                 items.append(item)
 
     requirements = CoverageRequirements(
-        min_queries=len(templates),
+        min_queries=len(search_specs),
         min_documents=1,
         min_domains=2,
+        allow_empty_results=True,
     )
-    result = assess_counter_evidence(items, attempts, [t.family.value for t in templates], requirements)
+    required_families = [family for family, _query, _purpose in search_specs]
+    result = assess_counter_evidence(items, attempts, required_families, requirements)
 
     store = SqliteToolCallStore(conn)
     for tc in tool_calls:
@@ -1870,19 +2593,18 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
         )
 
     arts: list[ArtifactRecord] = []
-    if items:
-        arts.append(
-            ArtifactRecord(
-                artifact_id=f"{stage}-counter-evidence",
-                stage=contract_stage,
-                kind="counter_evidence",
-                ref=f"{tool_calls[0].tool_call_id}/counter_evidence" if tool_calls else f"{stage}/counter_evidence",
-                item_count=len(items),
-                produced_by_tool_call_id=tool_calls[0].tool_call_id if tool_calls else None,
-                created_at=now,
-                valid=True,
-            )
+    arts.append(
+        ArtifactRecord(
+            artifact_id=f"{stage}-counter-evidence",
+            stage=contract_stage,
+            kind="counter_evidence",
+            ref=f"{tool_calls[0].tool_call_id}/counter_evidence" if tool_calls else f"{stage}/counter_evidence",
+            item_count=len(items),
+            produced_by_tool_call_id=tool_calls[0].tool_call_id if tool_calls else None,
+            created_at=now,
+            valid=True,
         )
+    )
     if tool_calls:
         arts.append(
             ArtifactRecord(
@@ -1904,7 +2626,7 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
     )
     zero = ZeroResultOutcome(
         recorded=zero_recorded,
-        required_query_families=[t.family.value for t in templates] if zero_recorded else [],
+        required_query_families=required_families if zero_recorded else [],
         completed_query_families=[a.family for a in attempts if a.status is ToolCallStatus.success] if zero_recorded else [],
     )
 
@@ -1951,6 +2673,39 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
     except Exception:
         pass
 
+    # Record spend for counter-evidence search queries and cost.
+    search_count = len(tool_calls)
+    if search_count > 0:
+        _write_spend_ledger(
+            conn,
+            run_id=run_id,
+            stage="counter_evidence",
+            tool="search",
+            unit_type="search_queries",
+            units=search_count,
+        )
+    # Explicit measured-zero declaration: the handler makes no model call, so
+    # the LLM dimensions it cannot incur are declared as measured zeros.
+    for unit_type in ("llm_input_tokens", "llm_output_tokens", "model_calls"):
+        _write_spend_ledger(
+            conn,
+            run_id=run_id,
+            stage="counter_evidence",
+            tool="search",
+            unit_type=unit_type,
+            units=0,
+            cost_micros=0,
+        )
+    _write_spend_ledger(
+        conn,
+        run_id=run_id,
+        stage="counter_evidence",
+        tool="search",
+        unit_type="usd_cost",
+        units=0,
+        cost_micros=0,
+    )
+
     _enqueue_next(conn, job, "SCORING")
     return {
         "counter_evidence": len(result.items),
@@ -1970,7 +2725,31 @@ def _frequency_from_raw(value: Any) -> "Frequency":
 
 
 def _discovered_document_ids(conn: Any, run_id: str) -> set[str]:
-    """Return document identities present in this run's durable search results."""
+    """Return this run's parsed captures, falling back to its search results."""
+    collection_rows = conn.execute(
+        "SELECT tr.payload_json FROM research_tool_results tr "
+        "JOIN tool_calls tc ON tc.tool_call_id = tr.tool_call_id "
+        "WHERE tr.run_id = ? AND tr.stage = 'evidence_collection'",
+        (run_id,),
+    ).fetchall()
+    captured_fetch_ids: set[str] = set()
+    for (payload_json,) in collection_rows:
+        try:
+            payload = json.loads(payload_json)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload.get("fetch_id"):
+            captured_fetch_ids.add(str(payload["fetch_id"]))
+    parsed_ids: set[str] = set()
+    for fetch_id in captured_fetch_ids:
+        parsed_ids.update(
+            str(row[0])
+            for row in conn.execute(
+                "SELECT doc_id FROM documents WHERE fetch_id = ? AND live_status = 'live'",
+                (fetch_id,),
+            ).fetchall()
+        )
+
     rows = conn.execute(
         "SELECT tc.source_id, tr.payload_json "
         "FROM research_tool_results tr "
@@ -1979,7 +2758,19 @@ def _discovered_document_ids(conn: Any, run_id: str) -> set[str]:
         (run_id,),
     ).fetchall()
     document_ids: set[str] = set()
+    captured_sources = {
+        str(row[0])
+        for fetch_id in captured_fetch_ids
+        for row in conn.execute(
+            "SELECT DISTINCT f.source_id FROM fetches f "
+            "JOIN documents d ON d.fetch_id = f.fetch_id "
+            "WHERE f.fetch_id = ?",
+            (fetch_id,),
+        ).fetchall()
+    }
     for source_id, payload_json in rows:
+        if str(source_id) in captured_sources:
+            continue
         try:
             hits = json.loads(payload_json)
         except (TypeError, json.JSONDecodeError):
@@ -1999,7 +2790,7 @@ def _discovered_document_ids(conn: Any, run_id: str) -> set[str]:
             ).fetchone()
             if exists:
                 document_ids.add(doc_id)
-    return document_ids
+    return parsed_ids | document_ids
 
 
 def _validation_handler(context: Any) -> dict[str, Any] | None:
@@ -2317,6 +3108,49 @@ def _validation_handler(context: Any) -> dict[str, Any] | None:
             lease_stage=job.stage,
         )
 
+    # Record spend for validation: search queries and Qdrant calls.
+    search_calls = [c for c in calls if c.tool == "search"]
+    if search_calls:
+        _write_spend_ledger(
+            conn,
+            run_id=run_id,
+            stage="validation",
+            tool="search",
+            unit_type="search_queries",
+            units=len(search_calls),
+        )
+    qdrant_calls = [c for c in calls if c.tool == "qdrant"]
+    if qdrant_calls:
+        _write_spend_ledger(
+            conn,
+            run_id=run_id,
+            stage="validation",
+            tool="qdrant",
+            unit_type="embedding_items",
+            units=sum(int(c.result_count) for c in qdrant_calls),
+        )
+    # Explicit measured-zero declaration: the handler makes no model call, so
+    # the LLM dimensions it cannot incur are declared as measured zeros.
+    for unit_type in ("llm_input_tokens", "llm_output_tokens", "model_calls"):
+        _write_spend_ledger(
+            conn,
+            run_id=run_id,
+            stage="validation",
+            tool="validation",
+            unit_type=unit_type,
+            units=0,
+            cost_micros=0,
+        )
+    _write_spend_ledger(
+        conn,
+        run_id=run_id,
+        stage="validation",
+        tool="validation",
+        unit_type="usd_cost",
+        units=0,
+        cost_micros=0,
+    )
+
     _enqueue_next(conn, job, "COMPETITOR_RESEARCH")
     return {
         "validated": count,
@@ -2334,6 +3168,7 @@ def _scoring_handler(context: Any) -> dict[str, Any] | None:
     conn = context.conn
     job = context.job
     from datetime import datetime, timezone
+    stage_started = datetime.now(timezone.utc)
 
     from product_hunter.db.opportunity import (
         OpportunityRecord,
@@ -2361,17 +3196,20 @@ def _scoring_handler(context: Any) -> dict[str, Any] | None:
     )
     from product_hunter.opportunity.signals import CompetitionDirection
 
-    try:
-        policy = load_scoring_policy()
-    except Exception as exc:
-        return {"scored": 0, "opportunities_created": 0, "error": str(exc)[:200]}
+    policy = load_scoring_policy()
 
     store = OpportunityStore(conn)
-    rows = conn.execute(
-        "SELECT pain_id, doc_id, span_id, severity, frequency, pain_statement, "
-        "normalized_key, domain, actor, action, object, consequence "
-        "FROM pain_points"
-    ).fetchall()
+    run_document_ids = _discovered_document_ids(conn, job.run_id)
+    if run_document_ids:
+        placeholders = ",".join("?" for _ in run_document_ids)
+        rows = conn.execute(
+            "SELECT pain_id, doc_id, span_id, severity, frequency, pain_statement, "
+            "normalized_key, domain, actor, action, object, consequence "
+            f"FROM pain_points WHERE doc_id IN ({placeholders})",
+            tuple(sorted(run_document_ids)),
+        ).fetchall()
+    else:
+        rows = []
 
     created = 0
     scored = 0
@@ -2542,6 +3380,133 @@ def _scoring_handler(context: Any) -> dict[str, Any] | None:
             now_ts,
         )
         created += 1
+
+    from product_hunter.analytics.ingest import Analytics
+    from product_hunter.db.research_gate import (
+        SqliteToolCallStore,
+        record_artifact,
+        record_stage_execution,
+    )
+    from product_hunter.research.evidence import (
+        ArtifactRecord,
+        StageExecution,
+        StageStatus,
+        ToolCallProvenance,
+        ToolCallStatus,
+    )
+
+    database_file = conn.execute("PRAGMA database_list").fetchone()[2]
+    if not database_file:
+        raise RuntimeError("scoring requires the file-backed authoritative SQLite store")
+    analytics_path = repo_root() / "db" / "product_hunter.duckdb"
+    with Analytics.open(analytics_path, database_file) as analytics:
+        snapshot = analytics.snapshot()
+    finished = datetime.now(timezone.utc)
+    result_ref = f"duckdb/snapshot/{job.run_id}/scoring/{job.attempts}"
+    call_id = "tc_" + hashlib.sha256(result_ref.encode("utf-8")).hexdigest()[:20]
+    call = ToolCallProvenance(
+        run_id=job.run_id,
+        stage="scoring",
+        agent="worker",
+        tool="duckdb",
+        purpose="materialize authoritative evidence for opportunity scoring",
+        timestamp=finished,
+        query_or_operation="snapshot authoritative pain, evidence, and opportunity records",
+        result_ref=result_ref,
+        result_count=scored,
+        status=ToolCallStatus.success,
+        tool_call_id=call_id,
+    )
+    result_payload = {
+        "summary": snapshot.summary(),
+        "tables": [
+            {
+                "name": table.name,
+                "rows_read": table.rows_read,
+                "rows_written": table.rows_written,
+                "reason": table.reason,
+            }
+            for table in snapshot.tables
+        ],
+    }
+    SqliteToolCallStore(conn).append_tool_call(
+        call,
+        attempt=job.attempts,
+        worker_id=context.worker_id,
+        lease_epoch=job.lease_epoch,
+        lease_stage=job.stage,
+        result_payload=result_payload,
+    )
+    artifacts = [
+        ArtifactRecord(
+            artifact_id=f"{job.run_id}-scoring-{job.attempts}-{kind}",
+            stage="scoring",
+            kind=kind,
+            ref=result_ref,
+            item_count=scored,
+            produced_by_tool_call_id=call_id,
+            created_at=finished,
+            valid=True,
+        )
+        for kind in ("opportunity_score", "confidence")
+    ]
+    record_stage_execution(
+        conn,
+        run_id=job.run_id,
+        execution=StageExecution(
+            stage="scoring",
+            status=StageStatus.succeeded,
+            started_at=stage_started,
+            finished_at=finished,
+            tool_calls=[call],
+            artifacts=artifacts,
+        ),
+        attempt=job.attempts,
+        worker_id=context.worker_id,
+        lease_epoch=job.lease_epoch,
+        lease_stage=job.stage,
+    )
+    for artifact in artifacts:
+        record_artifact(
+            conn,
+            run_id=job.run_id,
+            artifact=artifact,
+            attempt=job.attempts,
+            worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+        )
+
+    # Record spend for scoring: DuckDB analytics and cost.
+    _write_spend_ledger(
+        conn,
+        run_id=job.run_id,
+        stage="scoring",
+        tool="duckdb",
+        unit_type="embedding_items",
+        units=int(scored),
+    )
+    # Explicit measured-zero declaration: the handler makes no model call, so
+    # the LLM dimensions it cannot incur are declared as measured zeros.
+    for unit_type in ("llm_input_tokens", "llm_output_tokens", "model_calls"):
+        _write_spend_ledger(
+            conn,
+            run_id=job.run_id,
+            stage="scoring",
+            tool="duckdb",
+            unit_type=unit_type,
+            units=0,
+            cost_micros=0,
+        )
+    _write_spend_ledger(
+        conn,
+        run_id=job.run_id,
+        stage="scoring",
+        tool="duckdb",
+        unit_type="usd_cost",
+        units=0,
+        cost_micros=0,
+    )
 
     _enqueue_next(conn, job, "REPORTING")
     return {"scored": scored, "opportunities_created": created}

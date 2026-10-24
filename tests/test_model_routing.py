@@ -270,6 +270,7 @@ def test_the_extraction_chain_leads_with_the_deepseek_family() -> None:
         "opencode-go/deepseek*",
         "opencode-go/*-flash*",
         "opencode-go/*",
+        "opencode-go/*-free*",
     ]
 
 

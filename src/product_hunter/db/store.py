@@ -510,8 +510,18 @@ class Store:
         name, url = _community_for(document)
         community_id = _hash_id("co_", f"{document.source_id}|{name}")
         existing = self.conn.execute(
-            "SELECT 1 FROM communities WHERE community_id = ?", (community_id,)
+            "SELECT community_id FROM communities WHERE source_id = ? AND name = ?",
+            (document.source_id, name),
         ).fetchone()
+        if existing is not None:
+            # A community for this source and name already exists (possibly
+            # created by discovery or an earlier ingest under a different
+            # community_id). Reuse it instead of violating UNIQUE(source_id, name).
+            self.conn.execute(
+                "UPDATE communities SET url = COALESCE(?, url) WHERE community_id = ?",
+                (url, str(existing[0])),
+            )
+            return str(existing[0]), False
         self.conn.execute(
             """
             INSERT INTO communities (community_id, source_id, name, url, created_at)
@@ -530,9 +540,19 @@ class Store:
             return None, False
         author_id = _hash_id("au_", f"{document.source_id}|{handle}")
         existing = self.conn.execute(
-            "SELECT 1 FROM authors WHERE author_id = ?", (author_id,)
+            "SELECT author_id FROM authors WHERE source_id = ? AND handle = ?",
+            (document.source_id, handle),
         ).fetchone()
         profile_url = _profile_url(document.source_id, handle)
+        if existing is not None:
+            # Discovery may have created a legacy/placeholder author ID for
+            # this source handle. Reuse the authoritative identity instead of
+            # violating the unique (source_id, handle) key during ingestion.
+            self.conn.execute(
+                "UPDATE authors SET display_name = ?, profile_url = ? WHERE author_id = ?",
+                (handle, profile_url, existing[0]),
+            )
+            return str(existing[0]), False
         self.conn.execute(
             """
             INSERT INTO authors (
@@ -544,7 +564,7 @@ class Store:
             """,
             (author_id, document.source_id, handle, handle, profile_url, utcnow().isoformat()),
         )
-        return author_id, existing is None
+        return author_id, True
 
     def _ensure_author_link(self, document: Document, author_id: str | None) -> bool:
         if author_id is None:
