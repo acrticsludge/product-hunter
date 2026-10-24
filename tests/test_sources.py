@@ -92,9 +92,9 @@ def _config(**overrides) -> SourceConfig:
     return SourceConfig(**data)
 
 
-def test_real_registry_has_exactly_three_ids():
+def test_real_registry_has_exactly_the_reviewed_ids():
     ids = {source.source_id for source in load_registry().list()}
-    assert ids == {"hn_algolia", "github_issues", "blog_http"}
+    assert ids == {"hn_algolia", "github_issues", "blog_http", "dev_to"}
     assert "reddit" not in ids
 
 

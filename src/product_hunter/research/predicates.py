@@ -160,9 +160,14 @@ def query_families(execution: StageExecution) -> int:
 
 
 def source_domain_set(execution: StageExecution) -> set[str]:
-    """The distinct hosts among the successful fetch calls."""
-    hosts = set()
-    for call in _successful(stage_calls(execution), TOOL_FETCH):
+    """Distinct observed hosts in successful searches and fetches."""
+    calls = stage_calls(execution)
+    hosts = {
+        host
+        for call in _successful(calls, TOOL_SEARCH)
+        for host in call.source_domains
+    }
+    for call in _successful(calls, TOOL_FETCH):
         host = _host_of(call.query_or_operation)
         if host:
             hosts.add(host)
@@ -170,7 +175,7 @@ def source_domain_set(execution: StageExecution) -> set[str]:
 
 
 def source_domains(execution: StageExecution) -> int:
-    """Distinct hosts among the successful fetch calls."""
+    """Distinct observed hosts among successful search and fetch calls."""
     return len(source_domain_set(execution))
 
 

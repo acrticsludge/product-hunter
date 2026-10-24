@@ -80,8 +80,8 @@ def test_competitor_found(monkeypatch):
     ctx = JobContext(conn, job, worker_id="w", lease_seconds=60)
     result = _competitor_handler(ctx)
     assert result["competitors"] == 1
-    assert result["queries"] == 4
-    assert conn.execute("SELECT COUNT(*) FROM tool_calls WHERE stage='investigation'").fetchone()[0] == 4
+    assert result["queries"] == 12
+    assert conn.execute("SELECT COUNT(*) FROM tool_calls WHERE stage='investigation'").fetchone()[0] == 13
 
 
 def test_multiple_competitors(monkeypatch):
@@ -124,10 +124,10 @@ def test_competitor_search_failure(monkeypatch):
     )
     ctx = JobContext(conn, job, worker_id="w", lease_seconds=60)
     result = _competitor_handler(ctx)
-    assert result["queries"] == 4
+    assert result["queries"] == 12
     assert conn.execute(
         "SELECT COUNT(*) FROM tool_calls WHERE stage='investigation' AND status='failure'"
-    ).fetchone()[0] == 4
+    ).fetchone()[0] == 12
 
 
 def test_counter_evidence_found(monkeypatch):

@@ -117,6 +117,24 @@ _SPEND_LEDGER_DIMENSIONS = (
     "crawl_items",
 )
 
+# A spend_ledger row whose unit type is a limited budget dimension measured
+# from another table is a measurement declaration, not a quantity: the stage
+# says "this dimension applies to me" and the authoritative total comes from
+# the other table (search_queries and fetch_requests from tool_calls,
+# model_calls from model_executions, tool_calls_total from tool_calls,
+# wall_time_seconds from research_stage_executions). The row's units are never
+# added to the ledger total; instead a zero-quantity measurement is emitted so
+# the tracker records the dimension as declared instead of unmeasured.
+_DECLARED_DIMENSIONS = frozenset(
+    {
+        BudgetDimension.search_queries.value,
+        BudgetDimension.fetch_requests.value,
+        BudgetDimension.model_calls.value,
+        BudgetDimension.tool_calls_total.value,
+        BudgetDimension.wall_time_seconds.value,
+    }
+)
+
 _MEASURED_DIMENSIONS = frozenset(
     {
         BudgetDimension.wall_time_seconds.value,
@@ -208,6 +226,7 @@ class SqliteToolCallStore:
             call.error,
             call.timestamp.isoformat(),
             source_id,
+            json.dumps(call.source_domains, separators=(",", ":")),
             attempt,
             int(declared),
         )
@@ -221,7 +240,7 @@ class SqliteToolCallStore:
             existing = conn.execute(
                 "SELECT run_id, stage, agent, tool, purpose, query_or_operation, "
                 "result_ref, result_count, status, query_family, duration_ms, "
-                "error, occurred_at, source_id, attempt, id_is_declared "
+                "error, occurred_at, source_id, source_domains_json, attempt, id_is_declared "
                 "FROM tool_calls WHERE tool_call_id = ?",
                 (tool_call_id,),
             ).fetchone()
@@ -240,8 +259,8 @@ class SqliteToolCallStore:
                     tool_call_id, run_id, stage, agent, tool, purpose,
                     query_or_operation, result_ref, result_count, status,
                     query_family, duration_ms, error, occurred_at,
-                    source_id, attempt, id_is_declared
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source_id, source_domains_json, attempt, id_is_declared
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (tool_call_id, *values),
             )
@@ -1011,6 +1030,11 @@ def _tool_call_from_row(row: sqlite3.Row) -> ToolCallProvenance:
         ),
         result_count=int(row["result_count"]),
         status=ToolCallStatus(row["status"]),
+        source_domains=(
+            json.loads(row["source_domains_json"] or "[]")
+            if "source_domains_json" in row_keys
+            else []
+        ),
         # The id the caller declared is the provenance. A row whose id was
         # minted for the sake of the primary key carries none, and the gate
         # has to see that.
@@ -1262,6 +1286,16 @@ def _measure_run(
     ``model_calls`` row for the same call: the two sources overlap, so
     adding them would count one call twice and halve the limit the
     contract declares.
+
+    A ``spend_ledger`` row whose unit type is a limited budget dimension
+    measured from another table (search_queries, fetch_requests,
+    model_calls, tool_calls_total, wall_time_seconds) is a measurement
+    declaration: the stage declares that the dimension applies to it, and
+    the authoritative quantity comes from the other table. Such a row emits
+    a zero-quantity measurement so the tracker knows the stage declared the
+    dimension -- presence is the claim, zero is a measured zero -- and its
+    units are never added to the ledger total. Rows whose unit type is in
+    ``_SPEND_LEDGER_DIMENSIONS`` keep working exactly as today.
     """
     measurements: list[tuple[str, float, str | None, str | None]] = []
 
@@ -1319,6 +1353,12 @@ def _measure_run(
         unit_type = row["unit_type"]
         if unit_type in ledger_units:
             ledger_units[unit_type][stage] += int(row["units"] or 0)
+        elif unit_type in _DECLARED_DIMENSIONS:
+            # Measurement declaration: the authoritative quantity is measured
+            # from another table, so the row's units are never added to the
+            # ledger total. A zero-quantity measurement records that the stage
+            # declared the dimension instead of leaving it unmeasured.
+            measurements.append((unit_type, 0.0, stage, None))
         # A ledger row of any other unit type still costs what it cost, and
         # the cost of a model call is the cost of the call.
         costs[stage] += int(row["cost_micros"] or 0)

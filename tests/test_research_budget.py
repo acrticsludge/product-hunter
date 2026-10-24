@@ -187,3 +187,34 @@ def test_a_non_finite_amount_raises_the_named_refusal():
     # The ledger never saw the refused spend.
     assert tracker.spent("usd_cost") == 0.0
     assert tracker.spent("usd_cost", stage="discovery") == 0.0
+
+
+def test_measured_is_false_until_a_dimension_is_recorded():
+    tracker = _tracker(per_stage={"discovery": {"search_queries": 40}})
+
+    assert tracker.measured("search_queries", stage="discovery") is False
+    assert tracker.measured("search_queries") is False
+
+
+def test_measured_is_true_after_a_record_including_zero():
+    tracker = _tracker(per_stage={"discovery": {"search_queries": 40}})
+    tracker.record("search_queries", 0.0, stage="discovery")
+
+    assert tracker.measured("search_queries", stage="discovery") is True
+    assert tracker.spent("search_queries", stage="discovery") == 0.0
+
+
+def test_measured_is_scoped_per_stage():
+    tracker = _tracker(per_stage={"discovery": {"search_queries": 40}})
+    tracker.record("search_queries", 3.0, stage="discovery")
+
+    assert tracker.measured("search_queries", stage="discovery") is True
+    assert tracker.measured("search_queries", stage="validation") is False
+
+
+def test_measured_at_run_level_without_a_stage():
+    tracker = _tracker(per_run={"search_queries": 10.0})
+
+    assert tracker.measured("search_queries") is False
+    tracker.record("search_queries", 3.0)
+    assert tracker.measured("search_queries") is True

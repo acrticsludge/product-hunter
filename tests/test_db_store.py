@@ -30,7 +30,7 @@ def test_import_run_populates_the_authoritative_store(tmp_path: Path) -> None:
             run_dir, fetch_log=fetch_log, registry=load_registry()
         )
         assert summary.run_id == "run-test"
-        assert summary.sources == 3
+        assert summary.sources == 4
         assert summary.fetches == 1
         assert summary.documents == 5
         assert summary.evidence == 2
@@ -49,7 +49,7 @@ def test_import_run_populates_the_authoritative_store(tmp_path: Path) -> None:
         count = lambda table: store.conn.execute(  # noqa: E731
             f"SELECT count(*) FROM {table}"
         ).fetchone()[0]
-        assert count("sources") == 3
+        assert count("sources") == 4
         assert count("fetches") == 1
         assert count("documents") == 5
         assert count("evidence") == 2
@@ -143,7 +143,7 @@ def test_replaying_a_run_is_idempotent(tmp_path: Path) -> None:
         first = store.import_run(run_dir, fetch_log=fetch_log, registry=load_registry())
         second = store.import_run(run_dir, fetch_log=fetch_log, registry=load_registry())
         assert first.pain_points == 1
-        assert second.sources == 3
+        assert second.sources == 4
         assert second.fetches == 0
         assert second.documents == 0
         assert second.evidence == 0
@@ -157,6 +157,34 @@ def test_replaying_a_run_is_idempotent(tmp_path: Path) -> None:
         assert second.index_projections == 0
         assert store.conn.execute("SELECT count(*) FROM pain_points").fetchone()[0] == 1
         assert store.conn.execute("SELECT count(*) FROM projection_tasks").fetchone()[0] == 2
+    finally:
+        store.close()
+
+
+def test_import_document_reuses_existing_source_handle_identity(tmp_path: Path) -> None:
+    run_dir, fetch_log, documents, _accepted = _build_run(tmp_path)
+    store = _open_store(tmp_path)
+    try:
+        store.import_run(run_dir, fetch_log=fetch_log, registry=load_registry())
+        original = documents[0]
+        existing_author = store.conn.execute(
+            "SELECT author_id FROM authors WHERE source_id = ? AND handle = ?",
+            (original.source_id, original.author),
+        ).fetchone()[0]
+        replay = original.model_copy(update={"doc_id": "reparsed-document"})
+
+        store.import_document(replay)
+
+        linked_author = store.conn.execute(
+            "SELECT a.author_id FROM author_links al "
+            "JOIN authors a ON a.author_id = al.author_id WHERE al.doc_id = ?",
+            (replay.doc_id,),
+        ).fetchone()[0]
+        assert linked_author == existing_author
+        assert store.conn.execute(
+            "SELECT count(*) FROM authors WHERE source_id = ? AND handle = ?",
+            (original.source_id, original.author),
+        ).fetchone()[0] == 1
     finally:
         store.close()
 

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from product_hunter import handlers
 from product_hunter.db import Store
 from product_hunter.db.jobs import enqueue_job, get_job
 from product_hunter.db.worker import Worker
@@ -28,18 +29,14 @@ def _store_with_run() -> Store:
 
 
 def test_discovery_handler_invokes_multiple_sources(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "product_hunter.handlers._hn_search",
-        lambda query, limit=10: [
-            {"objectID": "1", "title": "hn title", "url": "https://example.com/hn"}
-        ],
-    )
-    monkeypatch.setattr(
-        "product_hunter.handlers._github_search",
-        lambda query, limit=10: [
-            {"id": 2, "number": 2, "title": "gh title", "html_url": "https://github.com/x/y/issues/2", "body": "body"}
-        ],
-    )
+    hn_search = lambda query, limit=10: [
+        {"objectID": "1", "title": "hn title", "url": "https://example.com/hn"}
+    ]
+    github_search = lambda query, limit=10: [
+        {"id": 2, "number": 2, "title": "gh title", "html_url": "https://github.com/x/y/issues/2", "body": "body"}
+    ]
+    monkeypatch.setitem(handlers._SEARCHERS, "hn_algolia", hn_search)
+    monkeypatch.setitem(handlers._SEARCHERS, "github_issues", github_search)
 
     store = _store_with_run()
     try:
@@ -50,7 +47,7 @@ def test_discovery_handler_invokes_multiple_sources(monkeypatch) -> None:
         outcome = worker.run_once()
         assert outcome is not None
         assert outcome.status == "succeeded"
-        assert outcome.result["sources"] == ["hn_algolia", "github_issues"]
+        assert outcome.result["sources"] == ["hn_algolia", "github_issues", "dev_to"]
 
         docs = store.conn.execute("SELECT count(*) FROM documents").fetchone()[0]
         assert docs >= 2
@@ -59,7 +56,7 @@ def test_discovery_handler_invokes_multiple_sources(monkeypatch) -> None:
 
         records = list_records(store.conn, "run-1")
         assert len(records) >= 2
-        assert {r.source_id for r in records} == {"hn_algolia", "github_issues"}
+        assert {r.source_id for r in records} == {"hn_algolia", "github_issues", "dev_to"}
 
         from product_hunter.db.research_gate import (
             SqliteToolCallStore,
@@ -71,6 +68,15 @@ def test_discovery_handler_invokes_multiple_sources(monkeypatch) -> None:
         )
         assert calls
         assert all(call.result_is_durable is True for call in calls)
+        assert len({call.query_or_operation for call in calls}) >= 8
+        assert {call.query_family for call in calls} >= {
+            "direct_pain",
+            "failed_solution",
+            "alternative_to",
+        }
+        assert {
+            host for call in calls for host in call.source_domains
+        } == {"api.github.com", "hn.algolia.com", "dev_to"}
         assert any("manual report" in call.query_or_operation for call in calls)
         evidence = load_run_evidence(
             store.conn, run_id="run-1", contract_version="test-v1"

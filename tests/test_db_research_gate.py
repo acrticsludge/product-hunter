@@ -51,6 +51,7 @@ from product_hunter.research.query_plan import (
     MANDATORY_FAMILIES_BY_STAGE,
     QUERY_FAMILIES,
 )
+from product_hunter.handlers import _write_spend_ledger
 
 FROZEN = datetime(2026, 10, 21, 12, 0, 0, tzinfo=timezone.utc)
 RUN_ID = "run-1"
@@ -813,6 +814,20 @@ def _seed_shipped_run(
             run_id=run_id,
             execution=_execution(stage, status=status),
         )
+        # Every ran stage declares the dimensions the contract limits it on,
+        # including explicit zeros when it incurred none: an unmeasured limited
+        # dimension fails a ran stage under the shipped contract. This mirrors
+        # what the production handlers write for themselves.
+        for dimension in contract.budgets.per_stage.get(stage, {}):
+            _write_spend_ledger(
+                conn,
+                run_id=run_id,
+                stage=stage,
+                tool="declaration",
+                unit_type=dimension,
+                units=0,
+                cost_micros=0,
+            )
     record_claim(
         conn,
         run_id=run_id,
@@ -1692,10 +1707,15 @@ def test_the_shipped_contract_reports_the_dimensions_it_never_recorded(
     promotion = require_promotable(conn, contract, "run-shipped-report")
 
     assert promotion.promoted is True
-    # The ledger has no writer, so the dimensions it holds were never
-    # recorded. The run is promoted anyway: the gap is not a failure.
-    assert "llm_input_tokens" in promotion.unmeasured_dimensions
-    assert "usd_cost" in promotion.unmeasured_dimensions
+    # Every per-stage limited dimension is declared (explicit zeros where the
+    # stage incurred none), so no ran stage fails on budget_unmeasured. Only
+    # the per-run-only dimensions, which no tool in the pipeline incurs, stay
+    # unmeasured: the gap is reported, not failed.
+    assert promotion.unmeasured_dimensions == (
+        "browser_minutes",
+        "crawl_items",
+        "subq_calls",
+    )
 
 
 def test_the_model_calls_are_counted_from_the_execution_log(

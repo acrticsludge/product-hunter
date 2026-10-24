@@ -48,6 +48,7 @@ class CoverageRequirements(BaseModel):
     min_queries: int = Field(default=6, ge=1)
     min_documents: int = Field(default=1, ge=1)
     min_domains: int = Field(default=2, ge=1)
+    allow_empty_results: bool = False
 
 
 class ResearchCoverage(BaseModel):
@@ -130,9 +131,9 @@ def assess_coverage(
         reasons.append(
             f"{len(queries)} distinct successful queries, {requirements.min_queries} required"
         )
-    if documents < requirements.min_documents:
+    if not requirements.allow_empty_results and documents < requirements.min_documents:
         reasons.append(f"{documents} documents examined, {requirements.min_documents} required")
-    if len(domains) < requirements.min_domains:
+    if not requirements.allow_empty_results and len(domains) < requirements.min_domains:
         reasons.append(
             f"{len(domains)} distinct source domains, {requirements.min_domains} required"
         )
@@ -142,8 +143,13 @@ def assess_coverage(
         and not uncovered
         and failures == 0
         and len(queries) >= requirements.min_queries
-        and documents >= requirements.min_documents
-        and len(domains) >= requirements.min_domains
+        and (
+            requirements.allow_empty_results
+            or (
+                documents >= requirements.min_documents
+                and len(domains) >= requirements.min_domains
+            )
+        )
     )
 
     return ResearchCoverage(

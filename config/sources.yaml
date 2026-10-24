@@ -112,4 +112,46 @@ sources:
     robots: required
     enabled: false
 
+  - source_id: dev_to
+    source_type: community
+    status: active
+    terms_status: permitted
+    allowed_use: [discovery, retrieval, analysis, storage]
+    reviewed_at: 2026-10-23
+    review_expires_at: 2027-04-23
+    last_reviewed_by: operator
+    review_basis: "Public dev.to content via the dev.to Articles API; no authentication required for article listings; public developer community."
+    robots_or_api_notes: "API access at https://dev.to/api; unauthenticated rate limit is 1,000 requests per hour."
+    collector: api
+    rate_limit_policy:
+      min_interval_seconds: 1.0
+      max_requests_per_run: 100
+      max_retries: 2
+      backoff_base_seconds: 1.0
+      backoff_max_seconds: 30.0
+    domains: [dev.to]
+    schemes: [https]
+    robots: skip
+    enabled: true
+    metadata:
+      name: dev.to
+      homepage: https://dev.to
+      platform: dev_to
+      language: en
+      topics: [software, development, technology]
+      independence_group: dev_to
+    query_capabilities:
+      families: [problem, workflow_pain, workaround, existing_solution]
+      full_text: true
+      max_query_length: 200
+      supports_filters: true
+      pagination: page
+    collection:
+      endpoint_path: /api/articles
+      query_param: search
+      content_type: application/json
+      max_results_per_query: 30
+      max_communities_per_run: 5
+      max_items_per_community: 10
+
 # Reddit is deliberately absent while its terms_status is unknown.

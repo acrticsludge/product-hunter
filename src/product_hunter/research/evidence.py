@@ -82,6 +82,7 @@ class ToolCallProvenance(BaseModel):
     result_is_durable: bool | None = None
     result_count: int = Field(ge=0)
     status: ToolCallStatus
+    source_domains: list[str] = Field(default_factory=list)
     tool_call_id: str | None = None
     query_family: str | None = None
     duration_ms: int | None = None
@@ -92,6 +93,17 @@ class ToolCallProvenance(BaseModel):
     def _timestamp_is_aware(cls, value: datetime) -> datetime:
         _require_aware(value, "timestamp")
         return value
+
+    @field_validator("source_domains")
+    @classmethod
+    def _source_domains_are_hosts(cls, value: list[str]) -> list[str]:
+        hosts: list[str] = []
+        for host in value:
+            normalized = host.strip().lower().rstrip(".")
+            if not normalized or any(ch.isspace() or ch in "/:@?#" for ch in normalized):
+                raise ValueError("source_domains must contain hostnames")
+            hosts.append(normalized)
+        return sorted(set(hosts))
 
     @model_validator(mode="after")
     def _check_invariants(self) -> ToolCallProvenance:

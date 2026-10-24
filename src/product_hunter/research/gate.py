@@ -51,6 +51,7 @@ class ViolationCode(str, Enum):
     stage_failed = "stage_failed"
     stage_timed_out = "stage_timed_out"
     budget_exceeded = "budget_exceeded"
+    budget_unmeasured = "budget_unmeasured"
     artifact_invalid = "artifact_invalid"
     provenance_missing = "provenance_missing"
     evidence_threshold_unmet = "evidence_threshold_unmet"
@@ -170,9 +171,14 @@ def _status_violation(stage: str, execution: StageExecution) -> Violation | None
 
 
 def _budget_violations(
-    stage: str, budget: BudgetTracker | None, spec: BudgetSpec
+    stage: str,
+    budget: BudgetTracker | None,
+    spec: BudgetSpec,
+    *,
+    ran: bool,
 ) -> list[Violation]:
-    """Report the dimensions the run is over its limit on.
+    """Report the dimensions the run is over its limit on, and the limited
+    dimensions a ran stage never measured.
 
     The contract's budgets are the authority for the limit and the tracker is
     the ledger for the spend, so the overrun is measured against the contract
@@ -182,10 +188,20 @@ def _budget_violations(
     The overrun is a fact about the run, not about one stage result, so it is
     reported on every stage: one that failed, timed out, or never ran carries
     the budget violation as well as its own.
+
+    A stage that ran must record every dimension the contract limits it on,
+    including an explicit zero when it incurred none. A stage that ran and
+    holds no record for a per-stage limited dimension is a gate failure, not
+    a gap: one violation per unmeasured (stage, dimension), each blocking.
+    Dimensions limited only per run (browser_minutes, crawl_items, subq_calls)
+    are never checked here: the pipeline has no tool that incurs them, so no
+    stage can declare them and failing on them would fail every honest run.
+    A stage that never ran is not measured at all, which stage_missing
+    already reports.
     """
     if budget is None:
         return []
-    return [
+    violations: list[Violation] = [
         Violation(
             code=ViolationCode.budget_exceeded,
             stage=stage,
@@ -194,6 +210,27 @@ def _budget_violations(
         )
         for dimension in budget.exceeded_against(spec)
     ]
+    if ran:
+        # A stage that ran must record every dimension the contract limits it
+        # on, including an explicit zero when it incurred none. Dimensions
+        # limited only per run (browser_minutes, crawl_items, subq_calls) are
+        # never checked here: the pipeline has no tool that incurs them, so no
+        # stage can declare them and failing on them would fail every honest
+        # run.
+        for dimension in spec.per_stage.get(stage, {}):
+            if not budget.measured(dimension, stage):
+                violations.append(
+                    Violation(
+                        code=ViolationCode.budget_unmeasured,
+                        stage=stage,
+                        message=(
+                            f"stage {stage!r} ran but never measured budget "
+                            f"dimension {dimension!r}"
+                        ),
+                        detail={"dimension": dimension, "stage": stage},
+                    )
+                )
+    return violations
 
 
 def evaluate_stage(
@@ -216,7 +253,9 @@ def evaluate_stage(
             run_id=run_id, stage=stage, passed=False, violations=[violation], metrics={}
         )
 
-    budget_violations = _budget_violations(stage, budget, contract.budgets)
+    budget_violations = _budget_violations(
+        stage, budget, contract.budgets, ran=execution is not None
+    )
 
     def _result(
         violations: list[Violation], metrics: dict[str, int] | None = None

@@ -623,7 +623,7 @@ def test_cli_sources_lists_registry(capsys):
     assert sources_command() == 0
     payload = json.loads(capsys.readouterr().out)
     ids = {row["source_id"] for row in payload}
-    assert ids == {"hn_algolia", "github_issues", "blog_http"}
+    assert ids == {"hn_algolia", "github_issues", "blog_http", "dev_to"}
     row = next(r for r in payload if r["source_id"] == "hn_algolia")
     assert row["terms_status"] == "permitted"
     assert row["enabled"] is True

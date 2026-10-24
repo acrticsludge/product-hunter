@@ -199,6 +199,13 @@ class QdrantAdapter:
             path = _route("collections", name, "points", "search")
             response = self._send("POST", path, body=body)
         result = self._result("POST", path, response)
+        if isinstance(result, dict):
+            # Qdrant wraps an empty result set as {"points": [...]} in some
+            # versions; extract the points so the caller always gets a list.
+            points = result.get("points", [])
+            if not isinstance(points, list):
+                raise QdrantRequestFailed("the search result is not a list")
+            result = points
         if not isinstance(result, list):
             raise QdrantRequestFailed("the search result is not a list")
         return [dict(point) for point in result if isinstance(point, dict)]

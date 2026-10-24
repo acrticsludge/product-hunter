@@ -300,7 +300,14 @@ def known_families() -> frozenset[str]:
 
 def is_known_family(name: str) -> bool:
     """Report whether a name is a family the worker owns."""
-    return name.strip() in _KNOWN_FAMILIES
+    # Investigation searches also carry specialist labels (competitor
+    # alternatives, pricing, and counter-evidence dimensions). They share
+    # the same provenance field as the ten discovery families, so the
+    # contract's known-family predicate must recognize both vocabularies.
+    from product_hunter.research.investigation.queries import QueryFamily
+
+    investigation_families = frozenset(family.value for family in QueryFamily)
+    return name.strip() in _KNOWN_FAMILIES or name.strip() in investigation_families
 
 
 def plan_for_stage(stage: str) -> tuple[QueryTemplate, ...]:

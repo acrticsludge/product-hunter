@@ -212,12 +212,13 @@ def test_a_candidate_is_a_proposal_and_never_a_source(tmp_path: Path):
     try:
         registry_file = repo_root() / "config" / "sources.yaml"
         before = registry_file.read_text(encoding="utf-8")
+        before_count = len(load_registry().list())
         outcome = approve_candidate(
             store.conn, _candidate(), _policy(), reviewer="operator"
         )
         assert outcome.approved is True
         assert registry_file.read_text(encoding="utf-8") == before
-        assert len(load_registry().list()) == 3
+        assert len(load_registry().list()) == before_count
     finally:
         store.close()
 

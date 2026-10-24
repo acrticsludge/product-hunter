@@ -254,6 +254,20 @@ class BudgetTracker:
             return self._stage.get((stage, name), 0.0)
         return self._run.get(name, 0.0)
 
+    def measured(
+        self, dimension: str | BudgetDimension, stage: str | None = None
+    ) -> bool:
+        """Return whether a record exists for that (stage, dimension).
+
+        Presence is the measurement claim: a stage that records a dimension,
+        even at zero, has measured it. Absence is the gap, and zero is a
+        measured zero, not an unmeasured one.
+        """
+        name = _dimension_name(dimension)
+        if stage is not None:
+            return (stage, name) in self._stage
+        return name in self._run
+
     def exceeded(self) -> list[str]:
         """Return the names of the dimensions that are over their limit."""
         return self.exceeded_against(self.spec)

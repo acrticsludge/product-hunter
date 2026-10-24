@@ -431,6 +431,18 @@ def test_searches_that_name_worker_owned_families_pass():
     assert "worker-owned" in reason
 
 
+@pytest.mark.parametrize(
+    "family",
+    [
+        "competitor_alternative",
+        "counter_not_worth",
+        "killer_market_size",
+    ],
+)
+def test_investigation_query_families_are_worker_owned(family):
+    assert is_known_family(family)
+
+
 def test_the_shipped_contract_still_validates():
     assert validate_contract(load_research_contract()) == []
 

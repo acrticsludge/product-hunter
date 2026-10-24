@@ -48,6 +48,29 @@ _BATCH_ROWS = 1000
 # again for a spelling this version of DuckDB chose.
 _MIRROR_TYPES = frozenset({"VARCHAR", "BIGINT", "DOUBLE", "BLOB", "TIMESTAMP"})
 
+
+def _coerce_value(value: object, duckdb_type: str) -> object:
+    """Coerce a SQLite value to the DuckDB column type.
+
+    SQLite's type affinity lets any value sit in any column, so an INTEGER
+    column can hold a text value such as ``'success'``. DuckDB is strict: a
+    BIGINT column refuses a string. Coerce numeric columns so the mirror
+    never fails on SQLite's loose typing.
+    """
+    if value is None:
+        return None
+    if duckdb_type == "BIGINT":
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return 0
+    if duckdb_type == "DOUBLE":
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return 0.0
+    return value
+
 _STATE_DDL = """
 CREATE TABLE IF NOT EXISTS analytics_state (
     table_name  VARCHAR PRIMARY KEY,
@@ -526,11 +549,19 @@ class Analytics:
         """Write the rows into the mirrored table, hash included."""
         if not rows:
             return 0
+        types = {column.name: column.duckdb_type for column in spec.columns}
         try:
             for batch in _batches(rows, _BATCH_ROWS):
+                coerced_batch = []
+                for values in batch:
+                    coerced = tuple(
+                        _coerce_value(v, types.get(name, "VARCHAR"))
+                        for v, name in zip(values, spec.column_names())
+                    )
+                    coerced_batch.append(coerced)
                 parameters = [
                     value
-                    for values in batch
+                    for values in coerced_batch
                     for value in (*values, row_hash(values))
                 ]
                 self._duck.execute(

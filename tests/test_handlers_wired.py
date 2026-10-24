@@ -558,7 +558,7 @@ def test_competitor_searches_required_families_and_specialist_queries(monkeypatc
             "SELECT query_family FROM tool_calls WHERE run_id = ? AND stage = ?",
             ("run-1", "investigation"),
         ).fetchall()
-        assert len(calls) == 12
+        assert len(calls) == 13
         assert {row[0] for row in calls} >= {
             "direct_pain", "failed_solution", "alternative_to",
             "competitor_alternative", "competitor_existing_solution",

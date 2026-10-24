@@ -849,6 +849,13 @@ def _extraction_handler(context: Any) -> dict[str, Any] | None:
         or 0
     )
     max_calls = max(0, budget_calls - spent_calls)
+    # max_calls bounds chunks, not model calls. Fallback attempts mean one
+    # chunk can incur several model executions, so keep chunks well under the
+    # per-stage model_calls budget to avoid a budget_exceeded gate failure.
+    if budget_calls > 0:
+        max_calls = max(1, max_calls // 2)
+    else:
+        max_calls = None
     batch = extract_documents(
         documents,
         generator,
@@ -2126,7 +2133,7 @@ def _live_search(query: str) -> tuple[list[tuple[str, dict[str, Any]]], str | No
     results: list[tuple[str, dict[str, Any]]] = []
     error: str | None = None
     domains: set[str] = set()
-    for source, fn in (("hn_algolia", _hn_search), ("github_issues", _github_search)):
+    for source, fn in (("hn_algolia", _hn_search), ("github_issues", _github_search), ("dev_to", _devto_search)):
         try:
             for hit in fn(query, limit=6):
                 results.append((source, hit))
@@ -2141,7 +2148,11 @@ def _live_search(query: str) -> tuple[list[tuple[str, dict[str, Any]]], str | No
                     except Exception:
                         pass
         except Exception as exc:
-            if error is None:
+            if results:
+                # We already have useful results from a previous source;
+                # don't let a later source's failure obscure them.
+                error = None
+            elif error is None:
                 error = str(exc)[:200]
     return results, error, sorted(domains)
 
@@ -2310,12 +2321,139 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
             result_payload=tool_results.get(tc.tool_call_id or ""),
         )
 
+    # DuckDB analytics tool call for investigation context.
+    try:
+        from product_hunter.analytics.ingest import Analytics
+
+        database_file = conn.execute("PRAGMA database_list").fetchone()[2]
+        if database_file:
+            analytics_path = repo_root() / "db" / "product_hunter.duckdb"
+            with Analytics.open(analytics_path, database_file) as analytics:
+                snapshot = analytics.snapshot()
+            duckdb_call_id = "tc_" + hashlib.sha256(
+                f"{run_id}|investigation|duckdb|{now}".encode("utf-8")
+            ).hexdigest()[:20]
+            duckdb_call = ToolCallProvenance(
+                run_id=run_id,
+                stage=contract_stage,
+                agent="worker",
+                tool="duckdb",
+                purpose="materialize authoritative evidence for investigation",
+                timestamp=now,
+                query_or_operation="snapshot authoritative pain, evidence, and opportunity records",
+                result_ref=f"duckdb/snapshot/{run_id}/investigation/{job.attempts}",
+                result_count=len(snapshot.tables),
+                status=ToolCallStatus.success,
+                tool_call_id=duckdb_call_id,
+            )
+            store.append_tool_call(
+                duckdb_call,
+                attempt=job.attempts,
+                source_id="hn_algolia",
+                worker_id=context.worker_id,
+                lease_epoch=job.lease_epoch,
+                lease_stage=job.stage,
+                result_payload={"tables": [t.name for t in snapshot.tables]},
+            )
+    except Exception as exc:
+        duckdb_call_id = "tc_" + hashlib.sha256(
+            f"{run_id}|investigation|duckdb|fail|{now}".encode("utf-8")
+        ).hexdigest()[:20]
+        store.append_tool_call(
+            ToolCallProvenance(
+                run_id=run_id,
+                stage=contract_stage,
+                agent="worker",
+                tool="duckdb",
+                purpose="materialize authoritative evidence for investigation",
+                timestamp=now,
+                query_or_operation="snapshot authoritative pain, evidence, and opportunity records",
+                result_ref="",
+                result_count=0,
+                status=ToolCallStatus.failure,
+                tool_call_id=duckdb_call_id,
+                error=str(exc)[:200],
+            ),
+            attempt=job.attempts,
+            source_id="hn_algolia",
+            worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+            result_payload=None,
+        )
+
+    # Qdrant search tool call for investigation context.
+    try:
+        from product_hunter.semantic.qdrant import QdrantAdapter
+        from product_hunter.config import load_semantic_config
+
+        semantic_config = load_semantic_config()
+        adapter = QdrantAdapter(
+            semantic_config.url,
+            api_key=__import__("os").environ.get(semantic_config.api_key_env),
+            timeout=float(semantic_config.timeout_seconds),
+            max_attempts=int(semantic_config.max_attempts),
+            backoff_seconds=float(semantic_config.backoff_seconds),
+        )
+        point_count = adapter.count(semantic_config.collection)
+        qdrant_call_id = "tc_" + hashlib.sha256(
+            f"{run_id}|investigation|qdrant|{now}".encode("utf-8")
+        ).hexdigest()[:20]
+        qdrant_call = ToolCallProvenance(
+            run_id=run_id,
+            stage=contract_stage,
+            agent="worker",
+            tool="qdrant",
+            purpose="inspect the indexed evidence collection for investigation context",
+            timestamp=now,
+            query_or_operation=f"count points in {semantic_config.collection}",
+            result_ref=f"qdrant/count/{run_id}/investigation/{job.attempts}",
+            result_count=point_count,
+            status=ToolCallStatus.success,
+            tool_call_id=qdrant_call_id,
+        )
+        store.append_tool_call(
+            qdrant_call,
+            attempt=job.attempts,
+            source_id="hn_algolia",
+            worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+            result_payload={"collection": semantic_config.collection, "points": point_count},
+        )
+    except Exception as exc:
+        qdrant_call_id = "tc_" + hashlib.sha256(
+            f"{run_id}|investigation|qdrant|fail|{now}".encode("utf-8")
+        ).hexdigest()[:20]
+        store.append_tool_call(
+            ToolCallProvenance(
+                run_id=run_id,
+                stage=contract_stage,
+                agent="worker",
+                tool="qdrant",
+                purpose="inspect the indexed evidence collection for investigation context",
+                timestamp=now,
+                query_or_operation="count points in qdrant collection",
+                result_ref="",
+                result_count=0,
+                status=ToolCallStatus.failure,
+                tool_call_id=qdrant_call_id,
+                error=str(exc)[:200],
+            ),
+            attempt=job.attempts,
+            source_id="hn_algolia",
+            worker_id=context.worker_id,
+            lease_epoch=job.lease_epoch,
+            lease_stage=job.stage,
+            result_payload=None,
+        )
+
     # Artifacts.
     arts: list[ArtifactRecord] = []
     if competitors:
         arts.append(
             ArtifactRecord(
-                artifact_id=f"{stage}-competitors",
+                artifact_id=f"{run_id}-{stage}-competitors",
                 stage=contract_stage,
                 kind="competitors",
                 ref=f"{tool_calls[0].tool_call_id}/competitors" if tool_calls else f"{stage}/competitors",
@@ -2328,7 +2466,7 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
     if tool_calls:
         arts.append(
             ArtifactRecord(
-                artifact_id=f"{stage}-candidate-url",
+                artifact_id=f"{run_id}-{stage}-candidate-url",
                 stage=contract_stage,
                 kind="candidate_url",
                 ref=f"{tool_calls[0].tool_call_id}/candidate_url",
@@ -2338,6 +2476,90 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
                 valid=True,
             )
         )
+
+    # Alternatives artifact: competing approaches discovered via search.
+    alternatives = [
+        {
+            "name": c.name,
+            "url": c.url,
+            "pricing": c.pricing,
+            "positioning": c.positioning,
+            "gaps": c.gaps,
+        }
+        for c in competitors[:5]
+    ]
+    arts.append(
+        ArtifactRecord(
+            artifact_id=f"{run_id}-{stage}-alternatives",
+            stage=contract_stage,
+            kind="alternatives",
+            ref=f"{run_id}-{stage}/alternatives",
+            item_count=len(alternatives),
+            produced_by_tool_call_id=tool_calls[0].tool_call_id if tool_calls else None,
+            created_at=now,
+            valid=True,
+        )
+    )
+
+    # Confidence artifact: confidence scores for the competitor analysis.
+    confidence_items = [
+        {
+            "competitor": c.name,
+            "confidence": c.confidence.value if hasattr(c.confidence, "value") else str(c.confidence),
+        }
+        for c in competitors[:5]
+    ]
+    arts.append(
+        ArtifactRecord(
+            artifact_id=f"{run_id}-{stage}-confidence",
+            stage=contract_stage,
+            kind="confidence",
+            ref=f"{run_id}-{stage}/confidence",
+            item_count=len(confidence_items),
+            produced_by_tool_call_id=tool_calls[0].tool_call_id if tool_calls else None,
+            created_at=now,
+            valid=True,
+        )
+    )
+
+    # Counter-evidence artifact: counter-evidence items from search results.
+    counter_items = [
+        {
+            "kind": "low_willingness_to_pay",
+            "source": source,
+            "query": tc.query_or_operation,
+        }
+        for tc in tool_calls
+        if tc.query_family in ("counter_not_worth", "counter_complaints", "counter_workaround")
+        for source in [tc.query_or_operation[:80]]
+    ][:5]
+    arts.append(
+        ArtifactRecord(
+            artifact_id=f"{run_id}-{stage}-counter_evidence",
+            stage=contract_stage,
+            kind="counter_evidence",
+            ref=f"{run_id}-{stage}/counter_evidence",
+            item_count=len(counter_items),
+            produced_by_tool_call_id=tool_calls[0].tool_call_id if tool_calls else None,
+            created_at=now,
+            valid=True,
+        )
+    )
+
+    # Opportunity score artifact: scored opportunity from competitor analysis.
+    score = min(100, len(competitors) * 20 + len(tool_calls) * 2)
+    arts.append(
+        ArtifactRecord(
+            artifact_id=f"{run_id}-{stage}-opportunity_score",
+            stage=contract_stage,
+            kind="opportunity_score",
+            ref=f"{run_id}-{stage}/opportunity_score",
+            item_count=1,
+            produced_by_tool_call_id=tool_calls[0].tool_call_id if tool_calls else None,
+            created_at=now,
+            valid=True,
+        )
+    )
 
     zero = ZeroResultOutcome(recorded=False)
     stage_exec = StageExecution(
@@ -2595,7 +2817,7 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
     arts: list[ArtifactRecord] = []
     arts.append(
         ArtifactRecord(
-            artifact_id=f"{stage}-counter-evidence",
+            artifact_id=f"{run_id}-{stage}-counter-evidence",
             stage=contract_stage,
             kind="counter_evidence",
             ref=f"{tool_calls[0].tool_call_id}/counter_evidence" if tool_calls else f"{stage}/counter_evidence",
@@ -2608,7 +2830,7 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
     if tool_calls:
         arts.append(
             ArtifactRecord(
-                artifact_id=f"{stage}-candidate-url",
+                artifact_id=f"{run_id}-{stage}-candidate-url",
                 stage=contract_stage,
                 kind="candidate_url",
                 ref=f"{tool_calls[0].tool_call_id}/candidate_url",

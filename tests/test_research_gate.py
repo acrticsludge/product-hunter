@@ -1330,6 +1330,30 @@ def test_one_host_with_trailing_whitespace_is_one_source():
     )
 
 
+def test_search_source_domains_are_counted_from_durable_provenance():
+    contract = _contract(
+        evidence_thresholds={
+            **THRESHOLDS,
+            "discovery": {"min_distinct_queries": 1, "min_source_domains": 2},
+        }
+    )
+    execution = _execution(
+        "discovery",
+        tool_calls=[
+            _call(source_domains=["hn.algolia.com"]),
+            _call(
+                tool_call_id="github-search",
+                query_or_operation="second query",
+                source_domains=["api.github.com"],
+            ),
+        ],
+    )
+
+    result = evaluate_stage(contract, "run-1", "discovery", execution)
+
+    assert result.metrics["source_domains"] == 2
+
+
 def test_one_query_with_trailing_whitespace_is_one_query():
     execution = _execution(
         "discovery",
@@ -1951,3 +1975,63 @@ def test_the_shipped_contract_fails_a_stage_that_missed_a_mandatory_query_family
     assert checks == {"mandatory_query_families"}
     assert result.passed is False
     assert "failed_solution" in str(result.violations[0].detail)
+
+
+def test_a_ran_stage_with_no_record_for_a_limited_dimension_fails_budget_unmeasured():
+    contract = _contract(
+        discovery={"required_tools": [], "required_outputs": []},
+        budgets={
+            "version": "test-v1",
+            "per_stage": {"discovery": {"search_queries": 40}},
+        },
+    )
+    tracker = BudgetTracker(contract.budgets)
+    # The stage ran but never recorded search_queries: the gate fails it,
+    # because an unmeasured limited dimension is a verdict, not a gap.
+    result = evaluate_stage(
+        contract, "run-1", "discovery", _execution("discovery"), tracker
+    )
+    assert _codes(result) == {"budget_unmeasured"}
+    assert result.passed is False
+    violation = result.violations[0]
+    assert "search_queries" in violation.message
+    assert "discovery" in violation.message
+    assert violation.detail == {"dimension": "search_queries", "stage": "discovery"}
+
+
+def test_a_ran_stage_that_records_a_zero_for_a_limited_dimension_passes():
+    contract = _contract(
+        discovery={"required_tools": [], "required_outputs": []},
+        budgets={
+            "version": "test-v1",
+            "per_stage": {"discovery": {"search_queries": 40}},
+        },
+    )
+    tracker = BudgetTracker(contract.budgets)
+    tracker.record("search_queries", 0.0, stage="discovery")
+    assert tracker.spent("search_queries", stage="discovery") == 0.0
+    result = evaluate_stage(
+        contract, "run-1", "discovery", _execution("discovery"), tracker
+    )
+    assert result.passed is True
+    assert _codes(result) == set()
+
+
+def test_a_per_run_only_dimension_never_triggers_budget_unmeasured():
+    contract = _contract(
+        discovery={"required_tools": [], "required_outputs": []},
+        budgets={
+            "version": "test-v1",
+            "per_run": {"browser_minutes": 30},
+            "per_stage": {"discovery": {"search_queries": 40}},
+        },
+    )
+    tracker = BudgetTracker(contract.budgets)
+    tracker.record("search_queries", 0.0, stage="discovery")
+    # browser_minutes is limited per run only: no tool incurs it, no stage can
+    # declare it, and the gate never flags a per-run-only dimension per stage.
+    result = evaluate_stage(
+        contract, "run-1", "discovery", _execution("discovery"), tracker
+    )
+    assert result.passed is True
+    assert _codes(result) == set()

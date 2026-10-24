@@ -74,6 +74,33 @@ def test_no_items_with_a_complete_coverage_gives_none_found():
     assert result.coverage.status.value == "complete"
 
 
+def test_successful_empty_searches_can_support_an_explicit_zero():
+    attempts = [
+        _attempt(
+            "counter_not_worth",
+            "spreadsheet pain not worth",
+            document_count=0,
+            domains=[],
+        ),
+        _attempt(
+            "counter_complaints",
+            "spreadsheet pain complaints",
+            document_count=0,
+            domains=[],
+        ),
+    ]
+
+    result = assess_counter_evidence(
+        [], attempts, REQUIRED,
+        _requirements(allow_empty_results=True),
+    )
+
+    assert result.status is CounterEvidenceStatus.none_found
+    assert result.coverage.status.value == "complete"
+    assert result.coverage.document_count == 0
+    assert result.coverage.distinct_domains == []
+
+
 def test_no_items_with_an_incomplete_coverage_is_incomplete():
     attempts = [_attempt("counter_not_worth", "spreadsheet pain not worth")]
 
