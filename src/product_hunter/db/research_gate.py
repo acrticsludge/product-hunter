@@ -246,14 +246,8 @@ class SqliteToolCallStore:
             ).fetchone()
             if existing is not None:
                 if tuple(existing) != values:
-                    conn.execute(
-                        "UPDATE tool_calls SET "
-                        "run_id=?, stage=?, agent=?, tool=?, purpose=?, "
-                        "query_or_operation=?, result_ref=?, result_count=?, status=?, "
-                        "query_family=?, duration_ms=?, error=?, occurred_at=?, "
-                        "source_id=?, source_domains_json=?, attempt=?, id_is_declared=? "
-                        "WHERE tool_call_id = ?",
-                        (*values, tool_call_id),
+                    raise ValueError(
+                        f"tool call {tool_call_id!r} already exists with different content"
                     )
                 _append_durable_tool_result(
                     conn, call, tool_call_id, result_payload
@@ -326,12 +320,8 @@ def _append_durable_tool_result(
     ).fetchone()
     if existing is not None:
         if tuple(existing) != values:
-            conn.execute(
-                "UPDATE research_tool_results SET "
-                "run_id=?, stage=?, result_ref=?, payload_json=?, "
-                "payload_sha256=?, saved_at=? "
-                "WHERE tool_call_id = ?",
-                (*values, utc_now().isoformat(), tool_call_id),
+            raise ValueError(
+                f"tool result {tool_call_id!r} already exists with different content"
             )
         return
     conn.execute(
