@@ -27,9 +27,9 @@ from product_hunter.llm.base import (
 )
 from product_hunter.llm.catalog import utcnow
 
-# The service takes 1 to 16 questions per request and a name of at most 100
+# The service takes 1 to 128 questions per request and a name of at most 100
 # characters.
-MAX_QUESTIONS = 16
+MAX_QUESTIONS = 128
 MAX_QUESTION_NAME = 100
 
 # The option count and the level count the service accepts.

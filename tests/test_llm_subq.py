@@ -43,7 +43,7 @@ def answer(name: str, body: dict, *, input_tokens: int = 100) -> httpx.Response:
     return httpx.Response(
         200,
         json={
-            "model": "subq-snap-preview",
+            "model": "subq-snap-1.1",
             "answers": {name: body},
             "usage": {"input_tokens": input_tokens, "output_tokens": 0},
         },
@@ -234,14 +234,14 @@ def test_the_config_loader_reads_the_environment(monkeypatch):
     from product_hunter.config import load_subq_config
 
     monkeypatch.setenv("SUBQ_API_KEY", "key-from-the-environment")
-    monkeypatch.setenv("SUBQ_MODEL", "subq-snap-preview")
+    monkeypatch.setenv("SUBQ_MODEL", "subq-snap-1.1")
     monkeypatch.setenv("PH_SUBQ_MAX_RETRIES", "5")
     monkeypatch.setenv("PH_SUBQ_MAX_USD", "1.5")
 
     config = load_subq_config()
 
     assert config.key() == "key-from-the-environment"
-    assert config.model == "subq-snap-preview"
+    assert config.model == "subq-snap-1.1"
     assert config.max_retries == 5
     assert config.max_usd == 1.5
 
@@ -414,11 +414,11 @@ def test_every_outcome_carries_a_provenance_record():
 
     record = outcomes[0].provenance
     assert record.provider == "subq"
-    assert record.model == "subq-snap-preview"
+    assert record.model == "subq-snap-1.1"
     assert record.request_hash.startswith("sha256:")
     assert record.capability == "classify"
     assert record.input_tokens == 100
-    assert record.usd_estimate == pytest.approx(100 / 1_000_000 * 0.05)
+    assert record.usd_estimate == pytest.approx(100 / 1_000_000 * 0.04)
     assert record.cached is False
 
 
@@ -568,7 +568,7 @@ def test_the_spend_is_recorded_in_the_tracker():
 
     assert ("subq_calls", 1) in tracker.recorded
     assert ("llm_input_tokens", 120) in tracker.recorded
-    assert ("usd_cost", pytest.approx(120 / 1_000_000 * 0.05)) in [
+    assert ("usd_cost", pytest.approx(120 / 1_000_000 * 0.04)) in [
         (name, pytest.approx(value)) for name, value in tracker.recorded
     ]
 
@@ -593,7 +593,7 @@ def test_the_ledger_counts_the_call_and_its_tokens():
     assert provider.spend.calls == 1
     assert provider.spend.input_tokens == 120
     assert provider.spend.output_tokens == 0
-    assert provider.spend.usd_estimate == pytest.approx(120 / 1_000_000 * 0.05)
+    assert provider.spend.usd_estimate == pytest.approx(120 / 1_000_000 * 0.04)
     assert provider.spend.cache_hits == 0
 
 
@@ -901,13 +901,13 @@ def test_the_capability_report_names_what_the_api_cannot_do():
 
 def test_the_capability_check_costs_no_tokens():
     service = FakeService(
-        httpx.Response(200, json={"object": "list", "data": [{"id": "subq-snap-preview"}]})
+        httpx.Response(200, json={"object": "list", "data": [{"id": "subq-snap-1.1"}]})
     )
     provider, _ = build(service)
 
     report = provider.check()
 
-    assert report["model"] == "subq-snap-preview"
+    assert report["model"] == "subq-snap-1.1"
     assert provider.spend.calls == 0
 
 
@@ -1027,7 +1027,7 @@ def test_live_subq_lists_the_models_and_answers_one_question():
     provider = SubQProvider(SubQConfig(api_key=key))
 
     report = provider.check()
-    assert "subq-snap-preview" in report["models"]
+    assert "subq-snap-1.1" in report["models"]
 
     outcomes = provider.filter_items(
         [

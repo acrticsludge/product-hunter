@@ -51,10 +51,10 @@ from product_hunter.llm.decision import (
 )
 
 DEFAULT_BASE_URL = "https://api.subq.ai/v1"
-DEFAULT_MODEL = "subq-snap-preview"
+DEFAULT_MODEL = "subq-snap-1.1"
 
 # The price of a million input tokens. The output is free.
-DEFAULT_USD_PER_MTOK_INPUT = 0.05
+DEFAULT_USD_PER_MTOK_INPUT = 0.04
 
 # The dimensions the research contract already declares.
 DIMENSION_CALLS = "subq_calls"
