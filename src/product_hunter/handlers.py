@@ -3383,6 +3383,18 @@ def _validation_handler(context: Any) -> dict[str, Any] | None:
             units=0,
             cost_micros=0,
         )
+    # Per-run budget dimensions no tool incurs: declare as measured zeros so
+    # the gate can verify they were measured.
+    for unit_type in ("browser_minutes", "crawl_items", "subq_calls"):
+        _write_spend_ledger(
+            conn,
+            run_id=run_id,
+            stage="validation",
+            tool="validation",
+            unit_type=unit_type,
+            units=0,
+            cost_micros=0,
+        )
     _write_spend_ledger(
         conn,
         run_id=run_id,
