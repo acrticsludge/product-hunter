@@ -2178,7 +2178,11 @@ def _live_search(query: str) -> tuple[list[tuple[str, dict[str, Any]]], str | No
 
 
 def _competitor_handler(context: Any) -> dict[str, Any] | None:
-    from product_hunter.db.opportunity import OpportunityStore, create_opportunity_id
+    from product_hunter.db.opportunity import (
+        OpportunityStore,
+        create_canonical_id,
+        create_opportunity_id,
+    )
     from product_hunter.research.investigation.coverage import CoverageRequirements, SearchAttempt, assess_coverage
     from product_hunter.research.evidence import (
         ArtifactRecord,
@@ -2202,8 +2206,10 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
     now = _utc_now()
     problem = _problem_statement(conn, run_id)
 
-    # Persist an opportunity row so results link back to one.
-    opp_id = create_opportunity_id(problem, run_id)
+    # Persist an opportunity row so results link back to one. The identity is
+    # canonical (the problem statement alone, no run id), so the same problem
+    # researched in another run resolves to this same row instead of forking.
+    opp_id = create_canonical_id(problem)
     try:
         OpportunityStore(conn).upsert(
             __import__("product_hunter.db.opportunity", fromlist=["OpportunityRecord"]).OpportunityRecord(
@@ -2669,7 +2675,11 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
 
 
 def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
-    from product_hunter.db.opportunity import OpportunityStore, create_opportunity_id
+    from product_hunter.db.opportunity import (
+        OpportunityStore,
+        create_canonical_id,
+        create_opportunity_id,
+    )
     from product_hunter.research.investigation.coverage import CoverageRequirements, SearchAttempt, assess_coverage
     from product_hunter.research.evidence import (
         ArtifactRecord,
@@ -2698,7 +2708,7 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
     now = _utc_now()
     problem = _problem_statement(conn, run_id)
 
-    opp_id = create_opportunity_id(problem, run_id)
+    opp_id = create_canonical_id(problem)
     try:
         OpportunityStore(conn).upsert(
             __import__("product_hunter.db.opportunity", fromlist=["OpportunityRecord"]).OpportunityRecord(
@@ -3427,6 +3437,7 @@ def _scoring_handler(context: Any) -> dict[str, Any] | None:
     from product_hunter.db.opportunity import (
         OpportunityRecord,
         OpportunityStore,
+        create_canonical_id,
         create_opportunity_id,
     )
     from product_hunter.opportunity.policy import load_scoring_policy
@@ -3595,12 +3606,29 @@ def _scoring_handler(context: Any) -> dict[str, Any] | None:
             lifecycle = "CANDIDATE"
 
         title = (pain_statement or normalized_key or pain_id)[:80]
-        opp_id = create_opportunity_id(normalized_key or pain_id, job.run_id)
+
+        # Canonical opportunity identity: cluster the pain points belong to,
+        # falling back to a stable hash of the normalized key. run_id is
+        # deliberately absent so the same problem resolves to the same id
+        # across runs, and the cluster is the authority when several pain
+        # points name one problem under different keys.
+        cluster_row = conn.execute(
+            """
+            SELECT cluster_id FROM cluster_members
+            WHERE pain_id = ? AND valid_to IS NULL
+            ORDER BY valid_from DESC LIMIT 1
+            """,
+            (pain_id,),
+        ).fetchone()
+        cluster_id = cluster_row[0] if cluster_row else None
+        canonical_key = cluster_id or (normalized_key or pain_id)
+        opp_id = create_canonical_id(canonical_key)
         now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         record = OpportunityRecord(
             opportunity_id=opp_id,
             run_id=job.run_id,
-            cluster_id=None,
+            cluster_id=cluster_id,
+            canonical_id=opp_id,
             title=title or "Untitled opportunity",
             normalized_problem=normalized_key,
             domain=domain,

@@ -41,6 +41,8 @@ class OpportunityRecord(BaseModel):
     opportunity_id: str = Field(min_length=1)
     run_id: str | None = None
     cluster_id: str | None = None
+    canonical_id: str | None = None
+    merged_into: str | None = None
     title: str = Field(min_length=1)
     normalized_problem: str | None = None
     domain: str | None = None
@@ -73,23 +75,29 @@ class OpportunityStore:
     def upsert(self, record: OpportunityRecord) -> str:
         """Write one opportunity row. Returns the opportunity id.
 
-        A row written twice keeps its first row unless the lifecycle or the
-        score moved, in which case the row is updated. The primary key is the
-        opportunity id, so a second write with the same id updates the
-        mutable fields and leaves the immutable ones alone.
+        The opportunity id is the canonical identity: a second write with
+        the same id updates the mutable fields and leaves the immutable ones
+        alone. A row whose canonical_id already names another row is refused
+        by the database's unique index on canonical_id, so two writes that
+        converge on the same canonical problem never create two rows.
         """
         now = record.created_at or _now()
         updated = record.updated_at or now
         self.conn.execute(
             """
             INSERT INTO opportunities (
-                opportunity_id, run_id, cluster_id, title, normalized_problem,
+                opportunity_id, run_id, cluster_id, canonical_id, merged_into,
+                title, normalized_problem,
                 domain, actor, action, object, consequence, severity, frequency,
                 wtp_tier, competition, potential, confidence, trend, uncertainty,
                 lifecycle, recommended_experiment, first_seen, last_updated,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(opportunity_id) DO UPDATE SET
+                run_id = excluded.run_id,
+                cluster_id = excluded.cluster_id,
+                canonical_id = excluded.canonical_id,
+                merged_into = excluded.merged_into,
                 title = excluded.title,
                 normalized_problem = excluded.normalized_problem,
                 domain = excluded.domain,
@@ -114,6 +122,8 @@ class OpportunityStore:
                 record.opportunity_id,
                 record.run_id,
                 record.cluster_id,
+                record.canonical_id,
+                record.merged_into,
                 record.title,
                 record.normalized_problem,
                 record.domain,
@@ -139,6 +149,45 @@ class OpportunityStore:
         )
         self.conn.commit()
         return record.opportunity_id
+
+    def find_by_canonical(self, canonical_id: str) -> dict | None:
+        """Return the living opportunity that carries one canonical id.
+
+        A row whose canonical_id is null never matches. A row whose
+        merged_into is not null is a historical duplicate: it still carries
+        its own canonical id, but it is not the living survivor. Callers that
+        want the living row should filter merged_into IS NULL.
+        """
+        row = self.conn.execute(
+            "SELECT * FROM opportunities WHERE canonical_id = ? AND merged_into IS NULL",
+            (canonical_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def merge_into(self, duplicate_id: str, survivor_id: str) -> None:
+        """Record that one opportunity was merged into another.
+
+        The duplicate keeps its row (and its own id) for provenance, and its
+        merged_into column names the survivor. No row is deleted: evidence,
+        claims and scores stay where they were, and the caller is responsible
+        for relinking them to the survivor before or after this call.
+        """
+        self.conn.execute(
+            "UPDATE opportunities SET merged_into = ? WHERE opportunity_id = ?",
+            (survivor_id, duplicate_id),
+        )
+        self.conn.commit()
+
+    def get(self, opportunity_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM opportunities WHERE opportunity_id = ?",
+            (opportunity_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
 
     def add_score(
         self,
@@ -214,7 +263,22 @@ class OpportunityStore:
         return int(self.conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0])
 
 
+def create_canonical_id(canonical_key: str) -> str:
+    """Return a stable, run-independent opportunity id from one canonical key.
+
+    The key is the cluster id when the pain points behind the opportunity are
+    clustered, otherwise a stable hash of the normalized problem key. run_id is
+    deliberately absent: the same problem discovered in a later run resolves to
+    the same id.
+    """
+    return "opp_" + hashlib.sha256(canonical_key.encode("utf-8")).hexdigest()[:16]
+
+
 def create_opportunity_id(title: str, run_id: str | None = None) -> str:
-    """Return a deterministic id for an opportunity from its title."""
-    seed = (run_id or "") + "|" + title
-    return "opp_" + hashlib.sha256(seed.encode()).hexdigest()[:16]
+    """Return a deterministic id for an opportunity from its title.
+
+    Deprecated: use create_canonical_id with a cluster id or normalized key
+    instead. run_id is accepted for backward compatibility but does not take
+    part in the identity, so the same title never forks by run.
+    """
+    return create_canonical_id(title)

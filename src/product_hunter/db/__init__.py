@@ -52,6 +52,7 @@ from product_hunter.db.opportunity import (
     OpportunityRecord,
     OpportunityStore,
     OpportunityStoreError,
+    create_canonical_id,
     create_opportunity_id,
 )
 from product_hunter.db.outbox import (
@@ -163,6 +164,7 @@ __all__ = [
     "complete_projection",
     "connect",
     "create_opportunity_id",
+    "create_canonical_id",
     "current_version",
     "default_schedules",
     "enqueue_job",
