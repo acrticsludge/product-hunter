@@ -67,7 +67,7 @@ evidence_thresholds:
     min_source_domains: 3
   validation:
     min_evidence_spans: 20
-    min_independent_authors: 1
+    min_independent_authors: 10
     min_independent_communities: 3
     min_query_families: 4
 hard_requirements:
