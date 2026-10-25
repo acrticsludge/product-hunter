@@ -44,6 +44,8 @@ from product_hunter.research.contract import ResearchContract, load_research_con
 from product_hunter.runtime.events import EventSink, JsonlEventSink, WorkerEvent
 from product_hunter.runtime.identity import WorkerIdentity
 
+from product_hunter.registry import advance_run_progress
+
 Handler = Callable[[JobContext], dict[str, object] | None]
 
 # A renewal that is still running when the outcome is written would race the
@@ -175,6 +177,25 @@ class WorkerRuntime:
             attempt=job.attempts,
             lease_epoch=job.lease_epoch,
         )
+        # Mark where the run stands now that a worker has claimed this job.
+        try:
+            completed_stages = int(
+                self.conn.execute(
+                    "SELECT count(DISTINCT stage) FROM stage_attempts "
+                    "WHERE run_id = ? AND status = 'succeeded'",
+                    (job.run_id,),
+                ).fetchone()[0]
+                or 0
+            )
+        except sqlite3.Error:
+            completed_stages = 0
+        advance_run_progress(
+            self.conn,
+            run_id=job.run_id,
+            stage=job.stage,
+            completed_stages=completed_stages,
+            now=self.clock(),
+        )
         handler = self.handlers.get(job.stage)
         if handler is None:
             self._emit(
@@ -225,6 +246,27 @@ class WorkerRuntime:
                     result=result,
                     now=self.clock(),
                 )
+            )
+            # Advance the run's execution view: current stage and derived
+            # progress. This is separate from operator state and never
+            # overwrites QUEUED/RUNNING/etc.
+            try:
+                completed_stages = int(
+                    self.conn.execute(
+                        "SELECT count(DISTINCT stage) FROM stage_attempts "
+                        "WHERE run_id = ? AND status = 'succeeded'",
+                        (job.run_id,),
+                    ).fetchone()[0]
+                    or 0
+                )
+            except sqlite3.Error:
+                completed_stages = 0
+            advance_run_progress(
+                self.conn,
+                run_id=job.run_id,
+                stage=job.stage,
+                completed_stages=completed_stages,
+                now=self.clock(),
             )
         except LeaseLost as exc:
             return self._lease_lost(job, error=_safe_error(exc))

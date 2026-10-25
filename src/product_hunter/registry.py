@@ -776,23 +776,81 @@ def _reusable_row(conn: sqlite3.Connection, objective: str) -> sqlite3.Row | Non
     return None
 
 
+# The pipeline stages in execution order. A run's progress is the count of
+# completed stages divided by this list, so progress is derived, not asserted.
+PIPELINE_STAGES: tuple[str, ...] = (
+    "DISCOVERY",
+    "COLLECTION",
+    "NORMALIZATION",
+    "DEDUPLICATION",
+    "ENTITY_RESOLUTION",
+    "PAIN_EXTRACTION",
+    "EMBEDDING",
+    "CLUSTERING",
+    "INDEPENDENCE_ANALYSIS",
+    "VALIDATION",
+    "COMPETITOR_RESEARCH",
+    "COUNTER_EVIDENCE",
+    "SCORING",
+    "REPORTING",
+    "OBSIDIAN_SYNC",
+)
+
+
+def advance_run_progress(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    stage: str,
+    step: str | None = None,
+    completed_stages: int = 0,
+    now: datetime | None = None,
+) -> None:
+    """Record execution progress on one run.
+
+    Updates current_stage, current_step, progress_percent, updated_at and
+    last_heartbeat. progress_percent is derived from completed_stages out of
+    PIPELINE_STAGES, never asserted. The stage names where the run stands; the
+    step names the substage within it. This is the execution view, separate
+    from operator state (QUEUED/RUNNING/etc.), so the two never overwrite each
+    other.
+    """
+    moment = now if now is not None else utcnow()
+    total = len(PIPELINE_STAGES)
+    percent = int(100 * completed_stages / total) if total else 0
+    conn.execute(
+        """
+        UPDATE research_runs
+        SET current_stage = ?, current_step = ?, progress_percent = ?,
+            updated_at = ?, last_heartbeat = ?
+        WHERE run_id = ?
+        """,
+        (stage, step or "", percent, moment.isoformat(), moment.isoformat(), run_id),
+    )
+
+
 def create_run(
     conn: sqlite3.Connection,
     request: CreateRequest,
     *,
     now: datetime | None = None,
+    probe_id: str | None = None,
 ) -> tuple[RunView, bool]:
     """Create one run, or return the live run that already holds the objective.
 
-    The run row, the first checkpoint, the first event, and the first job are
-    written in one transaction. The second value says whether the run already
-    existed, so the caller never looks for it a second time.
+    When ``probe_id`` is given the run is a probe cycle: the probe owns the
+    run and at most one active run per probe is enforced by the partial index
+    on ``research_runs(probe_id)``. The second value says whether the run
+    already existed, so the caller never looks for it a second time.
     """
     moment = now if now is not None else utcnow()
     with _transaction(conn):
-        existing = _reusable_row(conn, request.objective)
-        if existing is not None:
-            return _view(conn, existing, now=moment), True
+        # A probe cycle is always a fresh finite run: never reuse an existing
+        # run, even when the objective matches a previous cycle.
+        if probe_id is None:
+            existing = _reusable_row(conn, request.objective)
+            if existing is not None:
+                return _view(conn, existing, now=moment), True
         objective = " ".join(request.objective.split())
         public_id = _next_public_id(conn, moment)
         run_id = _run_id(public_id)
@@ -804,10 +862,10 @@ def create_run(
                 updated_at, last_heartbeat, completed_at, last_error,
                 contract_version, agent_version, model_policy_version,
                 chat_id, workspace_id, parent_run_id, resume_count,
-                progress_percent, lease_epoch, budget_json
+                progress_percent, lease_epoch, budget_json, probe_id
             ) VALUES (?, ?, ?, ?, 'QUEUED', 'PLAN', 'research_requested', 0, ?,
                 NULL, ?, NULL, NULL, NULL, ?, NULL, NULL, ?, NULL, NULL, 0, 0, 0,
-                NULL)
+                NULL, ?)
             """,
             (
                 run_id,
@@ -818,6 +876,7 @@ def create_run(
                 moment.isoformat(),
                 CONTRACT_VERSION,
                 request.chat_id,
+                probe_id,
             ),
         )
         save_checkpoint(
@@ -843,7 +902,11 @@ def create_run(
             idempotency_key=f"research_start:{run_id}",
             run_id=run_id,
             priority=0,
-            payload={"public_id": public_id, "objective": objective},
+            payload={
+                "public_id": public_id,
+                "objective": objective,
+                **({"probe_id": probe_id} if probe_id else {}),
+            },
             now=moment,
         )
     return get_run(conn, public_id), False
