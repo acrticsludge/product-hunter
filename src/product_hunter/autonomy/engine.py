@@ -17,7 +17,7 @@ import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from product_hunter.autonomy.budget import (
     STAGE_SCOPE_PREFIX,
@@ -49,6 +49,8 @@ from product_hunter.fetch import utcnow
 from product_hunter.research.budget import BudgetDimension, BudgetExceeded
 from product_hunter.runtime.events import EventSink
 from product_hunter.runtime.identity import WorkerIdentity
+from product_hunter import probes
+from product_hunter.registry import CreateRequest
 
 # The runtime's own masker, so the failure text that reaches a row is masked
 # the same way in both layers.
@@ -87,6 +89,7 @@ class OperationStep:
     blocked: int = 0
     missed_occurrences: int = 0
     leases_recovered: int = 0
+    probes_started: int = 0
     state: OperationState = OperationState.running
     reason: str = ""
 
@@ -100,6 +103,7 @@ class OperationStep:
             "blocked": self.blocked,
             "missed_occurrences": self.missed_occurrences,
             "leases_recovered": self.leases_recovered,
+            "probes_started": self.probes_started,
             "state": self.state.value,
             "reason": self.reason,
         }
@@ -200,9 +204,12 @@ class OperationEngine:
             )
 
         missed = self._tick_scheduler(now)
+        probes = self._tick_probes(now)
         leases = self._run_recovery(now)
         self._run_maintenance(now)
-        step = replace(step, missed_occurrences=missed, leases_recovered=leases)
+        step = replace(
+            step, missed_occurrences=missed, leases_recovered=leases
+        )
 
         # The queue is full, so another process is doing the work. This cycle
         # claims nothing.
@@ -318,6 +325,110 @@ class OperationEngine:
         if report.leases_recovered:
             self._add_counter("leases_recovered", report.leases_recovered)
         return report.leases_recovered
+
+    def _tick_probes(self, now: datetime) -> int:
+        """Start a finite research run for each due RUNNING probe with no live
+        run, and record cycles for probes whose current run reached a terminal
+        state. Returns the number of runs started.
+
+        A probe owns at most one active research run at a time (the partial
+        index on research_runs(probe_id) enforces it). When a probe's current
+        run is COMPLETED/CANCELLED/FAILED_PERMANENT the cycle is recorded so
+        next_cycle_at and backoff advance; the probe then waits for its next
+        cadence moment before starting another run.
+        """
+        from product_hunter.registry import CreateRequest, create_run
+
+        from product_hunter import probes as probe_registry
+
+        started = 0
+        now_iso = now.isoformat()
+        terminal = ("COMPLETED", "CANCELLED", "FAILED_PERMANENT")
+        placeholders = ", ".join("?" for _ in terminal)
+        # A probe is due when it has never run (next_cycle_at is NULL) or its
+        # next cadence moment has passed.
+        rows = self.conn.execute(
+            "SELECT * FROM probes WHERE status = 'RUNNING' "
+            "AND (next_cycle_at IS NULL OR next_cycle_at <= ?) "
+            "ORDER BY next_cycle_at, public_id",
+            (now_iso,),
+        ).fetchall()
+        for row in rows:
+            probe_id = row["probe_id"]
+            current = row["current_run_id"]
+            live = None
+            if current is not None:
+                run_row = self.conn.execute(
+                    "SELECT status FROM research_runs WHERE run_id = ?", (current,)
+                ).fetchone()
+                if run_row is not None and str(run_row["status"]).upper() not in terminal:
+                    live = 1
+            if live is None:
+                # Fall back to scanning every run of the probe: current_run_id
+                # is not always set (create_run does not write it), so a
+                # QUEUED run held directly under the probe must still block a
+                # new cycle. The partial index enforces this at the schema too.
+                live = self.conn.execute(
+                    f"SELECT 1 FROM research_runs WHERE probe_id = ? "
+                    f"AND UPPER(TRIM(status)) NOT IN ({placeholders}) LIMIT 1",
+                    (probe_id, *terminal),
+                ).fetchone()
+            if live:
+                continue
+            # Record a cycle for a terminal current run and clear its reference.
+            if current is not None:
+                run_row = self.conn.execute(
+                    "SELECT status FROM research_runs WHERE run_id = ?", (current,)
+                ).fetchone()
+                if run_row is not None and str(run_row["status"]).upper() in terminal:
+                    outcome = (
+                        "success"
+                        if str(run_row["status"]).upper() == "COMPLETED"
+                        else "failed"
+                    )
+                    probe_registry.record_probe_cycle(
+                        self.conn, probe_id, current, outcome
+                    )
+                    self.conn.execute(
+                        "UPDATE probes SET current_run_id = NULL, updated_at = ? "
+                        "WHERE probe_id = ?",
+                        (now.isoformat(), probe_id),
+                    )
+                    current = None
+            view, reused = create_run(
+                self.conn,
+                CreateRequest(objective=row["objective"]),
+                probe_id=probe_id,
+                now=now,
+            )
+            if reused:
+                continue
+            self.conn.execute(
+                "UPDATE probes SET current_run_id = ? WHERE probe_id = ?",
+                (view.run_id, probe_id),
+            )
+            try:
+                configuration = json.loads(row["configuration"] or "{}")
+            except (ValueError, TypeError):
+                configuration = {}
+            interval_seconds = int(
+                configuration.get("cycle_interval_seconds", 300) or 300
+            )
+            maximum_backoff_seconds = int(
+                configuration.get("maximum_backoff_seconds", 3600) or 3600
+            )
+            multiplier = int(row["backoff_multiplier"] or 1)
+            delay_seconds = min(
+                interval_seconds * multiplier, maximum_backoff_seconds
+            )
+            next_cycle_at = now + timedelta(seconds=delay_seconds)
+            self.conn.execute(
+                "UPDATE probes SET next_cycle_at = ?, updated_at = ? "
+                "WHERE probe_id = ?",
+                (next_cycle_at.isoformat(), now.isoformat(), probe_id),
+            )
+            started += 1
+        return started
 
     def _run_maintenance(self, now: datetime) -> None:
         """Do the upkeep that is due."""

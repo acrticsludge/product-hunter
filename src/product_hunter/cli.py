@@ -35,6 +35,7 @@ from product_hunter.db import (
     current_version,
     list_jobs,
     list_projection_tasks,
+    migrate,
     process_outbox,
     recover_expired_leases,
     recover_projection_leases,
@@ -133,6 +134,18 @@ from product_hunter.source_expansion import (
     score_candidate,
 )
 from product_hunter.sources import AllowedUse, SourceBlocked, load_registry
+from product_hunter.probes import (
+    UnknownProbe,
+    create_probe,
+    get_probe,
+    list_probes,
+    pause_probe,
+    record_probe_cycle,
+    recover_probes,
+    resume_probe,
+    start_probe,
+    stop_probe,
+)
 
 FETCH_LOG = Path("data") / "raw" / "fetches.jsonl"
 REJECTION_LOG = Path("data") / "raw" / "rejections.jsonl"
@@ -294,6 +307,26 @@ def build_parser() -> argparse.ArgumentParser:
     research_parser.add_argument("--objective", default=None)
     research_parser.add_argument("--chat-id", dest="chat_id", default=None)
     research_parser.add_argument("--limit", type=int, default=50)
+    probe_parser = commands.add_parser("probe", help="control 24/7 on-call research probes")
+    probe_commands = probe_parser.add_subparsers(dest="probe_command", required=True)
+    probe_create = probe_commands.add_parser("create", help="create a probe")
+    probe_create.add_argument("--objective", required=True)
+    probe_create.add_argument("--interval", dest="interval", type=int, default=None)
+    probe_create.add_argument("--max-backoff", dest="max_backoff", type=int, default=None)
+    probe_list = probe_commands.add_parser("list", help="list probes")
+    probe_status = probe_commands.add_parser("status", help="show probe state and execution view")
+    probe_status.add_argument("public_id", nargs="?", default=None)
+    probe_start = probe_commands.add_parser("start", help="start a probe (CREATED/PAUSED -> RUNNING)")
+    probe_start.add_argument("public_id", nargs="?", default=None)
+    probe_pause = probe_commands.add_parser("pause", help="pause a probe")
+    probe_pause.add_argument("public_id", nargs="?", default=None)
+    probe_resume = probe_commands.add_parser("resume", help="resume a paused probe")
+    probe_resume.add_argument("public_id", nargs="?", default=None)
+    probe_stop = probe_commands.add_parser("stop", help="stop a probe")
+    probe_stop.add_argument("public_id", nargs="?", default=None)
+    probe_report = probe_commands.add_parser("report", help="write a probe report")
+    probe_report.add_argument("public_id", nargs="?", default=None)
+    probe_report.add_argument("--out", dest="out", default=None)
     models_parser = commands.add_parser(
         "models", help="list the model catalog as JSON"
     )
@@ -1719,6 +1752,328 @@ def _run_autonomy_command(args: argparse.Namespace) -> int:
     return 1
 
 
+def _probe_conn(db_path: str | Path | None = None):
+    """Open and migrate the store for a probe command."""
+    root = _root(None)
+    path = _db_path(db_path, root)
+    if not path.is_file():
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": f"database does not exist: {path}",
+                    "code": "database_missing",
+                }
+            )
+        )
+        return None
+    conn = connect(path)
+    try:
+        migrate(conn)
+    except sqlite3.Error:
+        # Already migrated or a read-only store; the command will surface its
+        # own error if a probe table is missing.
+        pass
+    return conn
+
+
+def _resolve_probe_public_id(
+    conn, public_id: str | None
+) -> str | None:
+    """The public id to act on: the given one, or the sole probe when none given."""
+    if public_id is not None:
+        return public_id
+    probes = list_probes(conn)
+    if not probes:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "no probes exist; create one with `ph probe create --objective ...`",
+                    "code": "no_probe",
+                }
+            )
+        )
+        return None
+    if len(probes) == 1:
+        return probes[0].public_id
+    print(
+        json.dumps(
+            {
+                "ok": False,
+                "error": "more than one probe exists; name one: "
+                + ", ".join(p.public_id for p in probes),
+                "code": "needs_probe",
+                "probes": [p.public_id for p in probes],
+            }
+        )
+    )
+    return None
+
+
+def _probe_payload(view) -> dict[str, object]:
+    data = asdict(view)
+    data["ok"] = True
+    return data
+
+
+def probe_create_command(
+    *,
+    objective: str,
+    interval: int | None = None,
+    max_backoff: int | None = None,
+    db_path: str | Path | None = None,
+) -> int:
+    conn = _probe_conn(db_path)
+    if conn is None:
+        return 1
+    try:
+        configuration: dict[str, object] = {}
+        if interval is not None:
+            configuration["cycle_interval_seconds"] = interval
+        if max_backoff is not None:
+            configuration["maximum_backoff_seconds"] = max_backoff
+        view, created = create_probe(
+            conn, objective, json.dumps(configuration), requester="cli"
+        )
+        print(json.dumps({"ok": True, "created": created, **_probe_payload(view)}))
+        return 0
+    except ProbeError as exc:
+        print(json.dumps({"ok": False, "error": exc.message, "code": exc.code}))
+        return 1
+    finally:
+        conn.close()
+
+
+def probe_list_command(*, db_path: str | Path | None = None) -> int:
+    conn = _probe_conn(db_path)
+    if conn is None:
+        return 1
+    try:
+        views = list_probes(conn)
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "probes": [_probe_payload(v) for v in views],
+                    "count": len(views),
+                }
+            )
+        )
+        return 0
+    finally:
+        conn.close()
+
+
+def _probe_action(
+    public_id: str | None, action: str, requester: str = "cli"
+) -> int:
+    conn = _probe_conn()
+    if conn is None:
+        return 1
+    try:
+        wanted = _resolve_probe_public_id(conn, public_id)
+        if wanted is None:
+            return 1
+        if action == "start":
+            view = start_probe(conn, wanted, requester=requester)
+        elif action == "pause":
+            view = pause_probe(conn, wanted, requester=requester)
+        elif action == "resume":
+            view = resume_probe(conn, wanted, requester=requester)
+        elif action == "stop":
+            view = stop_probe(conn, wanted, requester=requester)
+        else:
+            print(
+                json.dumps(
+                    {"ok": False, "error": f"unknown probe action {action!r}"}
+                )
+            )
+            return 1
+        print(json.dumps({"ok": True, "action": action, **_probe_payload(view)}))
+        return 0
+    except UnknownProbe as exc:
+        print(json.dumps({"ok": False, "error": exc.message, "code": exc.code}))
+        return 1
+    except InvalidTransition as exc:
+        print(json.dumps({"ok": False, "error": exc.message, "code": exc.code}))
+        return 1
+    finally:
+        conn.close()
+
+
+def probe_status_command(
+    *, public_id: str | None = None, db_path: str | Path | None = None
+) -> int:
+    conn = _probe_conn(db_path)
+    if conn is None:
+        return 1
+    try:
+        wanted = _resolve_probe_public_id(conn, public_id)
+        if wanted is None:
+            return 1
+        view = get_probe(conn, wanted)
+        print(json.dumps({"ok": True, "action": "status", **_probe_payload(view)}))
+        return 0
+    except UnknownProbe as exc:
+        print(json.dumps({"ok": False, "error": exc.message, "code": exc.code}))
+        return 1
+    finally:
+        conn.close()
+
+
+def probe_report_command(
+    *,
+    public_id: str | None = None,
+    out: str | Path | None = None,
+    db_path: str | Path | None = None,
+) -> int:
+    conn = _probe_conn(db_path)
+    if conn is None:
+        return 1
+    try:
+        wanted = _resolve_probe_public_id(conn, public_id)
+        if wanted is None:
+            return 1
+        view = get_probe(conn, wanted)
+        view = asdict(view)
+        report = _build_probe_report(conn, view)
+        text = "\n".join(report["lines"])
+        # Obsidian journal: write only when the bytes differ (idempotent, like
+        # the projection engine), under <vault>/Probe/<public-id>/<date>/<time>.md.
+        try:
+            _write_probe_journal(view["public_id"], text, now=utcnow())
+        except OSError:
+            # A journal that cannot be written must not fail the report.
+            pass
+        if out is not None:
+            root = _root(None)
+            target = _resolve_path(Path(out), root)
+            try:
+                target.write_text(text + "\n", encoding="utf-8", newline="\n")
+            except OSError as exc:
+                print(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": f"could not write report: {exc}",
+                            "code": "write_failed",
+                        }
+                    )
+                )
+                return 1
+        print(text)
+        return 0
+    except UnknownProbe as exc:
+        print(json.dumps({"ok": False, "error": exc.message, "code": exc.code}))
+        return 1
+    finally:
+        conn.close()
+
+
+def _build_probe_report(conn, view: dict[str, object]) -> dict[str, object]:
+    """A probe report: state, execution view, cycle summary, blockers.
+
+    Reads the checkpoint/job-list execution state (not run.status alone) and
+    cumulative metrics filtered by probe_id. No mutation except report metadata.
+    """
+    lines: list[str] = []
+    lines.append(f"# Probe report: {view['public_id']}")
+    lines.append(f"objective: {view['objective']}")
+    lines.append(f"state: {view['status']}")
+    lines.append(
+        f"cycles: total={view['total_cycles']} "
+        f"successful={view['successful_cycles']} "
+        f"failed={view['failed_cycles']} "
+        f"blocked={view['blocked_cycles']}"
+    )
+    lines.append(f"backoff_multiplier: {view['backoff_multiplier']}")
+    lines.append(f"created: {view['created_at']}  updated: {view['updated_at']}")
+    if view["started_at"]:
+        lines.append(f"started: {view['started_at']}")
+    if view["next_cycle_at"]:
+        lines.append(f"next cycle at: {view['next_cycle_at']}")
+    if view["last_error"]:
+        lines.append(f"last error: {view['last_error']}")
+    lines.append("")
+    lines.append("## Active run (execution view)")
+    ar = view["active_run"]
+    if ar is None:
+        lines.append("no active research run")
+    else:
+        lines.append(f"run: {ar['run_id']}  status: {ar['status']}")
+        lines.append(
+            f"stage: {ar['current_stage'] or '-'}  "
+            f"step: {ar['current_step'] or '-'}  "
+            f"progress: {ar['progress_percent']}%"
+        )
+        lines.append(f"worker active: {ar['worker_active']}")
+        lines.append(f"tool calls spent: {ar['tool_calls_spent']}")
+        if ar["job_stages"]:
+            lines.append("job stages:")
+            for js in ar["job_stages"]:
+                lines.append(f"  {js['stage']}: {js['status']}")
+        if ar["checkpoint"]:
+            lines.append(f"checkpoint: {ar['checkpoint']}")
+    lines.append("")
+    lines.append("## Blockers")
+    if view["errors"]:
+        for err in view["errors"]:
+            lines.append(f"- {err}")
+    else:
+        lines.append("none")
+    lines.append("")
+    lines.append(f"generated: {utcnow().isoformat()}")
+    return {"lines": lines}
+
+
+def _journal_root() -> Path:
+    """The Obsidian vault root for probe journals."""
+    return _root(None) / VAULT_DIR
+
+
+def _write_probe_journal(public_id: str, text: str, *, now: datetime) -> None:
+    """Write a timestamped probe journal note, only when bytes differ.
+
+    Lives under <vault>/Probe/<public-id>/<YYYY-MM-DD>/<HH-MM>.md (UTC). A
+    second write with identical bytes touches nothing, matching the projection
+    engine's idempotent-write convention.
+    """
+    day = now.strftime("%Y-%m-%d")
+    stamp = now.strftime("%H-%M")
+    path = _journal_root() / "Probe" / public_id / day / f"{stamp}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file() and path.read_bytes() == text.encode("utf-8", errors="replace"):
+        return
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def _run_probe_command(args: argparse.Namespace) -> int:
+    if args.probe_command == "create":
+        return probe_create_command(
+            objective=args.objective,
+            interval=args.interval,
+            max_backoff=args.max_backoff,
+        )
+    if args.probe_command == "list":
+        return probe_list_command()
+    if args.probe_command == "status":
+        return probe_status_command(public_id=args.public_id)
+    if args.probe_command == "start":
+        return _probe_action(args.public_id, "start")
+    if args.probe_command == "pause":
+        return _probe_action(args.public_id, "pause")
+    if args.probe_command == "resume":
+        return _probe_action(args.public_id, "resume")
+    if args.probe_command == "stop":
+        return _probe_action(args.public_id, "stop")
+    if args.probe_command == "report":
+        return probe_report_command(
+            public_id=args.public_id, out=args.out
+        )
+    return 1
+
+
 def project_command(
     *,
     db_path: str | Path | None = None,
@@ -2526,6 +2881,8 @@ def main(argv: list[str] | None = None) -> int:
             argv += ["--chat-id", args.chat_id]
         argv += ["--limit", str(args.limit)]
         return registry_main(argv)
+    if args.command == "probe":
+        return _run_probe_command(args)
     parser.print_help()
     return 0
 
