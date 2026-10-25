@@ -18,6 +18,7 @@ import pytest
 import product_hunter.registry as registry
 from product_hunter.db import (
     connect,
+    claim_job,
     enqueue_job,
     get_job,
     list_checkpoints,
@@ -779,6 +780,62 @@ def test_retry_requeues_a_dead_job(conn):
     assert requeued.lease_epoch == 3
     assert requeued.worker_id is None
     assert requeued.lease_expires_at is None
+
+
+def test_retry_clears_stage_attempts_so_reclaim_does_not_conflict(conn):
+    """A retried job must clear its old stage_attempts rows so the next claim
+    can insert a fresh attempt row without a UNIQUE(job_id, attempt)
+    conflict."""
+    view = _create(conn)
+    job = list_jobs(conn)[0]
+    conn.execute(
+        "UPDATE jobs SET status = 'dead', attempts = 3, worker_id = 'worker-a', "
+        "lease_epoch = 2, lease_expires_at = ? WHERE id = ?",
+        (utcnow().isoformat(), job.id),
+    )
+    # Old attempt rows from the previous run.
+    for attempt in (1, 2, 3):
+        conn.execute(
+            """
+            INSERT INTO stage_attempts (
+                attempt_id, job_id, run_id, stage, attempt, worker_id,
+                lease_epoch, status, started_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "att_" + hashlib.sha256(f"{job.id}|{attempt}".encode()).hexdigest()[:16],
+                job.id,
+                view.run_id,
+                job.stage,
+                attempt,
+                "worker-a",
+                2,
+                "running",
+                utcnow().isoformat(),
+            ),
+        )
+    conn.commit()
+    _set_status(conn, view.public_id, "FAILED_RETRYABLE")
+
+    result = execute(conn, "retry", research_id=view.public_id)
+    assert result.ok is True
+
+    # Old stage_attempts rows are cleared.
+    remaining = conn.execute(
+        "SELECT count(*) FROM stage_attempts WHERE job_id = ?", (job.id,)
+    ).fetchone()[0]
+    assert remaining == 0, f"expected 0 stage_attempts rows, got {remaining}"
+
+    # The job can be re-claimed and a new attempt row inserted without a
+    # UNIQUE(job_id, attempt) conflict.
+    claimed = claim_job(
+        conn,
+        "worker-b",
+        lease_seconds=60,
+        now=utcnow(),
+    )
+    assert claimed is not None
+    assert claimed.id == job.id
 
 
 def test_cancel_cancels_the_run_and_its_queued_jobs_and_keeps_the_history(conn):

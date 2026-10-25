@@ -1085,6 +1085,17 @@ def retry_run(
             raise InvalidTransition(
                 f"run {row['public_id']} has a live worker lease and is already running"
             )
+        # Clear stage_attempts for the retried jobs so the next claim can
+        # insert fresh attempt rows without a UNIQUE(job_id, attempt)
+        # conflict. Without this, a job retried after exhausting its attempts
+        # would fail on re-claim because a stage_attempts row already exists
+        # for the same (job_id, attempt) from the previous run.
+        conn.execute(
+            "DELETE FROM stage_attempts WHERE job_id IN ("
+            "SELECT id FROM jobs WHERE run_id = ? AND status IN ('failed', 'dead')"
+            ")",
+            (row["run_id"],),
+        )
         conn.execute(
             "UPDATE jobs SET status = 'queued', attempts = 0, worker_id = NULL, "
             "lease_expires_at = NULL, lease_epoch = lease_epoch + 1, "

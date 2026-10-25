@@ -2206,10 +2206,33 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
     now = _utc_now()
     problem = _problem_statement(conn, run_id)
 
+    # Canonical opportunity identity: same derivation as the scoring stage.
+    # cluster_id when the pain points are clustered, otherwise normalized_key.
+    # run_id is deliberately absent so the same problem resolves to the same id
+    # across runs and stages. Fall back to the problem text only when there
+    # are no pain points yet.
+    _canonical_row = conn.execute(
+        """
+        SELECT cm.cluster_id, pp.normalized_key, pp.pain_id
+        FROM cluster_members cm
+        JOIN pain_points pp ON pp.pain_id = cm.pain_id
+        WHERE cm.valid_to IS NULL
+        ORDER BY cm.valid_from DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if _canonical_row:
+        _canonical_key = _canonical_row[0] or _canonical_row[1] or _canonical_row[2] or problem
+    else:
+        _key_row = conn.execute(
+            "SELECT normalized_key FROM pain_points ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        _canonical_key = _key_row[0] if _key_row else problem
+    opp_id = create_canonical_id(_canonical_key)
+
     # Persist an opportunity row so results link back to one. The identity is
-    # canonical (the problem statement alone, no run id), so the same problem
-    # researched in another run resolves to this same row instead of forking.
-    opp_id = create_canonical_id(problem)
+    # canonical (no run id), so the same problem researched in another run
+    # resolves to this same row instead of forking.
     try:
         OpportunityStore(conn).upsert(
             __import__("product_hunter.db.opportunity", fromlist=["OpportunityRecord"]).OpportunityRecord(
@@ -2708,7 +2731,30 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
     now = _utc_now()
     problem = _problem_statement(conn, run_id)
 
-    opp_id = create_canonical_id(problem)
+    # Canonical opportunity identity: same derivation as the scoring stage.
+    # cluster_id when the pain points are clustered, otherwise normalized_key.
+    # run_id is deliberately absent so the same problem resolves to the same id
+    # across runs and stages. Fall back to the problem text only when there
+    # are no pain points yet.
+    _canonical_row = conn.execute(
+        """
+        SELECT cm.cluster_id, pp.normalized_key, pp.pain_id
+        FROM cluster_members cm
+        JOIN pain_points pp ON pp.pain_id = cm.pain_id
+        WHERE cm.valid_to IS NULL
+        ORDER BY cm.valid_from DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if _canonical_row:
+        _canonical_key = _canonical_row[0] or _canonical_row[1] or _canonical_row[2] or problem
+    else:
+        _key_row = conn.execute(
+            "SELECT normalized_key FROM pain_points ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        _canonical_key = _key_row[0] if _key_row else problem
+    opp_id = create_canonical_id(_canonical_key)
+
     try:
         OpportunityStore(conn).upsert(
             __import__("product_hunter.db.opportunity", fromlist=["OpportunityRecord"]).OpportunityRecord(
@@ -3624,6 +3670,14 @@ def _scoring_handler(context: Any) -> dict[str, Any] | None:
         canonical_key = cluster_id or (normalized_key or pain_id)
         opp_id = create_canonical_id(canonical_key)
         now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Resolve canonical_id conflicts with pre-73cebc1 data, where
+        # canonical_id was derived from raw problem text and may not equal
+        # opportunity_id. find_by_canonical returns the living survivor
+        # (merged_into IS NULL), so resolving to it keeps the unique
+        # canonical_id index from being violated by a new opportunity_id.
+        existing = store.find_by_canonical(opp_id)
+        if existing is not None:
+            opp_id = existing["opportunity_id"]
         record = OpportunityRecord(
             opportunity_id=opp_id,
             run_id=job.run_id,
