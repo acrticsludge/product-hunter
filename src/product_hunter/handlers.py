@@ -358,6 +358,24 @@ def _write_spend_ledger(
     )
 
 
+def _extract_topic(seed: str, max_chars: int = 120) -> str:
+    """Extract a short search topic from a longer seed text.
+
+    Takes the first sentence of the seed, then truncates to ``max_chars``
+    at a word boundary, so query templates produce search-friendly queries
+    instead of long objective dumps that no search API can match.
+    """
+    text = " ".join(str(seed).split())
+    if not text:
+        return "operational pain points"
+    first_sentence = text.split(".", 1)[0].strip()
+    if not first_sentence:
+        first_sentence = text
+    if len(first_sentence) > max_chars:
+        first_sentence = first_sentence[:max_chars].rsplit(" ", 1)[0]
+    return first_sentence or "operational pain points"
+
+
 def _discovery_handler(context: Any) -> dict[str, Any] | None:
     """Run a bounded multi-source discovery pass."""
     conn = context.conn
@@ -383,6 +401,7 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
         pass
     if not str(seed).strip():
         seed = "manual workaround problem"
+    topic = _extract_topic(seed)
 
     registry = load_registry()
     Store(conn).sync_registry(registry)
@@ -428,7 +447,7 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
     for template in plan_for_stage("discovery"):
         if planned_count >= 12:
             break
-        text = template.render(str(seed))
+        text = template.render(topic)
         source_id = active_sources[planned_count % len(active_sources)]
         try:
             query, admitted, _refusal = frontier.propose(text, source_id)

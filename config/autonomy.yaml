@@ -28,21 +28,6 @@ budget:
   per_source:
     hn_algolia:
       source_requests_per_source: 100
-# A probe that stops is silent: it has no terminal status to wait for. The
-# watchdog names the silence and records a PROBE_STALLED event, so the
-# operator (or the AI) can see it instead of waiting for a cycle that will
-# never start.
-probe_watchdog:
-  # A run with no worker lease and no heartbeat for this long is stalled.
-  heartbeat_stall_seconds: 900
-  # A run that holds a live lease but has not advanced a stage for this long
-  # is running abnormally long, and is reported while it still runs.
-  stage_stall_seconds: 3600
-  # The probe was due this long ago and owns no run: the engine is not
-  # ticking it.
-  cycle_overdue_grace_seconds: 300
-  # One event per kind per probe per window, so a long stall is not spam.
-  report_interval_seconds: 900
 source_pacing:
   default_min_interval_seconds: 60
   per_source:

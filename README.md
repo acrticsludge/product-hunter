@@ -280,3 +280,11 @@ Ten skills under `.opencode/skills/`: `entity-resolution`,
 ## Secrets
 
 `.env` is gitignored and never committed. `.env.example` holds names only.
+
+## Interactive TUI
+
+Launch with `ph tui` (requires Bun >= 1.4). The app lives under `tui/` and
+uses OpenTUI (React). It talks to `ph tui-bridge` over NDJSON. Panels cover
+runs, probes, jobs, DB, sources, index, project, models/bench, autonomy,
+observe, and per-entity logs. The Command Palette (`:`) runs any `ph`
+command not yet given a dedicated panel.

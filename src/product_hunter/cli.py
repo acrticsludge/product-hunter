@@ -389,6 +389,12 @@ def build_parser() -> argparse.ArgumentParser:
     observe_trace.add_argument("--stage", dest="stage", default=None)
     observe_trace.add_argument("--db", dest="db_path", default=None)
     observe_trace.add_argument("--out", dest="out", default=None)
+    # Hidden command: starts the TUI bridge subprocess (not listed in help).
+    tui_bridge_parser = commands.add_parser(
+        "tui-bridge", help=argparse.SUPPRESS
+    )
+    # Interactive TUI.
+    commands.add_parser("tui", help="launch the interactive OpenTUI wrapper")
     return parser
 
 
@@ -2860,6 +2866,30 @@ def _write_jsonl(path: Path, records: Iterable[BaseModel]) -> None:
             handle.write(record.model_dump_json() + "\n")
 
 
+def tui_command() -> int:
+    """Launch the interactive OpenTUI wrapper (requires Bun)."""
+    import shutil
+    import subprocess
+
+    bun = shutil.which("bun")
+    if bun is None:
+        print(json.dumps({"ok": False, "error": "bun not found; install Bun >= 1.4"}))
+        return 1
+    project_root = repo_root()
+    tui_dir = project_root / "tui"
+    if not (tui_dir / "package.json").is_file():
+        print(json.dumps({"ok": False, "error": f"tui/ not found at {tui_dir}"}))
+        return 1
+    env = dict(os.environ)
+    if "PH_DB_PATH" not in env:
+        env["PH_DB_PATH"] = str(database_path(project_root))
+    env["PH_PROJECT_ROOT"] = str(project_root)
+    completed = subprocess.run(
+        [bun, "run", "src/index.tsx"], cwd=str(tui_dir), env=env
+    )
+    return int(completed.returncode)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -2935,6 +2965,12 @@ def main(argv: list[str] | None = None) -> int:
         return registry_main(argv)
     if args.command == "probe":
         return _run_probe_command(args)
+    if args.command == "tui":
+        return tui_command()
+    if args.command == "tui-bridge":
+        from product_hunter import tui_bridge
+
+        return tui_bridge.main([])
     parser.print_help()
     return 0
 

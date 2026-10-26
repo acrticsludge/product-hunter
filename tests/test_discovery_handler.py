@@ -112,3 +112,32 @@ def test_discovery_handler_records_empty_status(monkeypatch) -> None:
         assert all(r.status.value in ("empty", "success", "failure", "timeout") for r in records)
     finally:
         store.close()
+
+
+def test_extract_topic_short_seed_unchanged() -> None:
+    from product_hunter.handlers import _extract_topic
+
+    assert _extract_topic("manual report") == "manual report"
+
+
+def test_extract_topic_takes_first_sentence() -> None:
+    from product_hunter.handlers import _extract_topic
+
+    topic = _extract_topic("First sentence here. Second sentence follows.")
+    assert topic == "First sentence here"
+
+
+def test_extract_topic_truncates_long_sentence() -> None:
+    from product_hunter.handlers import _extract_topic
+
+    long_seed = "a " * 200
+    topic = _extract_topic(long_seed, max_chars=20)
+    assert len(topic) <= 20
+    assert topic == topic.strip()
+
+
+def test_extract_topic_empty_seed_defaults() -> None:
+    from product_hunter.handlers import _extract_topic
+
+    assert _extract_topic("") == "operational pain points"
+    assert _extract_topic("   ") == "operational pain points"
