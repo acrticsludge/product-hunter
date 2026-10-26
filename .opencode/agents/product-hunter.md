@@ -5,61 +5,15 @@ temperature: 0.2
 permissions:
   - action: "*"
     resource: "*"
-    effect: deny
-  - action: product_hunter
-    resource: "*"
     effect: allow
-  - action: task
-    resource: "researcher"
-    effect: allow
-  - action: task
-    resource: "investigator"
-    effect: allow
-  - action: task
-    resource: "validator"
-    effect: allow
-  - action: task
-    resource: "startup-killer"
-    effect: allow
-  - action: question
-    resource: "*"
-    effect: allow
-  - action: skill
-    resource: "*"
-    effect: allow
-  - action: shell
-    resource: "*"
-    effect: deny
-  - action: glob
-    resource: "*"
-    effect: deny
-  - action: grep
-    resource: "*"
-    effect: deny
-  - action: list
-    resource: "*"
-    effect: deny
-  - action: external_directory
-    resource: "*"
-    effect: deny
-  - action: edit
-    resource: "*"
-    effect: deny
-  - action: read
-    resource: "*"
-    effect: deny
-  - action: websearch
-    resource: "*"
-    effect: deny
-  - action: webfetch
-    resource: "*"
-    effect: deny
 ---
 
-You control Product Hunter through the `product_hunter` tool. Use it to create,
-list, inspect, continue, resume, pause, retry, cancel, read logs, check store
-health, and recover requests. Durable work belongs to the worker and its SQLite
-state, not this chat.
+You control Product Hunter through the `product_hunter` tool where it is
+available. On machines where that tool is not registered (for example a remote
+VM), use the `ph` CLI via shell instead: `ph research list`,
+`ph research create --objective "..."`, `ph research status <id>`,
+`ph research continue <id>`, `ph doctor`, etc. Durable work belongs to the
+worker and its SQLite state, not this chat.
 
 Never claim that a run is active, complete, promotable, or projected until the
 tool's persisted state confirms it. If the tool says a worker is absent or a

@@ -3,61 +3,72 @@ catalog:
   refresh_interval_seconds: 900
   discovery_timeout_seconds: 30
 roles:
-  # The extraction chain leads with the deepseek family, and the router takes
-  # the cheapest model that matches it: today the one Phase 1 measured its
-  # evidence quality on. The chain names a family and not a model, and the
-  # prices come from the live catalogue, so a price change can move the
-  # extraction onto another member of the family whose output was never
-  # hand-checked. A new model of the family is picked up with no edit, and if
-  # the family disappears the chain falls through to any flash model and then
-  # to any free model. An operator who wants the cheap flash model for
-  # extraction moves the flash pattern to the front; that is a one-line change.
+  # Heavy reasoning tasks: nemotron 3.5 super (nvidia/nvidia) first, then fall back.
   extraction:
+    - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
     - pattern: "opencode-go/deepseek*"
     - pattern: "opencode-go/*-flash*"
     - pattern: "opencode-go/*"
     - pattern: "opencode-go/*-free*"
-  classification:
-    - pattern: "opencode-go/*-flash*"
-    - pattern: "opencode-go/*"
-    - pattern: "opencode-go/*-free*"
-  normalization:
-    - pattern: "opencode-go/*-flash*"
-    - pattern: "opencode-go/*"
-    - pattern: "opencode-go/*-free*"
-  deduplication:
-    - pattern: "opencode-go/*-flash*"
-    - pattern: "opencode-go/*"
-    - pattern: "opencode-go/*-free*"
-  entity_resolution:
-    - pattern: "opencode-go/*"
-    - pattern: "opencode-go/*-free*"
-  clustering:
-    - pattern: "opencode-go/*"
-    - pattern: "opencode-go/*-free*"
-  validation:
-    - pattern: "opencode-go/*"
-    - pattern: "opencode-go/*-free*"
   investigation:
+    - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
     - pattern: "opencode-go/deepseek*"
     - pattern: "opencode-go/*"
     - pattern: "opencode-go/*-free*"
   competitor_research:
+    - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
     - pattern: "opencode-go/deepseek*"
     - pattern: "opencode-go/*"
     - pattern: "opencode-go/*-free*"
   counter_evidence:
+    - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
     - pattern: "opencode-go/deepseek*"
     - pattern: "opencode-go/*"
     - pattern: "opencode-go/*-free*"
   scoring:
+    - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
     - pattern: "opencode-go/deepseek*"
-    - pattern: "opencode-go/*"
-    - pattern: "opencode-go/*-free*"
-  reporting:
     - pattern: "opencode-go/*"
     - pattern: "opencode-go/*-free*"
   synthesis:
+    - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
     - pattern: "opencode-go/deepseek*"
+    - pattern: "opencode-go/*"
+    - pattern: "opencode-go/*-free*"
+  validation:
+    - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
+    - pattern: "opencode-go/*"
+    - pattern: "opencode-go/*-free*"
+  clustering:
+    - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
+    - pattern: "opencode-go/*"
+    - pattern: "opencode-go/*-free*"
+  independence_analysis:
+    - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
+    - pattern: "opencode-go/*"
+    - pattern: "opencode-go/*-free*"
+
+  # Cheap gather tasks: Beam first, then fall back.
+  classification:
+    - pattern: "opencode-go/beam-free"
+    - pattern: "opencode-go/*-flash*"
+    - pattern: "opencode-go/*"
+    - pattern: "opencode-go/*-free*"
+  normalization:
+    - pattern: "opencode-go/beam-free"
+    - pattern: "opencode-go/*-flash*"
+    - pattern: "opencode-go/*"
+    - pattern: "opencode-go/*-free*"
+  deduplication:
+    - pattern: "opencode-go/beam-free"
+    - pattern: "opencode-go/*-flash*"
+    - pattern: "opencode-go/*"
+    - pattern: "opencode-go/*-free*"
+  entity_resolution:
+    - pattern: "opencode-go/beam-free"
+    - pattern: "opencode-go/*"
+    - pattern: "opencode-go/*-free*"
+  reporting:
+    - pattern: "opencode-go/beam-free"
     - pattern: "opencode-go/*"
     - pattern: "opencode-go/*-free*"
