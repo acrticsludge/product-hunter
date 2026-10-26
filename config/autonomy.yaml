@@ -18,7 +18,7 @@ budget:
   # The engine charges the wall time of every cycle. A handler charges the
   # dimensions it knows about.
   per_operation:
-    wall_time_seconds: 7200
+    wall_time_seconds: 31536000
     tool_calls_total: 500
     fetch_requests: 200
     model_calls: 200
