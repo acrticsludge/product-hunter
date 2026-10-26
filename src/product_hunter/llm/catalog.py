@@ -18,6 +18,37 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# How many levels of JSON nesting a catalogue payload may carry. A catalogue
+# is shallow; anything deeper is a malformed (or hostile) payload.
+_MAX_JSON_DEPTH = 64
+
+
+def _nesting_depth(payload: str) -> int:
+    """The deepest bracket nesting in *payload*, ignoring strings."""
+    depth = 0
+    maximum = 0
+    in_string = False
+    escape = False
+    for char in payload:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > maximum:
+                maximum = depth
+        elif char in "]}":
+            if depth > 0:
+                depth -= 1
+    return maximum
+
 
 def utcnow() -> datetime:
     """The current UTC time.
@@ -168,6 +199,12 @@ def parse_model_catalog(
     not an object or a list, or holds an entry without a usable provider or
     model id is refused with ``MalformedCatalogError``.
     """
+    # A payload nested beyond a sane depth is refused before the parser
+    # gets a chance to build a structure it cannot safely walk.
+    if _nesting_depth(payload) > _MAX_JSON_DEPTH:
+        raise MalformedCatalogError(
+            f"{source}: payload is nested too deeply to parse"
+        )
     try:
         document = json.loads(payload)
     except json.JSONDecodeError as exc:
