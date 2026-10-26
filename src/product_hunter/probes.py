@@ -530,6 +530,12 @@ def recover_probes(conn: sqlite3.Connection, *, now: datetime | None = None) -> 
                     "UPDATE research_runs SET probe_cycle_closed_at = ? WHERE run_id = ?",
                     (moment.isoformat(), run["run_id"]),
                 )
+                # The probe no longer owns this run; clear the reference so the
+                # probe's state stays coherent after recovery.
+                conn.execute(
+                    "UPDATE probes SET current_run_id = NULL WHERE probe_id = ?",
+                    (probe_id,),
+                )
             changed.append(row["public_id"])
     recover_expired_leases(conn, now=moment)
     return changed
