@@ -150,7 +150,7 @@ def _handle_call_tool(params: dict) -> dict:
     args = params.get("arguments", {})
     action = args.get("action", "")
     rid = args.get("research_id", "")
-    pid = args.get("probe_id", "")
+    pid = args.get("probe_id", "") or args.get("research_id", "")
     objective = args.get("objective", "")
     interval = args.get("interval", 300)
     limit = args.get("limit", 50)
