@@ -358,12 +358,13 @@ def _write_spend_ledger(
     )
 
 
-def _extract_topic(seed: str, max_chars: int = 120) -> str:
-    """Extract a short search topic from a longer seed text.
+def _extract_topic(seed: str, max_chars: int = 40) -> str:
+    """Extract a short keyword phrase from a longer seed text.
 
-    Takes the first sentence of the seed, then truncates to ``max_chars``
-    at a word boundary, so query templates produce search-friendly queries
-    instead of long objective dumps that no search API can match.
+    Takes the first sentence of the seed and truncates to ``max_chars`` at
+    a word boundary. The result is a short phrase like ``"operational pain
+    points"`` that search APIs including hn_algolia can actually match,
+    instead of a long sentence that matches nothing.
     """
     text = " ".join(str(seed).split())
     if not text:
@@ -374,6 +375,46 @@ def _extract_topic(seed: str, max_chars: int = 120) -> str:
     if len(first_sentence) > max_chars:
         first_sentence = first_sentence[:max_chars].rsplit(" ", 1)[0]
     return first_sentence or "operational pain points"
+
+
+def _keyword_query(template: Any, topic: str) -> str:
+    """Build a short keyword-based query from a template and topic.
+
+    Uses the template's family to add a short, source-friendly modifier so
+    the query is specific enough to be useful but short enough to match
+    across all discovery sources (including hn_algolia full-text search).
+    """
+    family = str(template.family)
+    base = topic.strip()
+    if not base:
+        base = "operational pain points"
+    modifiers: dict[str, str] = {
+        "problem": "",
+        "direct_pain": "",
+        "alternative_wording": "alternative",
+        "alternative_to": "alternative",
+        "severity": "severity",
+        "workflow_pain": "workflow",
+        "manual_workflow": "manual process",
+        "workaround": "workaround",
+        "existing_solution": "tool",
+        "failed_solution": "failed",
+        "feature_request": "feature",
+        "switching_pain": "switching",
+        "cost_consequence": "cost",
+        "role_workflow": "role workflow",
+        "trigger_incident": "incident",
+        "competitor": "competitor",
+        "counter_evidence": "evidence",
+    }
+    modifier = modifiers.get(family, "")
+    if modifier:
+        query = f"{base} {modifier}"
+    else:
+        query = base
+    if len(query) > 90:
+        query = query[:90].rsplit(" ", 1)[0]
+    return query or base
 
 
 def _discovery_handler(context: Any) -> dict[str, Any] | None:
@@ -442,12 +483,19 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
     # Use the contract's canonical query families for live discovery. The
     # older frontier taxonomy still provides admission, deduplication, and
     # budget accounting for the actual query text.
+    #
+    # Query text is keyword-based (short phrases) rather than full sentences:
+    # sentence templates like "{topic} is a real pain..." match nothing on
+    # sources such as hn_algolia that do full-text matching. Keyword phrases
+    # like "operational pain points" return results across all sources.
+    #
+    # All templates from the stage plan are proposed to the frontier; the
+    # frontier deduplicates per source, so repeated template wordings against
+    # different sources are still distinct searches.
     canonical_family_by_text: dict[str, str] = {}
     planned_count = 0
     for template in plan_for_stage("discovery"):
-        if planned_count >= 12:
-            break
-        text = template.render(topic)
+        text = _keyword_query(template, topic)
         source_id = active_sources[planned_count % len(active_sources)]
         try:
             query, admitted, _refusal = frontier.propose(text, source_id)
@@ -461,7 +509,7 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
     run_document_ids: set[str] = set()
     docs_count = 0
     executed = 0
-    max_queries = 12
+    max_queries = 30
     tool_calls: list = []
     tool_results: dict[str, Any] = {}
     tool_sources: dict[str, str] = {}
