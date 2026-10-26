@@ -474,6 +474,17 @@ class SourcePacingSettings(BaseModel):
     per_source: dict[str, int] = Field(default_factory=dict)
 
 
+class ProbeWatchdogSettings(BaseModel):
+    """How long a silent probe is normal before the watchdog names a stall."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    heartbeat_stall_seconds: int = Field(default=900, gt=0)
+    stage_stall_seconds: int = Field(default=3600, gt=0)
+    cycle_overdue_grace_seconds: int = Field(default=300, ge=0)
+    report_interval_seconds: int = Field(default=900, gt=0)
+
+
 class AutonomyConfig(BaseModel):
     """The operation layer's settings.
 
@@ -499,6 +510,9 @@ class AutonomyConfig(BaseModel):
     priority_aging: PriorityAging
     budget: OperationBudgetLimits
     source_pacing: SourcePacingSettings
+    probe_watchdog: ProbeWatchdogSettings = Field(
+        default_factory=ProbeWatchdogSettings
+    )
 
 
 def repo_root() -> Path:

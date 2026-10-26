@@ -15,7 +15,7 @@ import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Iterator
 
@@ -94,7 +94,7 @@ class ProbeView:
     checkpoint_count: int
     latest_checkpoint: str = ""
     last_activity: str = ""
-    errors: list = None  # type: ignore[assignment]
+    errors: list = field(default_factory=list)
     active_run: dict | None = None
 
 
@@ -117,13 +117,7 @@ def _resolve_probe_row(conn: sqlite3.Connection, probe_id: str) -> sqlite3.Row:
     if row is None:
         row = conn.execute("SELECT * FROM probes WHERE probe_id = ?", (probe_id,)).fetchone()
     if row is None:
-        known = conn.execute(
-            "SELECT public_id FROM probes ORDER BY created_at DESC LIMIT 10"
-        ).fetchall()
-        message = f"no probe matches {probe_id!r}"
-        if known:
-            message += ". Known probes: " + ", ".join(r[0] for r in known)
-        raise UnknownProbe(message)
+        raise UnknownProbe(f"no probe matches {probe_id!r}")
     return row
 
 
@@ -196,9 +190,38 @@ def _view_probe(conn: sqlite3.Connection, row: sqlite3.Row, *, now: datetime) ->
             conn, "SELECT count(*) FROM research_checkpoints WHERE run_id = ?",
             (current_run_id,) if current_run_id else ("",),
         ),
-        errors=[],
+        errors=_probe_errors(conn, probe_id, row),
         active_run=active_run,
     )
+
+
+def _probe_errors(conn, probe_id, row) -> list:
+    errors = []
+    if int(row["blocked_cycles"] or 0) > 0:
+        errors.append(
+            f"{int(row['blocked_cycles'])} blocked cycle(s): promotion gate refused"
+        )
+    if row["last_error"]:
+        errors.append(str(row["last_error"]))
+    # Surface the specific runs that died on a gate, so the operator can read
+    # why promotion was refused without opening the database.
+    for r in conn.execute(
+        "SELECT r.public_id, j.last_error FROM research_runs r "
+        "JOIN jobs j ON j.run_id = r.run_id "
+        "WHERE r.probe_id = ? AND j.status = 'dead' "
+        "AND j.last_error LIKE '%block%'",
+        (probe_id,),
+    ).fetchall():
+        errors.append(f"{r['public_id']}: {r['last_error']}")
+    # De-duplicate while preserving order.
+    seen = set()
+    unique = []
+    for err in errors:
+        if err in seen:
+            continue
+        seen.add(err)
+        unique.append(err)
+    return unique
 
 
 def _probe_has_live_lease(conn: sqlite3.Connection, probe_id: str, *, now: datetime) -> bool:
@@ -212,10 +235,15 @@ def _probe_has_live_lease(conn: sqlite3.Connection, probe_id: str, *, now: datet
 
 
 def _active_run(conn: sqlite3.Connection, probe_id: str) -> sqlite3.Row | None:
-    """The run this probe currently owns, if any."""
+    """The open cycle this probe currently owns, if any.
+
+    A cycle is open until its result is recorded (or an operator stops it),
+    which is what ``probe_cycle_closed_at`` marks. Run.status cannot answer
+    this: a probe run stays QUEUED for its whole life.
+    """
     return conn.execute(
         "SELECT * FROM research_runs WHERE probe_id = ? "
-        "ORDER BY created_at DESC LIMIT 1",
+        "AND probe_cycle_closed_at IS NULL ORDER BY created_at DESC LIMIT 1",
         (probe_id,),
     ).fetchone()
 
@@ -335,11 +363,16 @@ def pause_probe(
         )
         if not live and run:
             # Relinquish the active run: its queued work is cancelled and the
-            # probe may start a fresh cycle on resume.
+            # probe may start a fresh cycle on resume. The interrupted run is
+            # closed without counting a cycle: it produced no result.
             conn.execute(
                 "UPDATE jobs SET status = 'cancelled' WHERE run_id = ? "
                 "AND status = 'queued'",
                 (run["run_id"],),
+            )
+            conn.execute(
+                "UPDATE research_runs SET probe_cycle_closed_at = ? WHERE run_id = ?",
+                (moment.isoformat(), run["run_id"]),
             )
             conn.execute(
                 "UPDATE probes SET current_run_id = NULL WHERE probe_id = ?",
@@ -356,7 +389,7 @@ def resume_probe(
     with _transaction(conn):
         row = _resolve_probe_row(conn, public_id)
         status = _normalize_state(row["status"])
-        if status != "PAUSED":
+        if status not in ("PAUSED", "PAUSE_REQUESTED"):
             raise InvalidTransition(
                 f"probe {public_id} is {status}; only PAUSED can resume"
             )
@@ -375,7 +408,7 @@ def stop_probe(
     with _transaction(conn):
         row = _resolve_probe_row(conn, public_id)
         status = _normalize_state(row["status"])
-        if status not in ("RUNNING", "PAUSED"):
+        if status not in ("RUNNING", "PAUSED", "PAUSE_REQUESTED", "STOP_REQUESTED"):
             raise InvalidTransition(
                 f"probe {public_id} is {status}; only RUNNING or PAUSED can stop"
             )
@@ -392,6 +425,10 @@ def stop_probe(
             )
             # The probe is done with this run; a later restart starts fresh.
             conn.execute(
+                "UPDATE research_runs SET probe_cycle_closed_at = ? WHERE run_id = ?",
+                (moment.isoformat(), run["run_id"]),
+            )
+            conn.execute(
                 "UPDATE probes SET current_run_id = NULL WHERE probe_id = ?",
                 (row["probe_id"],),
             )
@@ -404,6 +441,8 @@ def record_probe_cycle(
     """Record a completed cycle: update counters, last_cycle_at, next_cycle_at."""
     moment = _utcnow()
     row = _resolve_probe_row(conn, probe_id)
+    if outcome not in ("success", "failed", "blocked"):
+        raise ProbeError(f"unknown cycle outcome {outcome!r}")
     ok = outcome == "success"
     failed = outcome == "failed"
     blocked = outcome == "blocked"
@@ -444,6 +483,12 @@ def record_probe_cycle(
                 row["probe_id"],
             ),
         )
+        # Close the cycle in the same transaction as the counter it feeds, so a
+        # crash cannot count one run twice or leave it blocking the next cycle.
+        conn.execute(
+            "UPDATE research_runs SET probe_cycle_closed_at = ? WHERE run_id = ?",
+            (moment.isoformat(), run_id),
+        )
     return get_probe(conn, row["public_id"])
 
 
@@ -453,12 +498,12 @@ def get_active_run(conn: sqlite3.Connection, probe_id: str):
     return row["run_id"] if row is not None else None
 
 
-def recover_probes(conn: sqlite3.Connection) -> list[str]:
+def recover_probes(conn: sqlite3.Connection, *, now: datetime | None = None) -> list[str]:
     """Resolve PAUSE/STOP requests whose worker is gone; recover expired leases.
 
     Returns the public ids of probes whose state was changed.
     """
-    moment = _utcnow()
+    moment = utc_now(now)
     changed: list[str] = []
     rows = conn.execute(
         "SELECT probe_id, public_id, status FROM probes "
@@ -481,6 +526,10 @@ def recover_probes(conn: sqlite3.Connection) -> list[str]:
                     "UPDATE jobs SET status = 'cancelled' WHERE run_id = ? AND status = 'queued'",
                     (run["run_id"],),
                 )
+                conn.execute(
+                    "UPDATE research_runs SET probe_cycle_closed_at = ? WHERE run_id = ?",
+                    (moment.isoformat(), run["run_id"]),
+                )
             changed.append(row["public_id"])
-    recover_expired_leases(conn)
+    recover_expired_leases(conn, now=moment)
     return changed

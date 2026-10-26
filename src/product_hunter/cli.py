@@ -141,7 +141,6 @@ from product_hunter.probes import (
     list_probes,
     pause_probe,
     record_probe_cycle,
-    recover_probes,
     resume_probe,
     start_probe,
     stop_probe,
@@ -1913,10 +1912,29 @@ def probe_status_command(
         if wanted is None:
             return 1
         view = get_probe(conn, wanted)
-        print(json.dumps({"ok": True, "action": "status", **_probe_payload(view)}))
+        from product_hunter.config import load_autonomy_config
+        from product_hunter.probe_watchdog import (
+            audit_probes,
+            last_stalls,
+            thresholds_for,
+        )
+
+        limits = thresholds_for(load_autonomy_config().probe_watchdog)
+        stalls = [
+            stall.to_dict()
+            for stall in audit_probes(conn, thresholds=limits)
+            if stall.probe_id == view.probe_id
+        ]
+        payload = _probe_payload(view)
+        payload["stalls"] = stalls
+        payload["recorded_stalls"] = last_stalls(conn, view.probe_id)
+        print(json.dumps({"ok": True, "action": "status", **payload}))
         return 0
     except UnknownProbe as exc:
         print(json.dumps({"ok": False, "error": exc.message, "code": exc.code}))
+        return 1
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}", "code": "probe_status_failed"}))
         return 1
     finally:
         conn.close()
@@ -1967,6 +1985,9 @@ def probe_report_command(
     except UnknownProbe as exc:
         print(json.dumps({"ok": False, "error": exc.message, "code": exc.code}))
         return 1
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}", "code": "probe_report_failed"}))
+        return 1
     finally:
         conn.close()
 
@@ -2016,6 +2037,33 @@ def _build_probe_report(conn, view: dict[str, object]) -> dict[str, object]:
         if ar["checkpoint"]:
             lines.append(f"checkpoint: {ar['checkpoint']}")
     lines.append("")
+    lines.append("## Stall")
+    from product_hunter.config import load_autonomy_config
+    from product_hunter.probe_watchdog import (
+        audit_probes,
+        last_stalls,
+        thresholds_for,
+    )
+
+    limits = thresholds_for(load_autonomy_config().probe_watchdog)
+    stalls = [
+        stall.to_dict()
+        for stall in audit_probes(conn, thresholds=limits)
+        if stall.probe_id == view["probe_id"]
+    ]
+    if stalls:
+        for stall in stalls:
+            lines.append(
+                f"- {stall['kind']} ({stall['seconds']}s): {stall['detail']}"
+            )
+    else:
+        lines.append("none detected")
+    recorded = last_stalls(conn, view["probe_id"])
+    if recorded:
+        lines.append("recorded:")
+        for event in recorded:
+            lines.append(f"  {event['created_at']} {event['kind']}: {event['detail']}")
+    lines.append("")
     lines.append("## Blockers")
     if view["errors"]:
         for err in view["errors"]:
@@ -2023,7 +2071,10 @@ def _build_probe_report(conn, view: dict[str, object]) -> dict[str, object]:
     else:
         lines.append("none")
     lines.append("")
-    lines.append(f"generated: {utcnow().isoformat()}")
+    # Minute granularity keeps a re-run in the same minute byte-identical, so
+    # the journal's idempotent write (compare bytes, touch nothing on match)
+    # actually holds instead of rewriting on every second's timestamp.
+    lines.append(f"generated: {utcnow().replace(second=0, microsecond=0).isoformat()}")
     return {"lines": lines}
 
 
@@ -2043,9 +2094,10 @@ def _write_probe_journal(public_id: str, text: str, *, now: datetime) -> None:
     stamp = now.strftime("%H-%M")
     path = _journal_root() / "Probe" / public_id / day / f"{stamp}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.is_file() and path.read_bytes() == text.encode("utf-8", errors="replace"):
+    body = text + "\n"
+    if path.is_file() and path.read_bytes() == body.encode("utf-8", errors="replace"):
         return
-    path.write_text(text, encoding="utf-8", newline="\n")
+    path.write_text(body, encoding="utf-8", newline="\n")
 
 
 def _run_probe_command(args: argparse.Namespace) -> int:

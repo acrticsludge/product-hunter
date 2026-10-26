@@ -92,12 +92,17 @@ def _engine(
 
 
 def _job(
-    store: Store, key: str, *, priority: int, payload: dict | None = None
+    store: Store,
+    key: str,
+    *,
+    priority: int,
+    payload: dict | None = None,
+    stage: str = "COLLECT",
 ) -> str:
     """A queued job that is due now."""
     job = enqueue_job(
         store.conn,
-        stage="COLLECT",
+        stage=stage,
         idempotency_key=key,
         payload=payload if payload is not None else {},
         priority=priority,
@@ -440,6 +445,35 @@ def test_a_job_whose_stage_has_no_handler_is_deferred_and_keeps_its_attempt() ->
         blocked = [row for row in events if row["event_type"] == "job_blocked"]
         assert len(blocked) == 1
         assert "COLLECT" in blocked[0]["detail_json"]
+    finally:
+        store.close()
+
+
+def test_a_batch_of_unhandled_jobs_does_not_starve_a_runnable_job() -> None:
+    """The old fixed deferral cap let a full batch of unhandled jobs block.
+
+    Eleven due jobs with no handler used to fill all ten deferral passes, so
+    the cycle returned before it ever looked at the runnable job behind them.
+    """
+    store = Store.open(":memory:")
+    try:
+        for index in range(11):
+            _job(store, f"unhandled-{index}", priority=int(Priority.P3))
+        target = _job(
+            store, "runnable", priority=int(Priority.P4), stage="DISCOVERY"
+        )
+
+        def handle(context):
+            return {"ok": True}
+
+        engine = _engine(store, handlers={"DISCOVERY": handle})
+        step = engine.run_once()
+
+        assert step.claimed == 1
+        assert step.blocked == 11
+        stored = get_job(store.conn, target)
+        assert stored is not None
+        assert stored.status == "succeeded"
     finally:
         store.close()
 

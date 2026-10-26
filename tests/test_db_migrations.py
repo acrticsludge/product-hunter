@@ -16,7 +16,7 @@ from product_hunter.db import (
 # The number of migration files in db/migrations, and so the schema version a
 # migrated database carries. One number, so a new migration is a one-line
 # change here instead of a hunt through the file.
-EXPECTED_VERSION = 15
+EXPECTED_VERSION = 16
 
 EXPECTED_TABLES = {
     "sources",
@@ -288,6 +288,62 @@ def test_initial_migration_accepts_a_valid_source_fetch_document_chain() -> None
             ),
         )
         assert conn.execute("SELECT count(*) FROM documents").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_probe_health_migration_backfills_open_cycles(tmp_path: Path) -> None:
+    """Upgrading a database that already has probe history must not violate
+    the new unique index: only the probe's currently open run stays open."""
+    import shutil
+
+    # Migrate only up to 15 so we can seed probe history under the old index.
+    migdir15 = tmp_path / "mig15"
+    migdir15.mkdir()
+    for path in MIGRATIONS_DIR.iterdir():
+        if path.is_file() and int(path.name.split("_")[0]) <= 15:
+            shutil.copy(path, migdir15 / path.name)
+
+    db = tmp_path / "probe-upgrade.db"
+    conn = connect(db)
+    try:
+        assert migrate(conn, migrations_dir=migdir15) == 15
+        conn.execute(
+            "INSERT INTO probes (probe_id, public_id, objective, status, "
+            "configuration, created_at, updated_at) VALUES "
+            "('p1','PRB-X','obj','RUNNING','{}','2026-01-01T00:00:00+00:00',"
+            "'2026-01-01T00:00:00+00:00')"
+        )
+        conn.execute(
+            "INSERT INTO research_runs (run_id, public_id, objective, "
+            "original_request, status, created_at, updated_at, probe_id, "
+            "completed_at) VALUES "
+            "('r1','RH-1','obj','obj','COMPLETED',"
+            "'2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00','p1',"
+            "'2026-01-01T01:00:00+00:00')"
+        )
+        conn.execute(
+            "INSERT INTO research_runs (run_id, public_id, objective, "
+            "original_request, status, created_at, updated_at, probe_id) VALUES "
+            "('r2','RH-2','obj','obj','QUEUED',"
+            "'2026-01-02T00:00:00+00:00','2026-01-02T00:00:00+00:00','p1')"
+        )
+        conn.execute("UPDATE probes SET current_run_id='r2' WHERE probe_id='p1'")
+        conn.commit()
+
+        # Upgrade to 16: the backfill must close the historical run and keep
+        # the open one, so the unique index can be created.
+        assert migrate(conn) == EXPECTED_VERSION
+        rows = conn.execute(
+            "SELECT run_id, probe_cycle_closed_at FROM research_runs "
+            "WHERE probe_id='p1' ORDER BY run_id"
+        ).fetchall()
+        assert rows[0][0] == "r1" and rows[0][1] is not None
+        assert rows[1][0] == "r2" and rows[1][1] is None
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND name='idx_research_runs_one_open_probe_cycle'"
+        ).fetchone() is not None
     finally:
         conn.close()
 

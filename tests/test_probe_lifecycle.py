@@ -8,13 +8,21 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from product_hunter.autonomy.engine import OperationEngine
 from product_hunter.config import load_autonomy_config
-from product_hunter.db import connect, enqueue_job, list_jobs, migrate
+from product_hunter.db import (
+    claim_job,
+    complete_job,
+    connect,
+    enqueue_job,
+    fail_job,
+    list_jobs,
+    migrate,
+)
 from product_hunter.fetch import utcnow
 from product_hunter.probes import (
     InvalidTransition,
@@ -41,7 +49,7 @@ PROBE_CONFIG = json.dumps(
 
 @pytest.fixture
 def conn(tmp_path):
-    """A migrated database in a temporary file (schema version 15 incl. probes)."""
+    """A migrated database in a temporary file (schema version 16 incl. probes)."""
     connection = connect(tmp_path / "probe.db")
     migrate(connection)
     try:
@@ -190,6 +198,132 @@ def test_probe_tick_respects_one_active_run(conn):
     engine = OperationEngine(conn, ident, {}, config=config)
     started = engine._tick_probes(now)
     assert started == 0  # active run blocks a new cycle
+
+
+def test_a_gate_blocked_run_records_a_blocked_cycle_and_holds_the_cadence(conn):
+    """A refused promotion ends the cycle instead of wedging the probe.
+
+    Run.status is operator state and never becomes COMPLETED, so a dead
+    OBSIDIAN_SYNC job left by the gate used to leave current_run_id set
+    forever: no cycle counted and no new cycle started.
+    """
+    view = _started_probe(conn)
+    now = utcnow()
+    conn.execute(
+        "UPDATE probes SET next_cycle_at = ? WHERE probe_id = ?",
+        (now.isoformat(), view.probe_id),
+    )
+    run, _ = create_run(
+        conn, CreateRequest(objective=PROBE_OBJECTIVE), probe_id=view.probe_id, now=now
+    )
+    discovery = claim_job(conn, "worker-test", now=now)
+    assert discovery is not None and discovery.stage == "DISCOVERY"
+    complete_job(
+        conn,
+        discovery,
+        worker_id="worker-test",
+        lease_epoch=discovery.lease_epoch,
+        now=now,
+    )
+    job = enqueue_job(
+        conn,
+        stage="OBSIDIAN_SYNC",
+        idempotency_key=f"obsidian:{run.run_id}",
+        run_id=run.run_id,
+        priority=0,
+        max_attempts=1,
+        now=now,
+    )
+    claimed = claim_job(conn, "worker-test", now=now)
+    assert claimed is not None and claimed.id == job.id
+    fail_job(
+        conn,
+        claimed,
+        worker_id="worker-test",
+        lease_epoch=claimed.lease_epoch,
+        error="GateBlocked: run is blocked by the gate: promotion_blocked",
+        now=now,
+    )
+    conn.commit()
+
+    engine = OperationEngine(
+        conn, WorkerIdentity.create(), {}, config=load_autonomy_config()
+    )
+    started = engine._tick_probes(now)
+
+    assert started == 0
+    probe = get_probe(conn, view.public_id)
+    assert probe.total_cycles == 1
+    assert probe.blocked_cycles == 1
+    assert probe.failed_cycles == 0
+    assert probe.current_run_id is None
+    assert probe.status == "RUNNING"
+    # The cadence the record wrote holds: no second run starts in this tick.
+    runs = conn.execute(
+        "SELECT run_id FROM research_runs WHERE probe_id = ?", (view.probe_id,)
+    ).fetchall()
+    assert len(runs) == 1
+
+
+def test_a_recorded_cycle_is_not_counted_twice_and_the_next_cycle_starts(conn):
+    """One run ends one cycle; the next due tick starts a new run.
+
+    A probe run keeps status QUEUED after its result is recorded, so a lookup
+    by status found the same run on every due tick: the counter inflated and
+    the one-open-cycle index refused a new run.
+    """
+    view = _started_probe(conn)
+    now = utcnow()
+    conn.execute(
+        "UPDATE probes SET next_cycle_at = ? WHERE probe_id = ?",
+        (now.isoformat(), view.probe_id),
+    )
+    conn.commit()
+    engine = OperationEngine(
+        conn, WorkerIdentity.create(), {}, config=load_autonomy_config()
+    )
+    assert engine._tick_probes(now) == 1
+    first = conn.execute(
+        "SELECT run_id FROM research_runs WHERE probe_id = ?", (view.probe_id,)
+    ).fetchone()
+
+    # The gate refuses the promotion, so the run has no runnable job left.
+    conn.execute(
+        "UPDATE jobs SET status = 'dead', "
+        "last_error = 'GateBlocked: promotion_blocked' WHERE run_id = ?",
+        (first["run_id"],),
+    )
+    conn.commit()
+
+    # Due again: the blocked cycle is recorded once and the run is closed.
+    due = now + timedelta(seconds=400)
+    assert engine._tick_probes(due) == 0
+    probe = get_probe(conn, view.public_id)
+    assert probe.total_cycles == 1
+    assert probe.blocked_cycles == 1
+    assert probe.current_run_id is None
+    closed = conn.execute(
+        "SELECT probe_cycle_closed_at FROM research_runs WHERE run_id = ?",
+        (first["run_id"],),
+    ).fetchone()
+    assert closed["probe_cycle_closed_at"] is not None
+
+    # Due once more: the closed run is not counted a second time, and a new
+    # cycle starts because the probe now owns no open run.
+    later = due + timedelta(seconds=601)
+    assert engine._tick_probes(later) == 1
+    probe = get_probe(conn, view.public_id)
+    assert probe.total_cycles == 1
+    assert probe.blocked_cycles == 1
+    runs = conn.execute(
+        "SELECT run_id FROM research_runs WHERE probe_id = ? ORDER BY created_at",
+        (view.probe_id,),
+    ).fetchall()
+    assert [row["run_id"] for row in runs] == [
+        first["run_id"],
+        probe.current_run_id,
+    ]
+    assert probe.current_run_id != first["run_id"]
 
 
 def test_paused_probe_starts_no_new_cycle(conn):
