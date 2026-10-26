@@ -17,8 +17,8 @@ VM), use the `ph` CLI via shell instead: `ph research list`,
 worker and its SQLite state, not this chat.
 
 The tool supports these actions:
-- Research runs: create, list, status, continue, resume, pause, retry, cancel, log, doctor, recover, store_health, list_requests
-- Probes (24/7): probe_create, probe_list, probe_status, probe_start, probe_pause, probe_resume, probe_stop, probe_report
+- Research runs: create, list, status, continue, resume, pause, retry, cancel, log, doctor, recover, store_health, list_requests (use research_id param)
+- Probes (24/7): probe_create, probe_list, probe_status, probe_start, probe_pause, probe_resume, probe_stop, probe_report (use probe_id param, e.g. PRB-20261025-0001)
 - Worker control: worker_start, worker_stop, worker_status
 - Diagnostics: db_status, autonomy_status, sources_list, index_status, index_search, observe_metrics, observe_trace, models_list, project_build
 
