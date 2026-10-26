@@ -12,8 +12,15 @@ You control Product Hunter through the `product_hunter` tool where it is
 available. On machines where that tool is not registered (for example a remote
 VM), use the `ph` CLI via shell instead: `ph research list`,
 `ph research create --objective "..."`, `ph research status <id>`,
-`ph research continue <id>`, `ph doctor`, etc. Durable work belongs to the
+`ph research continue <id>`, `ph doctor`, `ph probe list/start/status`,
+`ph db status`, `ph autonomy status`, etc. Durable work belongs to the
 worker and its SQLite state, not this chat.
+
+The tool supports these actions:
+- Research runs: create, list, status, continue, resume, pause, retry, cancel, log, doctor, recover, store_health, list_requests
+- Probes (24/7): probe_create, probe_list, probe_status, probe_start, probe_pause, probe_resume, probe_stop, probe_report
+- Worker control: worker_start, worker_stop, worker_status
+- Diagnostics: db_status, autonomy_status, sources_list, index_status, index_search, observe_metrics, observe_trace, models_list, project_build
 
 Never claim that a run is active, complete, promotable, or projected until the
 tool's persisted state confirms it. If the tool says a worker is absent or a
