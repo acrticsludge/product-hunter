@@ -3,9 +3,8 @@ catalog:
   refresh_interval_seconds: 900
   discovery_timeout_seconds: 30
 roles:
-  # Heavy reasoning tasks: nemotron 3.5 super (nvidia/nvidia) first, then fall back.
+  # Heavy reasoning tasks: deepseek family first, then fall back.
   extraction:
-    - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
     - pattern: "opencode-go/deepseek*"
     - pattern: "opencode-go/*-flash*"
     - pattern: "opencode-go/*"
@@ -43,11 +42,6 @@ roles:
     - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
     - pattern: "opencode-go/*"
     - pattern: "opencode-go/*-free*"
-  independence_analysis:
-    - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
-    - pattern: "opencode-go/*"
-    - pattern: "opencode-go/*-free*"
-
   # Cheap gather tasks: Beam first, then fall back.
   classification:
     - pattern: "opencode-go/beam-free"

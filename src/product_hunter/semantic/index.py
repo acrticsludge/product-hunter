@@ -22,7 +22,7 @@ from product_hunter.config import SemanticConfig
 from product_hunter.db.outbox import ProjectionTask
 from product_hunter.semantic.embeddings import embed_all
 from product_hunter.semantic.providers import EmbeddingProvider
-from product_hunter.semantic.qdrant import QdrantAdapter, vector_size
+from product_hunter.semantic.qdrant import QdrantAdapter, collection_metadata, vector_size
 from product_hunter.semantic.source import Entity, SemanticSource
 from product_hunter.semantic.vectors import (
     ENTITY_CLUSTER,
@@ -167,7 +167,7 @@ class SemanticIndex:
                 self.adapter.create_payload_index(self.collection, field)
             return
         held_size = vector_size(info)
-        held_space = str((info.get("metadata") or {}).get("space_id") or "")
+        held_space = str(collection_metadata(info).get("space_id") or "")
         if held_size != self.space.dimensions:
             raise EmbeddingSpaceMismatch(
                 f"the collection {self.collection!r} holds vectors of "

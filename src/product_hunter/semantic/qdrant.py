@@ -332,6 +332,24 @@ class QdrantAdapter:
         return text.replace(self._api_key, "[redacted]")
 
 
+def collection_metadata(info: dict[str, object]) -> dict[str, object]:
+    """The metadata a collection holds, wherever the server put it.
+
+    Qdrant 1.20 nests collection metadata under ``config.metadata``; older
+    servers and the test fake keep it at the top level. Read both so the
+    code works against either.
+    """
+    meta = info.get("metadata")
+    if isinstance(meta, dict):
+        return meta
+    config = info.get("config")
+    if isinstance(config, dict):
+        meta = config.get("metadata")
+        if isinstance(meta, dict):
+            return meta
+    return {}
+
+
 def vector_size(info: dict[str, object]) -> int | None:
     """The width of the vectors a collection holds, from its info."""
     config = info.get("config")

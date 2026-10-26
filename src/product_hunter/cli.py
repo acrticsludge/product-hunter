@@ -127,7 +127,7 @@ from product_hunter.semantic import (
     SemanticIndex,
     build_provider,
 )
-from product_hunter.semantic.qdrant import vector_size
+from product_hunter.semantic.qdrant import collection_metadata, vector_size
 from product_hunter.source_expansion import (
     discover_candidates,
     list_candidates,
@@ -486,7 +486,7 @@ def _semantic_diagnostics(root: Path | None = None) -> dict[str, object]:
         if collection is not None:
             diagnostics["collection_exists"] = True
             diagnostics["vector_size"] = vector_size(collection)
-            held = str((collection.get("metadata") or {}).get("space_id") or "")
+            held = str(collection_metadata(collection).get("space_id") or "")
             diagnostics["collection_space_id"] = held
             diagnostics["space_matches"] = held == space.space_id
     finally:
