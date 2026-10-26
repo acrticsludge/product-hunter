@@ -358,13 +358,13 @@ def _write_spend_ledger(
     )
 
 
-def _extract_topic(seed: str, max_chars: int = 40) -> str:
+def _extract_topic(seed: str, max_words: int = 4) -> str:
     """Extract a short keyword phrase from a longer seed text.
 
-    Takes the first sentence of the seed and truncates to ``max_chars`` at
-    a word boundary. The result is a short phrase like ``"operational pain
-    points"`` that search APIs including hn_algolia can actually match,
-    instead of a long sentence that matches nothing.
+    Takes the first sentence of the seed, removes stop words, and keeps the
+    first ``max_words`` content words. The result is a short phrase like
+    ``"operational pain points"`` that search APIs including hn_algolia can
+    actually match, instead of a long sentence that matches nothing.
     """
     text = " ".join(str(seed).split())
     if not text:
@@ -372,9 +372,31 @@ def _extract_topic(seed: str, max_chars: int = 40) -> str:
     first_sentence = text.split(".", 1)[0].strip()
     if not first_sentence:
         first_sentence = text
-    if len(first_sentence) > max_chars:
-        first_sentence = first_sentence[:max_chars].rsplit(" ", 1)[0]
-    return first_sentence or "operational pain points"
+    stop_words = {
+        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+        "of", "with", "by", "from", "as", "is", "are", "was", "were", "be",
+        "been", "have", "has", "had", "do", "does", "did", "will", "would",
+        "could", "should", "may", "might", "must", "shall", "can", "need",
+        "people", "teams", "users", "developers", "builders", "makers",
+        "creators", "founders", "hackers", "engineers", "designers",
+        "managers", "workers", "staff", "everyone", "someone", "anyone",
+        "no one", "all", "some", "any", "many", "much", "few", "several",
+        "both", "each", "either", "neither", "one", "two", "three",
+        "last", "next", "previous", "other", "another", "such",
+        "own", "same", "so", "than", "too", "very", "just", "now", "then",
+        "here", "there", "when", "where", "why", "how", "if", "because",
+        "until", "while", "about", "against", "between", "into", "through",
+        "during", "before", "after", "above", "below", "under", "again",
+        "further", "once",
+    }
+    words = [
+        w.strip(".,!?:;\"'()[]{}")
+        for w in first_sentence.split()
+        if w.strip(".,!?:;\"'()[]{}").lower() not in stop_words
+        and len(w.strip(".,!?:;\"'()[]{}")) > 2
+    ]
+    topic = " ".join(words[:max_words])
+    return topic or "operational pain points"
 
 
 def _keyword_query(template: Any, topic: str) -> str:
@@ -469,7 +491,7 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
     frontier = load_frontier(conn, run_id, tracker=tracker)
     if frontier is None:
         policy = SaturationPolicy(queries_per_family=1)
-        budget = DiscoveryBudget(tracker=tracker)
+        budget = DiscoveryBudget(tracker=tracker, max_queries_per_family=40)
         frontier = QueryFrontier(
             seed=str(seed),
             source_ids=active_sources,
