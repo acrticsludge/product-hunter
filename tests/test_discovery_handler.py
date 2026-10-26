@@ -124,16 +124,15 @@ def test_extract_topic_takes_first_sentence() -> None:
     from product_hunter.handlers import _extract_topic
 
     topic = _extract_topic("First sentence here. Second sentence follows.")
-    assert topic == "First sentence here"
+    assert topic == "First sentence"
 
 
-def test_extract_topic_truncates_long_sentence() -> None:
+def test_extract_topic_truncates_to_max_words() -> None:
     from product_hunter.handlers import _extract_topic
 
-    long_seed = "a " * 200
-    topic = _extract_topic(long_seed, max_chars=20)
-    assert len(topic) <= 20
-    assert topic == topic.strip()
+    long_seed = "recurring operational pain points experienced by small teams"
+    topic = _extract_topic(long_seed, max_words=3)
+    assert topic == "recurring operational pain"
 
 
 def test_extract_topic_empty_seed_defaults() -> None:
