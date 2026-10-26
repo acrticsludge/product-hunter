@@ -2,7 +2,8 @@
 """Minimal MCP server (stdio transport) wrapping the `ph` CLI.
 
 Exposes the `product_hunter` tool so opencode agents on any machine (including
-remote VMs without the built-in tool) can control Product Hunter research runs.
+remote VMs without the built-in tool) can control Product Hunter research runs,
+probes, and diagnostics.
 
 Protocol: JSON-RPC 2.0 over newline-delimited stdio (MCP 2024-11-05).
 """
@@ -58,15 +59,37 @@ def _run_ph(argv: list[str]) -> str:
     return out or err or "(no output)"
 
 
+def _run_system(argv: list[str]) -> str:
+    """Run a system command (e.g., systemctl) and return its output."""
+    try:
+        proc = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except FileNotFoundError:
+        return f"error: {argv[0]} not found"
+    except subprocess.TimeoutExpired:
+        return "error: command timed out after 30s"
+    out = (proc.stdout or "").strip()
+    err = (proc.stderr or "").strip()
+    if proc.returncode != 0:
+        return f"error: {err or out or f'exit code {proc.returncode}'}"
+    return out or err or "(no output)"
+
+
 def _handle_list_tools() -> dict:
     return {
         "tools": [
             {
                 "name": "product_hunter",
                 "description": (
-                    "Control Product Hunter research runs: create, list, inspect, "
-                    "continue, resume, pause, retry, cancel, read logs, check store "
-                    "health, and recover requests."
+                    "Control Product Hunter research runs, probes, and diagnostics: "
+                    "create/list/status/continue/resume/pause/retry/cancel/log/doctor/recover "
+                    "research runs; create/list/status/start/pause/resume/stop/report probes; "
+                    "check store health, list requests, db status, autonomy status, "
+                    "start/stop worker, list sources, index status."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -74,26 +97,46 @@ def _handle_list_tools() -> dict:
                         "action": {
                             "type": "string",
                             "enum": [
+                                # Research runs
                                 "create", "list", "status", "continue", "resume",
                                 "pause", "retry", "cancel", "log", "doctor",
                                 "recover", "store_health", "list_requests",
+                                # Probes (24/7 on-call)
                                 "probe_create", "probe_list", "probe_status",
                                 "probe_start", "probe_pause", "probe_resume",
                                 "probe_stop", "probe_report",
+                                # Worker control
+                                "worker_start", "worker_stop", "worker_status",
+                                # Diagnostics
+                                "db_status", "autonomy_status", "sources_list",
+                                "index_status", "observe_metrics", "observe_trace",
+                                "models_list", "project_build",
                             ],
                             "description": "The action to perform.",
                         },
                         "research_id": {
                             "type": "string",
-                            "description": "Research run ID (required for most actions).",
+                            "description": "Research run ID (RH-YYYYMMDD-NNNN).",
+                        },
+                        "probe_id": {
+                            "type": "string",
+                            "description": "Probe ID (PRB-YYYYMMDD-NNNN).",
                         },
                         "objective": {
                             "type": "string",
-                            "description": "Research objective (for create).",
+                            "description": "Research objective (for create/probe_create).",
+                        },
+                        "interval": {
+                            "type": "integer",
+                            "description": "Probe cycle interval in seconds (default 300).",
                         },
                         "limit": {
                             "type": "integer",
                             "description": "Log entry limit (default 50).",
+                        },
+                        "run_id": {
+                            "type": "string",
+                            "description": "Run ID for observe_trace.",
                         },
                     },
                     "required": ["action"],
@@ -107,9 +150,13 @@ def _handle_call_tool(params: dict) -> dict:
     args = params.get("arguments", {})
     action = args.get("action", "")
     rid = args.get("research_id", "")
+    pid = args.get("probe_id", "")
     objective = args.get("objective", "")
+    interval = args.get("interval", 300)
     limit = args.get("limit", 50)
+    run_id = args.get("run_id", "")
 
+    # --- Research runs ---
     if action == "create":
         argv = ["research", "create"]
         if objective:
@@ -134,24 +181,57 @@ def _handle_call_tool(params: dict) -> dict:
         argv = ["doctor"]
     elif action == "recover":
         argv = ["research", "recover"] + ([rid] if rid else [])
+
+    # --- Probes (24/7 on-call) ---
     elif action == "probe_create":
-        if not objective:
-            return {"content": [{"type": "text", "text": "probe_create needs an objective"}], "isError": True}
         argv = ["probe", "create", "--objective", objective]
+        if interval:
+            argv += ["--interval", str(interval)]
     elif action == "probe_list":
         argv = ["probe", "list"]
     elif action == "probe_status":
-        argv = ["probe", "status", rid] if rid else ["probe", "list"]
+        argv = ["probe", "status", pid] if pid else ["probe", "list"]
     elif action == "probe_start":
-        argv = ["probe", "start", rid] if rid else ["probe", "list"]
+        argv = ["probe", "start", pid] if pid else ["probe", "list"]
     elif action == "probe_pause":
-        argv = ["probe", "pause", rid] if rid else ["probe", "list"]
+        argv = ["probe", "pause", pid] if pid else ["probe", "list"]
     elif action == "probe_resume":
-        argv = ["probe", "resume", rid] if rid else ["probe", "list"]
+        argv = ["probe", "resume", pid] if pid else ["probe", "list"]
     elif action == "probe_stop":
-        argv = ["probe", "stop", rid] if rid else ["probe", "list"]
+        argv = ["probe", "stop", pid] if pid else ["probe", "list"]
     elif action == "probe_report":
-        argv = ["probe", "report", rid] if rid else ["probe", "list"]
+        argv = ["probe", "report", pid] if pid else ["probe", "list"]
+
+    # --- Worker control ---
+    elif action == "worker_start":
+        return {"content": [{"type": "text", "text": _run_system(["systemctl", "--user", "start", "ph-agent.service"])}]}
+    elif action == "worker_stop":
+        return {"content": [{"type": "text", "text": _run_system(["systemctl", "--user", "stop", "ph-agent.service"])}]}
+    elif action == "worker_status":
+        status = _run_system(["systemctl", "--user", "is-active", "ph-agent.service"])
+        doctor = _run_ph(["doctor"])
+        return {"content": [{"type": "text", "text": f"service: {status}\n{doctor}"}]}
+
+    # --- Diagnostics ---
+    elif action == "db_status":
+        argv = ["db", "status"]
+    elif action == "autonomy_status":
+        argv = ["autonomy", "status"]
+    elif action == "sources_list":
+        argv = ["sources"]
+    elif action == "index_status":
+        argv = ["index", "status"]
+    elif action == "index_search":
+        argv = ["index", "search"] + ([objective] if objective else [])
+    elif action == "observe_metrics":
+        argv = ["observe", "metrics"]
+    elif action == "observe_trace":
+        argv = ["observe", "trace", "--run", run_id] if run_id else ["observe", "metrics"]
+    elif action == "models_list":
+        argv = ["models"]
+    elif action == "project_build":
+        argv = ["project"]
+
     else:
         return {"content": [{"type": "text", "text": f"unknown action: {action}"}], "isError": True}
 
@@ -176,7 +256,7 @@ def main() -> None:
             result = {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "product-hunter-mcp", "version": "1.0.0"},
+                "serverInfo": {"name": "product-hunter-mcp", "version": "1.1.0"},
             }
         elif method == "notifications/initialized":
             continue
