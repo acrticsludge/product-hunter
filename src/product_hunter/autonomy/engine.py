@@ -56,6 +56,8 @@ from product_hunter.registry import CreateRequest
 # the same way in both layers.
 from product_hunter.runtime.worker import Handler, WorkerRuntime, _safe_error
 
+from product_hunter.probe_watchdog import report_stalls, thresholds_for
+
 from product_hunter.sources import load_registry
 
 DEFAULT_OPERATION_ID = "autonomy"
@@ -90,6 +92,7 @@ class OperationStep:
     missed_occurrences: int = 0
     leases_recovered: int = 0
     probes_started: int = 0
+    probes_stalled: int = 0
     state: OperationState = OperationState.running
     reason: str = ""
 
@@ -104,6 +107,7 @@ class OperationStep:
             "missed_occurrences": self.missed_occurrences,
             "leases_recovered": self.leases_recovered,
             "probes_started": self.probes_started,
+            "probes_stalled": self.probes_stalled,
             "state": self.state.value,
             "reason": self.reason,
         }
@@ -160,6 +164,7 @@ class OperationEngine:
         # first cycle charges what it took to get there.
         self._last_charge: datetime | None = utc_now(self.clock())
         self._last_scheduler: datetime | None = None
+        self._last_watchdog: datetime | None = None
         self._last_recovery: datetime | None = None
         self._last_maintenance: datetime | None = None
 
@@ -205,10 +210,18 @@ class OperationEngine:
 
         missed = self._tick_scheduler(now)
         probes = self._tick_probes(now)
+        # Recovery runs before the watchdog: a lease that expired during a
+        # restart is requeued in this same cycle, so the watchdog only names a
+        # lease that recovery is not reclaiming.
         leases = self._run_recovery(now)
+        stalled = self._run_watchdog(now)
         self._run_maintenance(now)
         step = replace(
-            step, missed_occurrences=missed, leases_recovered=leases
+            step,
+            missed_occurrences=missed,
+            leases_recovered=leases,
+            probes_started=probes,
+            probes_stalled=stalled,
         )
 
         # The queue is full, so another process is doing the work. This cycle
@@ -324,16 +337,23 @@ class OperationEngine:
         report = recover(self.conn, now=now)
         if report.leases_recovered:
             self._add_counter("leases_recovered", report.leases_recovered)
+        # Resolve probe pause/stop requests whose worker is gone, so a probe
+        # left in PAUSE_REQUESTED/STOP_REQUESTED after a crash returns to the
+        # RUNNING cadence instead of dying silently.
+        from product_hunter import probes as probe_registry
+
+        probe_registry.recover_probes(self.conn, now=now)
         return report.leases_recovered
 
     def _tick_probes(self, now: datetime) -> int:
-        """Start a finite research run for each due RUNNING probe with no live
-        run, and record cycles for probes whose current run reached a terminal
-        state. Returns the number of runs started.
+        """Start a finite research run for each due RUNNING probe with no open
+        cycle, and record the result of a cycle whose run has ended.
 
-        A probe owns at most one active research run at a time (the partial
-        index on research_runs(probe_id) enforces it). When a probe's current
-        run is COMPLETED/CANCELLED/FAILED_PERMANENT the cycle is recorded so
+        A probe owns at most one open cycle at a time (the partial index on
+        ``research_runs(probe_id) WHERE probe_cycle_closed_at IS NULL``
+        enforces it). A cycle is open until its result is recorded, because
+        run.status is operator state and stays QUEUED for a probe run. When
+        the cycle ends the result is written once, the cycle is closed, and
         next_cycle_at and backoff advance; the probe then waits for its next
         cadence moment before starting another run.
         """
@@ -344,7 +364,6 @@ class OperationEngine:
         started = 0
         now_iso = now.isoformat()
         terminal = ("COMPLETED", "CANCELLED", "FAILED_PERMANENT")
-        placeholders = ", ".join("?" for _ in terminal)
         # A probe is due when it has never run (next_cycle_at is NULL) or its
         # next cadence moment has passed.
         rows = self.conn.execute(
@@ -355,52 +374,45 @@ class OperationEngine:
         ).fetchall()
         for row in rows:
             probe_id = row["probe_id"]
-            current = row["current_run_id"]
-            live = None
-            if current is not None:
-                run_row = self.conn.execute(
-                    "SELECT status FROM research_runs WHERE run_id = ?", (current,)
-                ).fetchone()
-                if run_row is not None and str(run_row["status"]).upper() not in terminal:
-                    live = 1
-            if live is None:
-                # Fall back to scanning every run of the probe: current_run_id
-                # is not always set (create_run does not write it), so a
-                # QUEUED run held directly under the probe must still block a
-                # new cycle. The partial index enforces this at the schema too.
-                live = self.conn.execute(
-                    f"SELECT 1 FROM research_runs WHERE probe_id = ? "
-                    f"AND UPPER(TRIM(status)) NOT IN ({placeholders}) LIMIT 1",
-                    (probe_id, *terminal),
-                ).fetchone()
-            if live:
+            # The open cycle is the one whose result has not been recorded.
+            # Run.status cannot answer this: a probe run stays QUEUED.
+            open_run = self.conn.execute(
+                "SELECT run_id, status FROM research_runs WHERE probe_id = ? "
+                "AND probe_cycle_closed_at IS NULL "
+                "ORDER BY created_at DESC LIMIT 1",
+                (probe_id,),
+            ).fetchone()
+            if open_run is not None:
+                current = open_run["run_id"]
+                status = str(open_run["status"]).upper()
+                if status not in terminal:
+                    if status not in ("QUEUED", "RUNNING"):
+                        # An operator holds the run. The probe waits for the
+                        # operator rather than counting a cycle nobody ran.
+                        continue
+                    outcome = self._cycle_outcome(current)
+                    if outcome is None:
+                        continue
+                else:
+                    outcome = "success" if status == "COMPLETED" else "failed"
+                probe_registry.record_probe_cycle(
+                    self.conn, probe_id, current, outcome
+                )
+                # record_probe_cycle wrote next_cycle_at and closed the cycle.
+                # Starting another run in this same tick would erase the
+                # cadence and the backoff.
                 continue
-            # Record a cycle for a terminal current run and clear its reference.
-            if current is not None:
-                run_row = self.conn.execute(
-                    "SELECT status FROM research_runs WHERE run_id = ?", (current,)
-                ).fetchone()
-                if run_row is not None and str(run_row["status"]).upper() in terminal:
-                    outcome = (
-                        "success"
-                        if str(run_row["status"]).upper() == "COMPLETED"
-                        else "failed"
-                    )
-                    probe_registry.record_probe_cycle(
-                        self.conn, probe_id, current, outcome
-                    )
-                    self.conn.execute(
-                        "UPDATE probes SET current_run_id = NULL, updated_at = ? "
-                        "WHERE probe_id = ?",
-                        (now.isoformat(), probe_id),
-                    )
-                    current = None
-            view, reused = create_run(
-                self.conn,
-                CreateRequest(objective=row["objective"]),
-                probe_id=probe_id,
-                now=now,
-            )
+            try:
+                view, reused = create_run(
+                    self.conn,
+                    CreateRequest(objective=row["objective"]),
+                    probe_id=probe_id,
+                    now=now,
+                )
+            except sqlite3.IntegrityError:
+                # A concurrent engine process won the open-cycle slot. Treat
+                # it as already started: re-read the open run next tick.
+                continue
             if reused:
                 continue
             self.conn.execute(
@@ -430,6 +442,51 @@ class OperationEngine:
             started += 1
         return started
 
+    def _cycle_outcome(self, run_id: str) -> str | None:
+        """What a probe's run ended as, or None while it can still run.
+
+        Run.status is operator state, so it never becomes COMPLETED by itself.
+        The execution ends when the run has no job left that can run: every
+        pipeline stage succeeded is a successful cycle; a dead job that names
+        the gate is a blocked cycle, not a failure, so the probe keeps its
+        cadence and the promotion stays refused.
+        """
+        from product_hunter.registry import PIPELINE_STAGES
+
+        rows = self.conn.execute(
+            "SELECT stage, status, last_error FROM jobs WHERE run_id = ?",
+            (run_id,),
+        ).fetchall()
+        if not rows:
+            return None
+        if any(str(row["status"]) in ("queued", "leased") for row in rows):
+            return None
+        done = {str(row["stage"]): str(row["status"]) for row in rows}
+        if all(done.get(stage) == "succeeded" for stage in PIPELINE_STAGES):
+            return "success"
+        if any(
+            "block" in str(row["last_error"] or "").lower() for row in rows
+        ):
+            return "blocked"
+        return "failed"
+
+    def _run_watchdog(self, now: datetime) -> int:
+        """Name a probe that has stopped moving, once per reporting window.
+
+        A probe that dies is silent, so this runs on a short interval of its
+        own and records the stall where both the operator and the AI read it.
+        """
+        limits = thresholds_for(self.config.probe_watchdog)
+        interval = min(60, limits.report_interval_seconds)
+        if not self._due(self._last_watchdog, interval, now):
+            return 0
+        self._last_watchdog = now
+        stalls = report_stalls(
+            self.conn, thresholds=limits, now=now,
+            recovery_grace_seconds=self.config.recovery_interval_seconds,
+        )
+        return len(stalls)
+
     def _run_maintenance(self, now: datetime) -> None:
         """Do the upkeep that is due."""
         interval = self._upkeep_interval
@@ -453,7 +510,15 @@ class OperationEngine:
         deferred = 0
         blocked = 0
         reported: set[str] = set()
-        for _ in range(_MAX_DEFERRALS):
+        # Every pass either returns a job or moves one due job out of the due
+        # set, so the number of due jobs bounds the passes. A fixed cap let a
+        # batch of unhandled-stage jobs starve the runnable work behind them.
+        due = self.conn.execute(
+            "SELECT COUNT(*) FROM jobs "
+            "WHERE status = 'queued' AND scheduled_for <= ?",
+            (now.isoformat(),),
+        ).fetchone()[0]
+        for _ in range(max(_MAX_DEFERRALS, int(due) + 1)):
             job = peek_job(
                 self.conn,
                 now=now,
