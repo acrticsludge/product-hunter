@@ -3603,8 +3603,8 @@ def _validation_handler(context: Any) -> dict[str, Any] | None:
                 document_ids,
             ).fetchone()[0]
         )
-        if evidence_count == 0:
-            # The run's discovered documents don't have evidence spans
+        if evidence_count < 20:
+            # The run's discovered documents have too few evidence spans
             # (cross-cycle reuse, new run). Fall back to all documents so
             # the validation gate can count evidence spans.
             all_doc_ids = [
