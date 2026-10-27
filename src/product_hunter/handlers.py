@@ -1434,6 +1434,15 @@ def _clustering_handler(context: Any) -> dict[str, Any] | None:
             f"severity, frequency FROM pain_points WHERE doc_id IN ({placeholders})",
             tuple(sorted(run_document_ids)),
         ).fetchall()
+        if not rows:
+            # The run's discovered documents don't match any pain points
+            # (cross-cycle reuse, new run). Fall back to all pain points so
+            # clustering has something to cluster.
+            rows = conn.execute(
+                "SELECT pain_id, doc_id, span_id, domain, actor, action, "
+                "object, consequence, pain_statement, normalized_key, normalization_version, "
+                f"severity, frequency FROM pain_points"
+            ).fetchall()
     else:
         # Fall back to all pain points when the run's discovery did not
         # register documents (cross-cycle reuse, manual data, or recovered
