@@ -530,6 +530,22 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
         seed = "manual workaround problem"
     topic = _extract_topic(seed)
 
+    # Pre-discovery market validation: run lightweight counter-evidence and
+    # competitor probes before the main discovery queries. Previous runs
+    # showed counter-evidence results (18 items in E2E) never informed
+    # discovery, so discovery wasted budget on problems the market already
+    # contradicted. This probe feeds findings back into the query plan.
+    market_signals: dict[str, list[dict[str, Any]]] = {}
+    try:
+        for probe_query in (f"is {topic} a real problem", f"alternatives to {topic}"):
+            results, _error, _domains = _live_search(probe_query, limit=4)
+            market_signals[probe_query] = [
+                {"source": s, "title": str(h.get("title") or h.get("name") or "")[:120]}
+                for s, h in results
+            ]
+    except Exception:
+        pass
+
     registry = load_registry()
     Store(conn).sync_registry(registry)
 
@@ -591,8 +607,24 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
     # frontier deduplicates per source, so repeated template wordings against
     # different sources are still distinct searches.
     canonical_family_by_text: dict[str, str] = {}
+    templates = list(plan_for_stage("discovery"))
+
+    # Use pre-discovery market signals to reorder query families so the most
+    # promising ones run first within the budget:
+    #  - If "is {topic} a real problem" returns few results, deprioritize
+    #    problem-family queries (the problem may not be real).
+    #  - If "alternatives to {topic}" returns many results, boost
+    #    existing_solution/competitor queries (a real market exists).
+    if market_signals:
+        problem_results = market_signals.get(f"is {topic} a real problem", [])
+        if len(problem_results) <= 1:
+            templates.sort(key=lambda t: t.family == "problem")
+        alt_results = market_signals.get(f"alternatives to {topic}", [])
+        if len(alt_results) >= 3:
+            templates.sort(key=lambda t: t.family not in ("existing_solution", "competitor"))
+
     planned_count = 0
-    for template in plan_for_stage("discovery"):
+    for template in templates:
         text = _keyword_query(template, topic)
         source_id = active_sources[planned_count % len(active_sources)]
         try:
