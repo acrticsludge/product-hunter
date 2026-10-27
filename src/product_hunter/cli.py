@@ -1829,6 +1829,21 @@ def probe_create_command(
     max_backoff: int | None = None,
     db_path: str | Path | None = None,
 ) -> int:
+    from product_hunter.preflight import preflight_run
+
+    report = preflight_run()
+    if not report.ok:
+        check = report.failures[0]
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": f"{check.file}: {check.error or check.name}",
+                    "code": "preflight_failure",
+                }
+            )
+        )
+        return 1
     conn = _probe_conn(db_path)
     if conn is None:
         return 1
@@ -1873,6 +1888,22 @@ def probe_list_command(*, db_path: str | Path | None = None) -> int:
 def _probe_action(
     public_id: str | None, action: str, requester: str = "cli"
 ) -> int:
+    from product_hunter.preflight import preflight_run
+
+    if action == "start":
+        report = preflight_run()
+        if not report.ok:
+            check = report.failures[0]
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": f"{check.file}: {check.error or check.name}",
+                        "code": "preflight_failure",
+                    }
+                )
+            )
+            return 1
     conn = _probe_conn()
     if conn is None:
         return 1

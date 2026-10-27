@@ -56,6 +56,7 @@ from product_hunter.registry import CreateRequest
 # the same way in both layers.
 from product_hunter.runtime.worker import Handler, WorkerRuntime, _safe_error
 
+from product_hunter.preflight import PreflightFailure, preflight_run
 from product_hunter.probe_watchdog import report_stalls, thresholds_for
 
 from product_hunter.sources import load_registry
@@ -176,7 +177,18 @@ class OperationEngine:
         return self._runtime
 
     def start(self) -> None:
-        """Open the operation: the worker is registered and the row is written."""
+        """Open the operation: the worker is registered and the row is written.
+
+        Preflight runs first: invalid configuration refuses to start the worker
+        so no job is claimed and no backoff is consumed on a config that cannot
+        succeed.
+        """
+        report = preflight_run()
+        if not report.ok:
+            failure = report.failures[0]
+            raise PreflightFailure(
+                f"preflight refused to start: {failure.file} {failure.error or 'invalid config'}"
+            )
         self.health.register(now=self.clock())
         self._set_state(OperationState.running, "")
         self._record_event(
