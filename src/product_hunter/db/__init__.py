@@ -28,6 +28,7 @@ from product_hunter.db.jobs import (
     fail_job,
     get_job,
     list_jobs,
+    recover_config_error_jobs,
     recover_expired_leases,
     renew_lease,
 )
@@ -196,6 +197,7 @@ __all__ = [
     "record_model_executions",
     "record_selection",
     "record_stage_execution",
+    "recover_config_error_jobs",
     "recover_expired_leases",
     "recover_projection_leases",
     "renew_lease",

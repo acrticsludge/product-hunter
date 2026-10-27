@@ -14,7 +14,7 @@ def test_db_status_reports_every_table_in_the_schema(tmp_path: Path, capsys) -> 
     assert db_status_command(db_path=db_path, repo_root=tmp_path) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
-    assert payload["version"] == 16
+    assert payload["version"] == 17
 
     tables = payload["tables"]
     # The tables the wave 1 schema shipped.

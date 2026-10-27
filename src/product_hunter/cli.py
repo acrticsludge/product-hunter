@@ -37,6 +37,7 @@ from product_hunter.db import (
     list_projection_tasks,
     migrate,
     process_outbox,
+    recover_config_error_jobs,
     recover_expired_leases,
     recover_projection_leases,
 )
@@ -1601,6 +1602,7 @@ def db_recover_command(
         store = Store.open(path)
         try:
             jobs = recover_expired_leases(store.conn)
+            config_jobs = recover_config_error_jobs(store.conn)
             projections = recover_projection_leases(store.conn)
         finally:
             store.close()
@@ -1612,6 +1614,7 @@ def db_recover_command(
             {
                 "ok": True,
                 "jobs_recovered": jobs,
+                "config_error_jobs_recovered": config_jobs,
                 "projections_recovered": projections,
             }
         )
@@ -2046,6 +2049,12 @@ def _build_probe_report(conn, view: dict[str, object]) -> dict[str, object]:
         f"blocked={view['blocked_cycles']}"
     )
     lines.append(f"backoff_multiplier: {view['backoff_multiplier']}")
+    lines.append(f"consecutive_failures: {view['consecutive_failures']}")
+    lines.append(f"dead_job_count: {view['dead_job_count']}")
+    if view["heartbeat_age_seconds"] is not None:
+        lines.append(f"heartbeat_age_seconds: {view['heartbeat_age_seconds']}")
+    if view["paused_reason"]:
+        lines.append(f"paused_reason: {view['paused_reason']}")
     lines.append(f"created: {view['created_at']}  updated: {view['updated_at']}")
     if view["started_at"]:
         lines.append(f"started: {view['started_at']}")

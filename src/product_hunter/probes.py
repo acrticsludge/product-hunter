@@ -16,7 +16,7 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
 from product_hunter.db import (
@@ -42,6 +42,11 @@ PROBE_STATE_STATUSES = frozenset(
 DISCOVERY_STAGE = "DISCOVERY"
 PROBE_INTERVAL_KEY = "cycle_interval_seconds"
 PROBE_BACKOFF_KEY = "maximum_backoff_seconds"
+
+# A probe that cannot progress pauses itself after this many consecutive failed
+# or blocked cycles, so it does not spin in backoff while the cause persists.
+# Matches the existing low-yield batch threshold elsewhere in the pipeline.
+CIRCUIT_BREAKER_THRESHOLD = 3
 
 
 class ProbeError(Exception):
@@ -89,7 +94,11 @@ class ProbeView:
     backoff_multiplier: int
     configuration: str
     last_error: str | None
+    paused_reason: str | None
+    consecutive_failures: int
     worker_active: bool
+    dead_job_count: int
+    heartbeat_age_seconds: int | None
     job_count: int
     checkpoint_count: int
     latest_checkpoint: str = ""
@@ -181,6 +190,8 @@ def _view_probe(conn: sqlite3.Connection, row: sqlite3.Row, *, now: datetime) ->
         backoff_multiplier=int(row["backoff_multiplier"] or 1),
         configuration=row["configuration"],
         last_error=row["last_error"],
+        paused_reason=row["paused_reason"],
+        consecutive_failures=int(row["consecutive_failures"] or 0),
         worker_active=_probe_has_live_lease(conn, probe_id, now=now),
         job_count=_count(
             conn, "SELECT count(*) FROM jobs WHERE run_id = ?",
@@ -192,7 +203,51 @@ def _view_probe(conn: sqlite3.Connection, row: sqlite3.Row, *, now: datetime) ->
         ),
         errors=_probe_errors(conn, probe_id, row),
         active_run=active_run,
+        # Observability fields the operator reads in `ph probe status` / report.
+        dead_job_count=_count(
+            conn,
+            "SELECT count(*) FROM jobs j JOIN research_runs r ON j.run_id = r.run_id "
+            "WHERE r.probe_id = ? AND j.status = 'dead'",
+            (probe_id,),
+        ),
+        heartbeat_age_seconds=_probe_heartbeat_age(
+            conn, probe_id, current_run_id, now
+        ),
     )
+
+
+def _probe_heartbeat_age(
+    conn: sqlite3.Connection, probe_id: str, current_run_id: str | None, now: datetime
+) -> int | None:
+    """Seconds since the probe's active run last beat, or None when unknowable."""
+    run_id = current_run_id
+    if run_id is None:
+        row = conn.execute(
+            "SELECT run_id, last_heartbeat, created_at FROM research_runs "
+            "WHERE probe_id = ? ORDER BY created_at DESC LIMIT 1",
+            (probe_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        run_id = row["run_id"]
+        stamp = row["last_heartbeat"] or row["created_at"]
+    else:
+        stamp = conn.execute(
+            "SELECT last_heartbeat FROM research_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if stamp is None:
+            return None
+        stamp = stamp["last_heartbeat"]
+    if not stamp:
+        return None
+    try:
+        then = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)
+    return max(0, int((now - then).total_seconds()))
 
 
 def _probe_errors(conn, probe_id, row) -> list:
@@ -455,6 +510,14 @@ def record_probe_cycle(
         multiplier = min(multiplier * 2, 32)
     else:
         multiplier = 1
+    # Consecutive failures drive the circuit breaker: a success resets the
+    # counter, a failed or blocked cycle advances it, and a probe that reaches
+    # the threshold pauses itself so it cannot spin in backoff.
+    consecutive = int(row["consecutive_failures"] or 0)
+    if ok:
+        consecutive = 0
+    else:
+        consecutive += 1
     try:
         configuration = json.loads(row["configuration"] or "{}")
     except (ValueError, TypeError):
@@ -468,18 +531,39 @@ def record_probe_cycle(
     # resets the multiplier to one. next_cycle_at is the next grid moment.
     delay_seconds = min(interval_seconds * multiplier, maximum_backoff_seconds)
     next_cycle_at = moment + timedelta(seconds=delay_seconds)
+    paused = False
+    pause_reason = None
+    if (
+        not ok
+        and consecutive >= CIRCUIT_BREAKER_THRESHOLD
+        and str(row["status"]).upper() == "RUNNING"
+    ):
+        # The probe cannot make progress. Pause it and record why, so an
+        # operator can resume after fixing the cause. The cycle still closes:
+        # the failed run is finished work, not an open cycle that blocks the
+        # next one.
+        paused = True
+        pause_reason = (
+            f"circuit breaker: {consecutive} consecutive {outcome} cycle(s)"
+        )
     with _transaction(conn):
         conn.execute(
             """
             UPDATE probes SET total_cycles = ?, successful_cycles = ?, failed_cycles = ?,
                 blocked_cycles = ?, backoff_multiplier = ?, last_cycle_at = ?,
-                next_cycle_at = ?, current_run_id = NULL, updated_at = ? WHERE probe_id = ?
+                next_cycle_at = ?, current_run_id = NULL, updated_at = ?,
+                paused_reason = ?, consecutive_failures = ?,
+                status = CASE WHEN ? THEN 'PAUSED' ELSE status END
+            WHERE probe_id = ?
             """,
             (
                 total, succ, fl, bl, multiplier,
                 moment.isoformat(),
                 next_cycle_at.isoformat(),
                 moment.isoformat(),
+                pause_reason,
+                consecutive,
+                paused,
                 row["probe_id"],
             ),
         )
@@ -489,6 +573,11 @@ def record_probe_cycle(
             "UPDATE research_runs SET probe_cycle_closed_at = ? WHERE run_id = ?",
             (moment.isoformat(), run_id),
         )
+        if paused:
+            conn.execute(
+                "UPDATE probes SET paused_at = ? WHERE probe_id = ?",
+                (moment.isoformat(), row["probe_id"]),
+            )
     return get_probe(conn, row["public_id"])
 
 

@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterator
 
+from product_hunter.autonomy.states import PERMANENT_MARKER
+
 from product_hunter.db.connection import rollback, utc_now
 
 
@@ -510,6 +512,54 @@ def recover_expired_leases(
                 WHERE job_id = ? AND attempt = ?
                 """,
                 (now_iso, row["id"], int(row["attempts"])),
+            )
+        conn.execute("COMMIT")
+        return len(rows)
+    except BaseException:
+        rollback(conn)
+        raise
+
+
+def recover_config_error_jobs(
+    conn: sqlite3.Connection, *, now: datetime | None = None
+) -> int:
+    """Requeue dead jobs whose failure was a configuration error.
+
+    A job that died on a config error carries the ``permanent_failure:``
+    marker in ``last_error``. Once the underlying config is fixed, the job is
+    safe to try again: it is returned to ``queued`` so the next worker claims
+    it. Jobs that died on a transient or unknown error stay dead.
+    """
+    now_dt = utc_now(now)
+    now_iso = now_dt.isoformat()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            """
+            SELECT id FROM jobs
+            WHERE status = 'dead'
+              AND last_error IS NOT NULL
+              AND last_error LIKE ?
+            """,
+            (f"{PERMANENT_MARKER}:%",),
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                """
+                UPDATE jobs
+                SET status = 'queued', worker_id = NULL, lease_expires_at = NULL,
+                    completed_at = NULL, scheduled_for = ?, last_error = NULL
+                WHERE id = ? AND status = 'dead'
+                """,
+                (now_iso, row["id"]),
+            )
+            conn.execute(
+                """
+                UPDATE stage_attempts
+                SET status = 'queued', finished_at = NULL, error = NULL
+                WHERE job_id = ? AND status = 'failed'
+                """,
+                (row["id"],),
             )
         conn.execute("COMMIT")
         return len(rows)
