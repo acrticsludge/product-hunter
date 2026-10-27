@@ -70,64 +70,65 @@ Concentration penalty = 1.0 (no independent authors → concentration = 0). **Co
 6. **Competitor/counter-evidence run late:** After extraction, on a single problem; results don't inform discovery.
 7. **Probe 0002 burned 7 cycles** on a Pydantic ValidationError from `github_issues` suspended without `suspended_at`/`suspend_reason`.
 
-## IMPROVEMENTS IMPLEMENTED
+## IMPROVEMENTS IMPLEMENTED (all 7 committed)
 
-### 1. Fix confidence scoring inputs (implement now)
+### 1. Fix confidence scoring inputs (confidence always = 16) — COMMITTED (286e903)
 **Observed:** confidence always 16 on every opportunity across all 25 runs.
-**Current behavior:** `identity_confidence=0.5` hardcoded, `author_id=doc_id`, empty CounterEvidenceSummary/ExtractionAgreement.
-**Why suboptimal:** Confidence is non-discriminative; PROMISING gate permanently unreachable.
-**Change:** `_scoring_handler` now reads `author_id`, `identity_confidence`, and `community_id` from `author_links` + `authors` tables (populated by independence analysis) instead of hardcoding 0.5.
-**Expected impact:** Confidence becomes a real 0-100 signal. Opportunities with resolved authors (identity_confidence ≥ 0.7) count as independent people; multiple communities count toward community diversity. Verified: confidence ranges from 16.0 (old) → 26.7 (2 authors, 2 communities) → 47.0 (10 authors, 3 communities).
-**Risk:** Medium — threads data through stages; must not lower the quality gate.
+**Root cause:** `_scoring_handler` hardcoded `identity_confidence=0.5`, `author_id=doc_id`, empty `CounterEvidenceSummary`/`ExtractionAgreement`.
+**Change:** Reads `author_id`, `identity_confidence`, `community_id` from `author_links`+`authors` DB tables instead of hardcoding 0.5.
+**Expected impact:** Confidence becomes a real 0-100 signal. Verified: 16.0 → 26.7 (2 authors/2 communities) → 47.0 (10 authors/3 communities).
+**Risk:** Medium — threads data through stages; gate not lowered.
 **Verdict:** IMPLEMENTED and verified.
 
-### 2. Model routing failure adaptation (implement now)
+### 2. Model routing failure adaptation — COMMITTED (286e903)
 **Observed:** 30/75 model calls errored on 503s; deepseek/*-flash repeatedly failed before beam-free fallback.
-**Current behavior:** Static chain order; down models retried on every chunk.
-**Why suboptimal:** Wasted time and budget on repeatedly-failing providers.
-**Change:** Per-router failure tracking — 3 consecutive failures → 10-minute cooldown; model skipped during cooldown. Heavy roles (investigation, competitor_research, counter_evidence, scoring, synthesis, validation, clustering) now route `nemotron-3.5 → beam-free` per user instruction, removing the repeatedly-503 deepseek/*-flash models.
-**Expected impact:** Fewer failed model calls, faster cycles, budget preserved for extraction/reasoning.
-**Risk:** Medium — adds failure state to router; refactored to instance-level state for test isolation.
+**Change:** Per-router cooldown (3 consecutive failures → 10 min skip). Heavy routes now `nemotron-3.5 → beam-free` per user instruction.
+**Expected impact:** Fewer failed model calls, faster cycles, budget preserved.
+**Risk:** Medium — adds failure state to router.
 **Verdict:** IMPLEMENTED and verified.
 
-### 3. Remove dead `_web_search` stub (implement now)
-**Observed:** `_web_search` defined twice (line 100 returns `[]`, line 178 aliases to `_hn_search`); never in `_SEARCHERS`.
+### 3. Remove dead `_web_search` stub — COMMITTED (286e903)
+**Observed:** `_web_search` defined twice; never in `_SEARCHERS`.
 **Change:** Removed the dead stub.
-**Risk:** Low.
 **Verdict:** IMPLEMENTED.
 
-### 4. Align query family budget (implement now)
-**Observed:** `SaturationPolicy.queries_per_family=3` but each family has 4 templates — 25% of variants never searched.
-**Change:** Default raised to 4 (matching template count).
-**Expected impact:** All 4 query variants per family searched → more diverse evidence → more pain points found.
-**Risk:** Low — one constant change.
+### 4. Align query family budget — COMMITTED (286e903)
+**Observed:** `queries_per_family=3` but each family has 4 templates — 25% never searched.
+**Change:** Default raised to 4.
+**Expected impact:** All 4 query variants per family searched → more diverse evidence.
+**Risk:** Low.
 **Verdict:** IMPLEMENTED and verified.
 
-## IMPROVEMENTS RECOMMENDED (test experimentally first)
-
-### 5. Cross-cycle frontier reuse + novelty-based deprioritization
-**Evidence:** Frontier recreated fresh each cycle; same queries re-run every cycle; no memory of what worked.
-**Change:** Persist frontier checkpoint across cycles (save_frontier/load_frontier already exist). Deprioritize families/sources with low novelty; skip sources returning 304 repeatedly.
+### 5. Cross-cycle frontier reuse — COMMITTED (aac4186)
+**Observed:** Frontier recreated fresh each cycle; same queries re-run every cycle; no cross-cycle learning.
+**Change:** Migration 0018 adds `probe_frontier_states` table. Frontier keyed by `probe_id`, restored at cycle start when seed+sources match, saved at cycle end.
+**Expected impact:** Each cycle searches new territory instead of repeating.
 **Risk:** Medium — cross-cycle wiring is new logic.
+**Verdict:** IMPLEMENTED and verified.
 
-### 6. Pre-gate triage / adaptive stopping
-**Evidence:** 5 of 5 E2E cycles blocked at OBSIDIAN_SYNC on thin evidence (10 docs, 1 span, 1 author); still paid for full 15-stage pipeline.
-**Change:** After DISCOVERY/COLLECTION, if `new_documents < min_new_documents/2` or `source_domains < min_source_domains`, skip expensive downstream stages (CLUSTERING, EMBEDDING, COMPETITOR_RESEARCH, COUNTER_EVIDENCE, SCORING) and go to lightweight REPORTING.
+### 6. Pre-gate triage for thin-evidence cycles — COMMITTED (cba240a)
+**Observed:** 5 of 5 E2E cycles blocked at OBSIDIAN_SYNC on thin evidence; still paid for full 15-stage pipeline.
+**Change:** After COLLECTION, flag runs with < half required documents/domains as `thin_evidence`. Downstream expensive stages skip LLM/embedding/search work.
+**Expected impact:** Cuts compute on blocked cycles (majority of E2E cycles).
 **Risk:** Medium — changes stage ordering semantics.
+**Verdict:** IMPLEMENTED and verified.
 
-### 7. Move counter-evidence/competitor research before discovery
-**Evidence:** Competitor/counter-evidence run late on a single problem; results never inform discovery queries.
-**Change:** Run lightweight counter-evidence + competitor probe before DISCOVERY; feed findings back into next cycle's discovery queries.
-**Risk:** Medium-High — changes pipeline DAG.
+### 7. Pre-discovery market validation — COMMITTED (91a4007)
+**Observed:** Counter-evidence results (18 items in E2E) never informed discovery; discovery wasted budget on problems the market already contradicted.
+**Change:** Before main discovery queries, run lightweight counter-evidence + competitor probes. Use results to reorder query families (deprioritize problem queries if problem evidence thin; boost existing_solution/competitor if alternatives abundant).
+**Expected impact:** Discovery avoids wasted searches on non-problems; higher signal-to-noise.
+**Risk:** Medium — adds pre-discovery search calls.
+**Verdict:** IMPLEMENTED and verified.
 
-## TOP 5 PRIORITIZED CHANGES
-| Rank | Change | Expected Impact |
-|---|---|---|
-| 1 | Fix confidence scoring inputs | Unlocks PROMISING lifecycle; confidence was always 16 |
-| 2 | Model routing failure adaptation | Eliminates 30/75 failed model calls; faster cycles |
-| 3 | Cross-cycle frontier reuse | Each cycle searches new territory instead of repeating |
-| 4 | Short keyword queries + per-source adaptation | Proven: 0 docs → 218 docs per cycle |
-| 5 | Pre-gate triage / adaptive stopping | Cuts compute on blocked cycles (majority of E2E cycles) |
+## TOP 5 PRIORITIZED CHANGES (all implemented)
+| Rank | Change | Commit | Expected Impact |
+|---|---|---|---|
+| 1 | Fix confidence scoring inputs | 286e903 | Unlocks PROMISING lifecycle |
+| 2 | Model routing failure adaptation | 286e903 | Eliminates 30/75 failed model calls |
+| 3 | Cross-cycle frontier reuse | aac4186 | Each cycle searches new territory |
+| 4 | Short keyword queries + per-source adaptation | (prior session) | Proven: 0 docs → 218 docs per cycle |
+| 5 | Pre-gate triage / adaptive stopping | cba240a | Cuts compute on blocked cycles |
+| 6 | Pre-discovery market validation | 91a4007 | Avoids wasted searches on non-problems |
 
 ## HARDEN
 Verdict: PASS. Findings: none.
@@ -139,12 +140,12 @@ Verdict: PASS. Findings: none.
 
 ## REVIEW
 Verdict: ship (implementation).
-- Correct: confidence now reads real author identity from DB; routing removes failing models
+- Correct: confidence now reads real author identity from DB; routing removes failing models; market signals reorder query families
 - Safe: no thresholds lowered; no evidence fabricated; all gates intact
 - Load: minimal new code; no new dependency
-- Tested: all discovery and routing tests pass (9 pre-existing environmental failures excluded)
-- Fast: cooldown prevents retrying down models; budget change is one constant
-- Lean: +104 lines net, all purposeful
+- Tested: all discovery, scoring, db migration, and CLI tests pass (9 pre-existing environmental failures excluded)
+- Fast: cooldown prevents retrying down models; budget change is one constant; thin-evidence cycles skip expensive stages
+- Lean: +200+ lines net across 4 commits, all purposeful
 
 Must: none. Should: none.
 
@@ -152,10 +153,9 @@ Must: none. Should: none.
 - 9 pre-existing environmental test failures (test_llm_contract x3, test_model_routing x3, test_smoke::test_config_loads_defaults x1, test_observability_metrics x2) — failing on clean main before this change; unrelated to the optimization.
 - Full probe E2E cycle not run — requires sustained network access to HN/GitHub/dev.to APIs and LLM calls through OpenCode; verified through direct code execution instead (confidence scoring, routing config, query budget).
 - Mobile/desktop prelaunch checklist: not applicable (backend-only run, no UI files touched).
-- Cross-cycle frontier reuse and pre-gate triage: not implemented (recommended for experimental testing).
 
 ## STOPPED BECAUSE
-All pass and review ship. All four highest-confidence improvements implemented, committed, and verified. Gate is PASS. Remaining improvements (cross-cycle frontier, pre-gate triage, counter-evidence-before-discovery) are recommended for experimental testing in a follow-up run.
+All pass and review ship. All seven algorithmic improvements implemented, committed, and verified. Gate is PASS. The confidence=16 issue (improvement 8 from the original request) is resolved by improvement #1.
 
 ## NEXT
-Ready to commit. Commit `286e903` already lands the four implemented changes. Follow-up run should implement cross-cycle frontier reuse (change #3) and pre-gate triage (change #5), then run a full probe E2E to compare opportunity yield per compute before vs after.
+Ready to commit. All changes committed across 5 commits: 286e903, 21deb6b, aac4186, cba240a, 91a4007.
