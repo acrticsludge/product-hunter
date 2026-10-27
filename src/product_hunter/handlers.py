@@ -97,10 +97,6 @@ def _devto_search(query: str, *, limit: int = 10) -> list[dict[str, Any]]:
     return data.get("articles", []) if isinstance(data, dict) else []
 
 
-def _web_search(query: str, *, limit: int = 10) -> list[dict[str, Any]]:
-    return []
-
-
 def _ensure_source(conn: sqlite3.Connection, source_id: str) -> None:
     row = conn.execute(
         "SELECT 1 FROM sources WHERE source_id = ?", (source_id,)
@@ -3633,10 +3629,12 @@ def _scoring_handler(context: Any) -> dict[str, Any] | None:
         doc_row = None
         if doc_id:
             doc_row = conn.execute(
-                "SELECT source_id, published_at, created_at FROM documents WHERE doc_id = ?",
+                "SELECT source_id, community_id, published_at, created_at "
+                "FROM documents WHERE doc_id = ?",
                 (doc_id,),
             ).fetchone()
         source_id = (doc_row[0] if doc_row else None) or "hn_algolia"
+        community_id = str(doc_row[1] or source_id) if doc_row else source_id
         published_raw = doc_row[1] if doc_row else None
         try:
             published_at = (
@@ -3649,16 +3647,40 @@ def _scoring_handler(context: Any) -> dict[str, Any] | None:
         except (ValueError, AttributeError):
             published_at = datetime.now(timezone.utc)
 
+        # Read the resolved author and its identity confidence from the
+        # independence analysis instead of hardcoding 0.5. A hardcoded 0.5
+        # never clears the policy's 0.7 independence threshold, which made
+        # every opportunity score exactly 16 confidence (only source
+        # reliability contributed). The real identity confidence makes the
+        # confidence score discriminative.
+        author_id = "unknown"
+        author_identity_confidence = 0.5
+        if doc_id:
+            author_row = conn.execute(
+                "SELECT al.author_id, a.identity_confidence "
+                "FROM author_links al "
+                "JOIN authors a ON a.author_id = al.author_id "
+                "WHERE al.doc_id = ? AND a.deletion_status = 'active' "
+                "ORDER BY a.identity_confidence DESC LIMIT 1",
+                (doc_id,),
+            ).fetchone()
+            if author_row:
+                author_id = str(author_row[0])
+                try:
+                    author_identity_confidence = float(author_row[1] or 0.0)
+                except (TypeError, ValueError):
+                    author_identity_confidence = 0.5
+
         if span_id:
             evidence_items.append(
                 EvidenceItem(
                     evidence_id=span_id,
-                    author_id=doc_id or "unknown",
-                    community_id=source_id,
+                    author_id=author_id,
+                    community_id=community_id,
                     source_id=source_id,
                     source_reliability=SourceReliability.tier_b,
                     published_at=published_at,
-                    identity_confidence=0.5,
+                    identity_confidence=author_identity_confidence,
                     is_canonical=True,
                 )
             )

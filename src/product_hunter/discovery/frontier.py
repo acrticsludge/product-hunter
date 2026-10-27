@@ -100,7 +100,7 @@ class SaturationPolicy(BaseModel):
     max_consecutive_low_yield_batches: int = Field(default=3, ge=1)
     max_duplicate_rate: float = Field(default=0.9, ge=0.0, le=1.0)
     required_families: tuple[QueryFamily, ...] = MANDATORY_FAMILIES
-    queries_per_family: int = Field(default=3, ge=1)
+    queries_per_family: int = Field(default=4, ge=1)
     near_duplicate_threshold: float = Field(default=0.9, ge=0.0, le=1.0)
 
     @model_validator(mode="after")

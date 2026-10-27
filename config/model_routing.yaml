@@ -3,7 +3,9 @@ catalog:
   refresh_interval_seconds: 900
   discovery_timeout_seconds: 30
 roles:
-  # Heavy reasoning tasks: deepseek family first, then fall back.
+  # Heavy reasoning tasks: nemotron-3.5 first, then beam-free. The deepseek and
+  # -flash models repeatedly returned 503 in previous runs (observed in
+  # PROBE_REAL_E2E_VERIFICATION), so they are not in the chain.
   extraction:
     - pattern: "opencode-go/deepseek*"
     - pattern: "opencode-go/*-flash*"
@@ -11,37 +13,25 @@ roles:
     - pattern: "opencode-go/*-free*"
   investigation:
     - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
-    - pattern: "opencode-go/deepseek*"
-    - pattern: "opencode-go/*"
-    - pattern: "opencode-go/*-free*"
+    - pattern: "opencode-go/beam-free"
   competitor_research:
     - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
-    - pattern: "opencode-go/deepseek*"
-    - pattern: "opencode-go/*"
-    - pattern: "opencode-go/*-free*"
+    - pattern: "opencode-go/beam-free"
   counter_evidence:
     - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
-    - pattern: "opencode-go/deepseek*"
-    - pattern: "opencode-go/*"
-    - pattern: "opencode-go/*-free*"
+    - pattern: "opencode-go/beam-free"
   scoring:
     - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
-    - pattern: "opencode-go/deepseek*"
-    - pattern: "opencode-go/*"
-    - pattern: "opencode-go/*-free*"
+    - pattern: "opencode-go/beam-free"
   synthesis:
     - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
-    - pattern: "opencode-go/deepseek*"
-    - pattern: "opencode-go/*"
-    - pattern: "opencode-go/*-free*"
+    - pattern: "opencode-go/beam-free"
   validation:
     - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
-    - pattern: "opencode-go/*"
-    - pattern: "opencode-go/*-free*"
+    - pattern: "opencode-go/beam-free"
   clustering:
     - pattern: "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b"
-    - pattern: "opencode-go/*"
-    - pattern: "opencode-go/*-free*"
+    - pattern: "opencode-go/beam-free"
   # Cheap gather tasks: Beam first, then fall back.
   classification:
     - pattern: "opencode-go/beam-free"

@@ -41,6 +41,13 @@ if TYPE_CHECKING:
 
 _T = TypeVar("_T")
 
+_MAX_CONSECUTIVE_FAILURES = 3
+_COOLDOWN_SECONDS = 600.0  # 10 minutes before a failed model is tried again
+
+
+def _failure_key(identity: ModelIdentity) -> str:
+    return f"{identity.provider_id}/{identity.model_id}"
+
 
 class RoutingError(ProviderError):
     """A routing operation was refused."""
@@ -165,13 +172,46 @@ class ModelRouter:
         self.default = default
         self.catalog_source = catalog_source
         self.last_error: str | None = None
+        # Per-router failure state: a down provider is not retried on every
+        # chunk. Key: model identity key ("provider/model").
+        # Value: {"consecutive": int, "last_failure": float, "cooldown_until": float}.
+        self._failures: dict[str, dict[str, object]] = {}
+
+    def record_success(self, identity: ModelIdentity) -> None:
+        """Clear the failure cooldown for a model that answered."""
+        key = _failure_key(identity)
+        record = self._failures.get(key)
+        if record is not None:
+            record["consecutive"] = 0
+            record["cooldown_until"] = 0.0
+
+    def record_failure(self, identity: ModelIdentity) -> None:
+        """Record a failure and start a cooldown if the model keeps failing."""
+        key = _failure_key(identity)
+        now = time.time()
+        record = self._failures.get(key)
+        if record is None:
+            record = {"consecutive": 0, "last_failure": now, "cooldown_until": 0.0}
+        consecutive = int(record.get("consecutive", 0)) + 1
+        record["consecutive"] = consecutive
+        record["last_failure"] = now
+        if consecutive >= _MAX_CONSECUTIVE_FAILURES:
+            record["cooldown_until"] = now + _COOLDOWN_SECONDS
+        self._failures[key] = record
+
+    def _is_in_cooldown(self, identity: ModelIdentity, now: float) -> bool:
+        record = self._failures.get(_failure_key(identity), {})
+        until = float(record.get("cooldown_until", 0.0) or 0.0)
+        return now < until
 
     def chain(self, role: ModelRole | str) -> list[ModelSelection]:
         """The ordered, available candidates of a role.
 
         A model that is gone from the catalogue is skipped, and a role that
         matches nothing triggers one re-discovery before it gives up. A failed
-        discovery is not a miss: it is not re-discovered here.
+        discovery is not a miss: it is not re-discovered here. Models in
+        cooldown (too many recent consecutive failures) are skipped so a down
+        provider is not retried on every chunk.
         """
         resolved = _role(role)
         catalog = self._catalog()
@@ -182,7 +222,12 @@ class ModelRouter:
             refreshed = self._refresh()
             if refreshed is not None:
                 selections = self._expand(refreshed, resolved)
-        return selections
+        now = time.time()
+        return [
+            selection
+            for selection in selections
+            if not self._is_in_cooldown(selection.identity, now)
+        ]
 
     def select(
         self,
@@ -386,7 +431,9 @@ class FallbackGenerator:
         last failure is raised when the chain is exhausted, so the reason the
         run stopped is the reason the last model gave. The failure is
         remembered for the whole generator, so a later chunk fails with that
-        reason and not with "no model available".
+        reason and not with "no model available". Failures and successes are
+        also recorded in the shared router registry so a down provider is
+        deprioritized across calls, not just within one.
         """
         for _ in range(MAX_FALLBACK_ATTEMPTS):
             try:
@@ -396,12 +443,16 @@ class FallbackGenerator:
                     raise self._last_failure from exc
                 raise
             try:
-                return action(selection, self.build(selection))
+                response = action(selection, self.build(selection))
             except ProviderError as exc:
                 # The error names the candidate that failed, so the record of
                 # the failure names the model that made it.
                 self._last_failure = _call_failed(selection, exc)
                 self._failed.append(selection.identity)
+                self.router.record_failure(selection.identity)
+                continue
+            self.router.record_success(selection.identity)
+            return response
         if self._last_failure is not None:
             raise self._last_failure
         raise RoutingError(f"no candidate to try for role {self.role.value!r}")

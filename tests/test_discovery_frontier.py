@@ -355,7 +355,8 @@ def test_the_run_limit_binds_at_admission_across_sources_and_families():
 def test_saturation_names_family_coverage():
     frontier = _frontier(
         policy=SaturationPolicy(
-            required_families=(QueryFamily.problem, QueryFamily.severity)
+            required_families=(QueryFamily.problem, QueryFamily.severity),
+            queries_per_family=3,
         )
     )
     for index in range(3):
@@ -381,7 +382,9 @@ def test_saturation_names_family_coverage():
 
 def test_a_family_is_covered_only_after_its_queries_per_family():
     frontier = _frontier(
-        policy=SaturationPolicy(required_families=(QueryFamily.problem,))
+        policy=SaturationPolicy(
+            required_families=(QueryFamily.problem,), queries_per_family=3
+        )
     )
     for index in range(2):
         _run(
@@ -520,7 +523,9 @@ def test_one_unlucky_query_does_not_trip_the_repeated_results_reason():
 
 def test_a_failed_search_leaves_the_frontier_blocked_and_not_saturated():
     frontier = _frontier(
-        policy=SaturationPolicy(required_families=(QueryFamily.problem,))
+        policy=SaturationPolicy(
+            required_families=(QueryFamily.problem,), queries_per_family=3
+        )
     )
     for index in range(3):
         _run(
