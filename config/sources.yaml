@@ -52,9 +52,7 @@ sources:
 
   - source_id: github_issues
     source_type: code_host
-    status: suspended
-    suspended_at: 2026-10-27
-    suspend_reason: "Disabled for the AI-native probe: bug-heavy source, low-quality pain points." 
+    status: active
     terms_status: permitted
     allowed_use: [discovery, retrieval, analysis, storage]
     reviewed_at: 2026-10-20
@@ -72,7 +70,7 @@ sources:
     domains: [api.github.com]
     schemes: [https]
     robots: skip
-    enabled: false
+    enabled: true
     metadata:
       name: GitHub Issues
       homepage: https://github.com
