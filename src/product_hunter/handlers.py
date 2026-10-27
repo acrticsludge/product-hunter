@@ -74,7 +74,7 @@ def _hn_search(query: str, *, limit: int = 20) -> list[dict[str, Any]]:
     return data.get("hits", [])
 
 
-def _github_search(query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+def _github_search(query: str, *, limit: int = 20) -> list[dict[str, Any]]:
     url = "https://api.github.com/search/issues"
     params = {"q": f"{query} is:issue is:open", "per_page": limit}
     headers = {"Accept": "application/vnd.github+json"}
@@ -85,7 +85,7 @@ def _github_search(query: str, *, limit: int = 10) -> list[dict[str, Any]]:
     return data.get("items", [])
 
 
-def _devto_search(query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+def _devto_search(query: str, *, limit: int = 20) -> list[dict[str, Any]]:
     url = "https://dev.to/api/articles"
     params = {"search": query, "per_page": min(limit, 30)}
     with httpx.Client(timeout=30.0) as client:
@@ -639,7 +639,7 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
     run_document_ids: set[str] = set()
     docs_count = 0
     executed = 0
-    max_queries = 30
+    max_queries = 120
     tool_calls: list = []
     tool_results: dict[str, Any] = {}
     tool_sources: dict[str, str] = {}
@@ -655,7 +655,7 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
         error = ""
         hits: list[dict[str, Any]] = []
         try:
-            hits = search_fn(q.text, limit=10)
+            hits = search_fn(q.text, limit=20)
         except Exception as exc:
             if "timeout" in str(exc).lower() or isinstance(exc, httpx.TimeoutException):
                 status = DiscoveryStatus.timeout
