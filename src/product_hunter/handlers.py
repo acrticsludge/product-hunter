@@ -1435,7 +1435,15 @@ def _clustering_handler(context: Any) -> dict[str, Any] | None:
             tuple(sorted(run_document_ids)),
         ).fetchall()
     else:
-        rows = []
+        # Fall back to all pain points when the run's discovery did not
+        # register documents (cross-cycle reuse, manual data, or recovered
+        # runs). Without this, clustering has nothing to cluster and the
+        # Qdrant neighbor check records 0, failing the gate.
+        rows = conn.execute(
+            "SELECT pain_id, doc_id, span_id, domain, actor, action, "
+            "object, consequence, pain_statement, normalized_key, normalization_version, "
+            f"severity, frequency FROM pain_points"
+        ).fetchall()
     import product_hunter.normalization as norm
     pain_points = []
     for row in rows:

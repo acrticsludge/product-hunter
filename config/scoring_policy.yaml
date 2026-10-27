@@ -96,7 +96,7 @@ buildability:
   blocker_penalty: 0.1
 
 identity:
-  min_confidence: 0.7
+  min_confidence: 0.5
 
 confidence:
   target_independent_people: 10
