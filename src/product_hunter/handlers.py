@@ -435,6 +435,74 @@ def _keyword_query(template: Any, topic: str) -> str:
     return query or base
 
 
+def _load_probe_frontier(
+    conn: sqlite3.Connection,
+    probe_id: str,
+    seed: str,
+    source_ids: list[str],
+    tracker: Any = None,
+) -> QueryFrontier | None:
+    """Restore the probe-level frontier from the previous cycle, or None.
+
+    The frontier is keyed by probe_id so it survives across cycles. If the
+    seed or sources changed (a different objective), the caller gets None and
+    starts a fresh frontier.
+    """
+    row = conn.execute(
+        "SELECT state_json FROM probe_frontier_states WHERE probe_id = ?",
+        (probe_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        state = json.loads(str(row[0]))
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if state.get("seed") != seed:
+        return None
+    if set(state.get("source_ids", [])) != set(source_ids):
+        return None
+    try:
+        frontier = QueryFrontier.from_state(
+            state,
+            clock=lambda: datetime.now(timezone.utc),
+            tracker=tracker,
+        )
+    except Exception:
+        return None
+    return frontier
+
+
+def _save_probe_frontier(
+    conn: sqlite3.Connection,
+    probe_id: str,
+    seed: str,
+    frontier: QueryFrontier,
+) -> None:
+    """Persist the frontier at probe level for the next cycle to resume."""
+    state = frontier.checkpoint_state()
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    conn.execute(
+        """
+        INSERT INTO probe_frontier_states (
+            probe_id, seed, state_json, checkpoint_version, updated_at
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(probe_id) DO UPDATE SET
+            seed = excluded.seed,
+            state_json = excluded.state_json,
+            checkpoint_version = excluded.checkpoint_version,
+            updated_at = excluded.updated_at
+        """,
+        (
+            probe_id,
+            seed,
+            json.dumps(state, sort_keys=True),
+            frontier.checkpoint_version,
+            now,
+        ),
+    )
+
+
 def _discovery_handler(context: Any) -> dict[str, Any] | None:
     """Run a bounded multi-source discovery pass."""
     conn = context.conn
@@ -486,7 +554,19 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
     tracker = BudgetTracker(contract.budgets) if contract is not None else None
     frontier = load_frontier(conn, run_id, tracker=tracker)
     if frontier is None:
-        policy = SaturationPolicy(queries_per_family=1)
+        # Try to restore the probe-level frontier from the previous cycle so
+        # expansion resumes where it left off instead of re-running the same
+        # searches every cycle.
+        probe_row = conn.execute(
+            "SELECT probe_id FROM research_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        probe_id = str(probe_row[0]) if probe_row else None
+        if probe_id is not None:
+            frontier = _load_probe_frontier(
+                conn, probe_id, str(seed), active_sources, tracker
+            )
+    if frontier is None:
+        policy = SaturationPolicy()  # queries_per_family defaults to 4
         budget = DiscoveryBudget(tracker=tracker, max_queries_per_family=40)
         frontier = QueryFrontier(
             seed=str(seed),
@@ -700,6 +780,20 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
         executed += 1
         try:
             save_frontier(conn, run_id, frontier)
+        except Exception:
+            pass
+
+        # Persist the frontier at probe level so the next cycle can resume
+        # expansion where this cycle left off, instead of re-running the same
+        # searches. Cross-cycle reuse is the key to not wasting budget on
+        # repeated queries against the same sources.
+        try:
+            probe_row = conn.execute(
+                "SELECT probe_id FROM research_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            probe_id = str(probe_row[0]) if probe_row else None
+            if probe_id is not None:
+                _save_probe_frontier(conn, probe_id, str(seed), frontier)
         except Exception:
             pass
 
