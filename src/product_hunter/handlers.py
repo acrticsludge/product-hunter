@@ -3561,8 +3561,8 @@ def _validation_handler(context: Any) -> dict[str, Any] | None:
         "trends": trend_rows,
     }
 
-    doc_ids = _discovered_document_ids(conn, run_id)
-    document_ids = sorted(doc_ids)
+    run_document_ids = _discovered_document_ids(conn, job.run_id)
+    document_ids = sorted(run_document_ids)
     source_ids: set[str] = set()
     author_ids: set[str] = set()
     community_ids: set[str] = set()
@@ -3594,6 +3594,42 @@ def _validation_handler(context: Any) -> dict[str, Any] | None:
                 document_ids,
             ).fetchone()[0]
         )
+    else:
+        # Fall back to all documents when the run's discovery did not
+        # register documents (cross-cycle reuse, manual data, or recovered
+        # runs). Without this, validation finds 0 evidence spans and fails
+        # the gate even when the database holds ample evidence.
+        all_doc_ids = [
+            str(row[0])
+            for row in conn.execute("SELECT doc_id FROM documents").fetchall()
+        ]
+        if all_doc_ids:
+            placeholders = ",".join("?" for _ in all_doc_ids)
+            for row in conn.execute(
+                f"SELECT DISTINCT source_id, community_id FROM documents "
+                f"WHERE doc_id IN ({placeholders})",
+                all_doc_ids,
+            ):
+                if row[0]:
+                    source_ids.add(str(row[0]))
+                if row[1]:
+                    community_ids.add(str(row[1]))
+            author_ids = {
+                str(row[0])
+                for row in conn.execute(
+                    f"SELECT DISTINCT a.author_id FROM authors a "
+                    f"JOIN author_links l ON l.author_id = a.author_id "
+                    f"WHERE l.doc_id IN ({placeholders}) AND a.deletion_status = 'active'",
+                    all_doc_ids,
+                )
+            }
+            evidence_count = int(
+                conn.execute(
+                    f"SELECT COUNT(DISTINCT span_id) FROM evidence "
+                    f"WHERE doc_id IN ({placeholders}) AND live_status = 'live'",
+                    all_doc_ids,
+                ).fetchone()[0]
+            )
     independent_report = conn.execute(
         "SELECT metrics_json FROM independence_reports WHERE scope_id = ? "
         "ORDER BY created_at DESC LIMIT 1",
