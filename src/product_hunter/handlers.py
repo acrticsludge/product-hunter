@@ -3603,6 +3603,23 @@ def _validation_handler(context: Any) -> dict[str, Any] | None:
                 document_ids,
             ).fetchone()[0]
         )
+        if evidence_count == 0:
+            # The run's discovered documents don't have evidence spans
+            # (cross-cycle reuse, new run). Fall back to all documents so
+            # the validation gate can count evidence spans.
+            all_doc_ids = [
+                str(row[0])
+                for row in conn.execute("SELECT doc_id FROM documents").fetchall()
+            ]
+            if all_doc_ids:
+                all_placeholders = ",".join("?" for _ in all_doc_ids)
+                evidence_count = int(
+                    conn.execute(
+                        f"SELECT COUNT(DISTINCT span_id) FROM evidence "
+                        f"WHERE doc_id IN ({all_placeholders}) AND live_status = 'live'",
+                        all_doc_ids,
+                    ).fetchone()[0]
+                )
     else:
         # Fall back to all documents when the run's discovery did not
         # register documents (cross-cycle reuse, manual data, or recovered
