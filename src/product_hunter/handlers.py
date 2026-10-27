@@ -911,6 +911,18 @@ def _discovery_handler(context: Any) -> dict[str, Any] | None:
 
     _enqueue_next(conn, job, "COLLECTION")
     return {"discovered": docs_count, "queries": executed, "sources": active_sources}
+
+
+def _thin_evidence(job: Any) -> bool:
+    """Return True when the run was flagged as thin-evidence by collection."""
+    try:
+        payload = job.payload_json if hasattr(job, "payload_json") else "{}"
+        data = json.loads(payload) if isinstance(payload, str) else payload
+        return bool(data.get("thin_evidence"))
+    except (TypeError, json.JSONDecodeError, AttributeError):
+        return False
+
+
 def _extraction_handler(context: Any) -> dict[str, Any] | None:
     """Extract pain points from discovered documents using the LLM.
 
@@ -923,6 +935,12 @@ def _extraction_handler(context: Any) -> dict[str, Any] | None:
     conn = context.conn
     job = context.job
     run_id = job.run_id
+    # Pre-gate triage: if collection flagged thin evidence, skip LLM
+    # extraction and pass through to the next stage.
+    if _thin_evidence(job):
+        _enqueue_next(conn, job, "EMBEDDING")
+        return {"extracted": 0, "rejected": 0, "claims": 0, "thin_evidence": True}
+
     # Route the extraction role through the dynamic model router.
     # The model pinned in extraction.yaml is only a fallback when the router
     # cannot answer; it is never hard-coded into business logic.
@@ -1291,6 +1309,17 @@ def _entity_resolution_handler(context: Any) -> dict[str, Any] | None:
 def _embedding_handler(context: Any) -> dict[str, Any] | None:
     conn = context.conn
     job = context.job
+    # Pre-gate triage: skip embedding when evidence is thin.
+    if _thin_evidence(job):
+        _enqueue_next(conn, job, "CLUSTERING")
+        return {
+            "embedded": True,
+            "indexed": 0,
+            "unchanged": 0,
+            "removed": 0,
+            "failed": 0,
+            "thin_evidence": True,
+        }
     from product_hunter.config import load_semantic_config, repo_root
     from product_hunter.semantic.qdrant import QdrantAdapter
     from product_hunter.semantic.embeddings import build_embedder
@@ -1354,6 +1383,15 @@ def _embedding_handler(context: Any) -> dict[str, Any] | None:
 def _clustering_handler(context: Any) -> dict[str, Any] | None:
     conn = context.conn
     job = context.job
+    # Pre-gate triage: skip clustering when evidence is thin.
+    if _thin_evidence(job):
+        _enqueue_next(conn, job, "INDEPENDENCE_ANALYSIS")
+        return {
+            "pain_points": 0,
+            "clusters": 0,
+            "assignments": 0,
+            "thin_evidence": True,
+        }
     stage_started = datetime.now(timezone.utc)
     run_document_ids = _discovered_document_ids(conn, job.run_id)
     if run_document_ids:
@@ -1800,8 +1838,19 @@ def _independence_analysis_handler(context: Any) -> dict[str, Any] | None:
     }
 
 
-def _enqueue_next(conn: Any, job: Any, next_stage: str) -> None:
-    """Enqueue the next stage job if not already queued."""
+def _enqueue_next(
+    conn: Any,
+    job: Any,
+    next_stage: str,
+    **payload_extra: Any,
+) -> None:
+    """Enqueue the next stage job if not already queued.
+
+    ``payload_extra`` keys are merged into the job's payload JSON, so a stage
+    can pass flags (e.g. thin_evidence) down the chain to downstream stages.
+    When no extra keys are given, the original payload is passed through
+    unchanged.
+    """
     import uuid
 
     idempotency_key = f"{next_stage.lower()}:{job.run_id}"
@@ -1813,7 +1862,23 @@ def _enqueue_next(conn: Any, job: Any, next_stage: str) -> None:
     next_job_id = f"job_{uuid.uuid4().hex[:16]}"
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
-    payload = job.payload_json if hasattr(job, "payload_json") else "{}"
+    if payload_extra:
+        import json
+
+        try:
+            payload = (
+                json.loads(job.payload_json)
+                if hasattr(job, "payload_json")
+                else {}
+            )
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        payload.update(payload_extra)
+        payload = json.dumps(payload, sort_keys=True)
+    else:
+        payload = job.payload_json if hasattr(job, "payload_json") else "{}"
     priority = job.priority if hasattr(job, "priority") else 0
     conn.execute(
         "INSERT INTO jobs (id, run_id, stage, priority, status, attempts, "
@@ -2086,7 +2151,36 @@ def _collection_handler(context: Any) -> dict[str, Any] | None:
         cost_micros=0,
     )
 
-    _enqueue_next(conn, job, "NORMALIZATION")
+    # Pre-gate triage: if collection yielded thin evidence (few documents or
+    # few source domains), flag the run so expensive downstream stages
+    # (PAIN_EXTRACTION, EMBEDDING, CLUSTERING, SCORING) skip their LLM and
+    # embedding work. This avoids burning budget on cycles that cannot pass
+    # the promotion gate anyway.
+    thin_evidence = False
+    try:
+        contract = load_research_contract()
+        thresholds = contract.evidence_thresholds.get("discovery", {})
+        min_docs = int(thresholds.get("min_new_documents", 20) or 20)
+        min_domains = int(thresholds.get("min_source_domains", 3) or 3)
+        doc_ids = _discovered_document_ids(conn, job.run_id)
+        domain_rows = conn.execute(
+            "SELECT DISTINCT source_id FROM documents WHERE doc_id IN ("
+            + ",".join("?" for _ in doc_ids) + ")",
+            tuple(sorted(doc_ids)),
+        ).fetchall() if doc_ids else []
+        thin_evidence = (
+            len(doc_ids) < min_docs // 2
+            or len(domain_rows) < min_domains // 2 + 1
+        )
+    except Exception:
+        pass
+
+    _enqueue_next(
+        conn,
+        job,
+        "NORMALIZATION",
+        thin_evidence=thin_evidence,
+    )
     return {
         "collected": collected,
         "targets": len(targets),
@@ -2380,6 +2474,10 @@ def _competitor_handler(context: Any) -> dict[str, Any] | None:
     conn = context.conn
     job = context.job
     run_id = job.run_id
+    # Pre-gate triage: skip competitor research when evidence is thin.
+    if _thin_evidence(job):
+        _enqueue_next(conn, job, "COUNTER_EVIDENCE")
+        return {"competitors": 0, "queries": 0, "status": "thin_evidence_skipped", "thin_evidence": True}
     stage = "COMPETITOR_RESEARCH"
     contract_stage = "investigation"
     now = _utc_now()
@@ -2905,6 +3003,15 @@ def _counter_evidence_handler(context: Any) -> dict[str, Any] | None:
     conn = context.conn
     job = context.job
     run_id = job.run_id
+    # Pre-gate triage: skip counter-evidence when evidence is thin.
+    if _thin_evidence(job):
+        _enqueue_next(conn, job, "SCORING")
+        return {
+            "counter_evidence": 0,
+            "queries": 0,
+            "status": "thin_evidence_skipped",
+            "thin_evidence": True,
+        }
     stage = "COUNTER_EVIDENCE"
     contract_stage = "counter_evidence"
     now = _utc_now()
@@ -3656,6 +3763,10 @@ def _validation_handler(context: Any) -> dict[str, Any] | None:
 def _scoring_handler(context: Any) -> dict[str, Any] | None:
     conn = context.conn
     job = context.job
+    # Pre-gate triage: skip scoring when evidence is thin.
+    if _thin_evidence(job):
+        _enqueue_next(conn, job, "REPORTING")
+        return {"scored": 0, "opportunities_created": 0, "thin_evidence": True}
     from datetime import datetime, timezone
     stage_started = datetime.now(timezone.utc)
 
