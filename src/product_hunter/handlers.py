@@ -4069,7 +4069,7 @@ def _scoring_handler(context: Any) -> dict[str, Any] | None:
         else:
             lifecycle = "CANDIDATE"
 
-        title = (pain_statement or normalized_key or pain_id)[:80]
+        title = (pain_statement or normalized_key or pain_id)[:200]
 
         # Canonical opportunity identity: cluster the pain points belong to,
         # falling back to a stable hash of the normalized key. run_id is
